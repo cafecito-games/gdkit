@@ -201,12 +201,17 @@ Create a release entirely from GitHub:
 
 1. Open the repository's **Actions** tab.
 2. Select the **Release** workflow.
-3. Choose **Run workflow**, enter a semantic version such as `0.1.0`, and run it.
+3. Choose **Run workflow**, select `patch`, `minor`, or `major`, and run it.
 
 The workflow always releases the latest commit on the default branch. It runs
-the tests, validates the version, creates the annotated `v0.1.0` tag, and
-publishes the GitHub Release in the same job. A failed publishing attempt can be
-retried with the same version as long as the tag still points to that commit.
+the tests, reads the latest published stable release, computes the next semantic
+version, creates its annotated tag, and publishes the GitHub Release in the same
+job. From `v0.4.2`, the choices produce `v0.4.3`, `v0.5.0`, or `v1.0.0`.
+With no existing release, the calculation starts at `v0.0.0`.
+
+Because the calculation uses the latest successfully published release, a
+failed publishing attempt can be retried with the same increment as long as its
+tag still points to the current default-branch commit.
 
 The release contains macOS, Linux, and Windows archives for AMD64 and ARM64,
 plus a SHA-256 checksum manifest. Release versions omit the leading `v`, so tag

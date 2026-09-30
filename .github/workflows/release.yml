@@ -3,10 +3,14 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Semantic version to release (for example, 0.1.0 or 0.2.0-rc.1)"
+      increment:
+        description: "Semantic version component to increment"
         required: true
-        type: string
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
   push:
     tags:
       - "v*"
@@ -33,22 +37,53 @@ jobs:
           cache: true
       - run: go test -race ./...
       - run: go vet ./...
-      - name: Create release tag
+      - name: Compute version and create release tag
         if: github.event_name == 'workflow_dispatch'
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_INCREMENT: ${{ inputs.increment }}
         shell: bash
         run: |
           set -euo pipefail
 
-          version="${RELEASE_VERSION#v}"
-          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
-          if [[ ! "${version}" =~ ${semver} ]]; then
-            echo "::error::Version must be semantic version syntax such as 0.1.0 or 0.2.0-rc.1"
+          release_error="${RUNNER_TEMP}/gdkit-latest-release-error"
+          if latest_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name' 2>"${release_error}")"; then
+            :
+          elif grep -q 'HTTP 404' "${release_error}"; then
+            latest_tag="v0.0.0"
+          else
+            cat "${release_error}" >&2
             exit 1
           fi
 
-          tag="v${version}"
+          current="${latest_tag#v}"
+          stable_semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if [[ ! "${current}" =~ ${stable_semver} ]]; then
+            echo "::error::Latest published release ${latest_tag} is not a stable semantic version"
+            exit 1
+          fi
+
+          IFS='.' read -r major minor patch <<< "${current}"
+          case "${RELEASE_INCREMENT}" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+            *)
+              echo "::error::Unknown release increment ${RELEASE_INCREMENT}"
+              exit 1
+              ;;
+          esac
+
+          tag="v${major}.${minor}.${patch}"
           head_sha="$(git rev-parse HEAD)"
           if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
             git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
@@ -66,8 +101,12 @@ jobs:
             echo "Created ${tag} at ${head_sha}"
           fi
 
-          echo "### Releasing ${tag}" >> "${GITHUB_STEP_SUMMARY}"
-          echo "Commit: \`${head_sha}\`" >> "${GITHUB_STEP_SUMMARY}"
+          {
+            echo "### Releasing ${tag}"
+            echo "Previous release: \`${latest_tag}\`"
+            echo "Increment: \`${RELEASE_INCREMENT}\`"
+            echo "Commit: \`${head_sha}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
