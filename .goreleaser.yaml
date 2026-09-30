@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: gdkit
+
+builds:
+  - id: gdkit
+    main: ./cmd/gdkit
+    binary: gdkit
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/cafecito-games/gdkit/internal/buildinfo.version={{ .Version }}
+        -X github.com/cafecito-games/gdkit/internal/buildinfo.commit={{ .FullCommit }}
+        -X github.com/cafecito-games/gdkit/internal/buildinfo.date={{ .CommitDate }}
+        -X github.com/cafecito-games/gdkit/internal/buildinfo.treeState={{ if .IsGitDirty }}dirty{{ else }}clean{{ end }}
+
+archives:
+  - id: binaries
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ title .Os }}_{{ if eq .Arch "amd64" }}x86_64{{ else }}{{ .Arch }}{{ end }}
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+
+release:
+  draft: false
+  prerelease: auto

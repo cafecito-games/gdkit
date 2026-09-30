@@ -54,6 +54,27 @@ gdkit arch check --show-edges .
 The command exits `0` when clean, `1` for architecture violations, and `2` for
 configuration, usage, or I/O failures.
 
+## Version information
+
+Release binaries report their semantic version, commit hash, commit timestamp,
+tree state, and Go toolchain. Text and machine-readable forms are available:
+
+```sh
+gdkit --version
+gdkit version
+gdkit version --format json
+```
+
+A tagged binary prints output similar to:
+
+```text
+gdkit version 1.2.3 (commit 0123456789ab), built 2026-09-30T12:00:00Z
+```
+
+GoReleaser injects authoritative release metadata through linker flags. Normal
+`go build` installations fall back to the VCS metadata embedded by the Go
+toolchain, so development binaries remain identifiable too.
+
 ## Configuration
 
 Create editable starter files in a Godot project:
@@ -166,3 +187,24 @@ go test -race ./...
 go vet ./...
 go build ./...
 ```
+
+Validate the release configuration and build local snapshot artifacts:
+
+```sh
+goreleaser check
+goreleaser release --snapshot --clean
+```
+
+## Releasing
+
+Push a semantic-version tag to create a GitHub Release containing macOS, Linux,
+and Windows archives for AMD64 and ARM64, plus a SHA-256 checksum manifest:
+
+```sh
+git tag -a v0.1.0 -m "gdkit v0.1.0"
+git push origin v0.1.0
+```
+
+The tag-triggered release workflow builds with Go 1.26 and publishes the
+artifacts through GoReleaser. Release versions omit the leading `v`, so tag
+`v0.1.0` is reported by the binary as `0.1.0`.
