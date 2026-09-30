@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/cafecito-games/gdkit/architecture"
+	"github.com/cafecito-games/gdkit/internal/buildinfo"
 )
 
 const usageText = `gdkit — static source tooling for GDScript
@@ -17,10 +18,12 @@ const usageText = `gdkit — static source tooling for GDScript
 Usage:
   gdkit arch check [flags] [project-root]
   gdkit arch init  [flags] [project-root]
+  gdkit version    [flags]
 
 Commands:
   arch check   enforce architectural dependency rules
   arch init    write starter .gdkit configuration files
+  version      print version and source revision information
 `
 
 func main() {
@@ -28,11 +31,18 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-v") {
+		fmt.Fprintln(stdout, buildinfo.Current().String())
+		return 0
+	}
 	if len(args) < 1 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		fmt.Fprint(stdout, usageText)
 		return 0
 	}
 	if args[0] != "arch" {
+		if args[0] == "version" {
+			return runVersion(args[1:], stdout, stderr)
+		}
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usageText)
 		return 2
 	}
@@ -51,6 +61,35 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unknown arch command %q\n\n%s", args[1], usageText)
 		return 2
 	}
+}
+
+func runVersion(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("version", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	format := flags.String("format", "text", "output format: text or json")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "version does not accept positional arguments")
+		return 2
+	}
+	info := buildinfo.Current()
+	switch *format {
+	case "text":
+		fmt.Fprintln(stdout, info.String())
+	case "json":
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(info); err != nil {
+			fmt.Fprintln(stderr, "gdkit: write version:", err)
+			return 2
+		}
+	default:
+		fmt.Fprintf(stderr, "unknown output format %q (want text or json)\n", *format)
+		return 2
+	}
+	return 0
 }
 
 func runCheck(args []string, stdout, stderr io.Writer) int {

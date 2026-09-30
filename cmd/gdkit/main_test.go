@@ -42,6 +42,26 @@ func TestRunCheckViolationExit(t *testing.T) {
 	}
 }
 
+func TestRunVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"version", "--format", "json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("version exit %d: %s", code, stderr.String())
+	}
+	for _, field := range []string{`"version"`, `"dirty"`, `"go_version"`} {
+		if !strings.Contains(stdout.String(), field) {
+			t.Errorf("version JSON does not contain %s: %s", field, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	if code := run([]string{"--version"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("--version exit %d: %s", code, stderr.String())
+	}
+	if !strings.HasPrefix(stdout.String(), "gdkit version ") {
+		t.Fatalf("unexpected version output: %s", stdout.String())
+	}
+}
+
 func writeCLIFile(t *testing.T, root, name, contents string) {
 	t.Helper()
 	absolute := filepath.Join(root, filepath.FromSlash(name))

@@ -54,6 +54,27 @@ gdkit arch check --show-edges .
 The command exits `0` when clean, `1` for architecture violations, and `2` for
 configuration, usage, or I/O failures.
 
+## Version information
+
+Release binaries report their semantic version, commit hash, commit timestamp,
+tree state, and Go toolchain. Text and machine-readable forms are available:
+
+```sh
+gdkit --version
+gdkit version
+gdkit version --format json
+```
+
+A tagged binary prints output similar to:
+
+```text
+gdkit version 1.2.3 (commit 0123456789ab), built 2026-09-30T12:00:00Z
+```
+
+GoReleaser injects authoritative release metadata through linker flags. Normal
+`go build` installations fall back to the VCS metadata embedded by the Go
+toolchain, so development binaries remain identifiable too.
+
 ## Configuration
 
 Create editable starter files in a Godot project:
@@ -166,3 +187,33 @@ go test -race ./...
 go vet ./...
 go build ./...
 ```
+
+Validate the release configuration and build local snapshot artifacts:
+
+```sh
+goreleaser check
+goreleaser release --snapshot --clean
+```
+
+## Releasing
+
+Create a release entirely from GitHub:
+
+1. Open the repository's **Actions** tab.
+2. Select the **Release** workflow.
+3. Choose **Run workflow**, select `patch`, `minor`, or `major`, and run it.
+
+The workflow always releases the latest commit on the default branch. It runs
+the tests, reads the latest published stable release, computes the next semantic
+version, creates its annotated tag, and publishes the GitHub Release in the same
+job. From `v0.4.2`, the choices produce `v0.4.3`, `v0.5.0`, or `v1.0.0`.
+With no existing release, the calculation starts at `v0.0.0`.
+
+Because the calculation uses the latest successfully published release, a
+failed publishing attempt can be retried with the same increment as long as its
+tag still points to the current default-branch commit.
+
+The release contains macOS, Linux, and Windows archives for AMD64 and ARM64,
+plus a SHA-256 checksum manifest. Release versions omit the leading `v`, so tag
+`v0.1.0` is reported by the binary as `0.1.0`. Directly pushed `v*` tags remain
+supported for automation and advanced use.
