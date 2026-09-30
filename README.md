@@ -197,14 +197,18 @@ goreleaser release --snapshot --clean
 
 ## Releasing
 
-Push a semantic-version tag to create a GitHub Release containing macOS, Linux,
-and Windows archives for AMD64 and ARM64, plus a SHA-256 checksum manifest:
+Create a release entirely from GitHub:
 
-```sh
-git tag -a v0.1.0 -m "gdkit v0.1.0"
-git push origin v0.1.0
-```
+1. Open the repository's **Actions** tab.
+2. Select the **Release** workflow.
+3. Choose **Run workflow**, enter a semantic version such as `0.1.0`, and run it.
 
-The tag-triggered release workflow builds with Go 1.26 and publishes the
-artifacts through GoReleaser. Release versions omit the leading `v`, so tag
-`v0.1.0` is reported by the binary as `0.1.0`.
+The workflow always releases the latest commit on the default branch. It runs
+the tests, validates the version, creates the annotated `v0.1.0` tag, and
+publishes the GitHub Release in the same job. A failed publishing attempt can be
+retried with the same version as long as the tag still points to that commit.
+
+The release contains macOS, Linux, and Windows archives for AMD64 and ARM64,
+plus a SHA-256 checksum manifest. Release versions omit the leading `v`, so tag
+`v0.1.0` is reported by the binary as `0.1.0`. Directly pushed `v*` tags remain
+supported for automation and advanced use.
