@@ -34,7 +34,7 @@ func TestConsumerContracts(t *testing.T) {
 		name         string
 		wantMatch    bool
 		wantCaptures map[string]string
-		desc         string
+		description  string
 	}{
 		// Trailing-slash directory matching (analyzer.go:164 calls with relative+"/")
 		{"addons/**", "addons/", true, map[string]string{}, "trailing slash matches"},
@@ -83,32 +83,32 @@ func TestConsumerContracts(t *testing.T) {
 		{"file/**", "file/", true, map[string]string{}, "** at end matches zero dirs"},
 	}
 
-	for _, tc := range cases {
-		matches, captures := Match(tc.pattern, tc.name)
-		if matches != tc.wantMatch {
-			t.Errorf("Match(%q, %q): got match=%v, want %v (%s)", tc.pattern, tc.name, matches, tc.wantMatch, tc.desc)
+	for _, testCase := range cases {
+		matches, captures := Match(testCase.pattern, testCase.name)
+		if matches != testCase.wantMatch {
+			t.Errorf("Match(%q, %q): got match=%v, want %v (%s)", testCase.pattern, testCase.name, matches, testCase.wantMatch, testCase.description)
 		}
 
 		// Check captures behavior
-		if tc.wantMatch {
-			if tc.wantCaptures == nil {
+		if testCase.wantMatch {
+			if testCase.wantCaptures == nil {
 				// Should not reach here - when match is true, wantCaptures should be specified
-				t.Errorf("Match(%q, %q): test case missing wantCaptures (%s)", tc.pattern, tc.name, tc.desc)
+				t.Errorf("Match(%q, %q): test case missing wantCaptures (%s)", testCase.pattern, testCase.name, testCase.description)
 			} else {
 				// Compare maps
-				for key, wantValue := range tc.wantCaptures {
+				for key, wantValue := range testCase.wantCaptures {
 					if captures[key] != wantValue {
-						t.Errorf("Match(%q, %q): captures[%q] = %q, want %q (%s)", tc.pattern, tc.name, key, captures[key], wantValue, tc.desc)
+						t.Errorf("Match(%q, %q): captures[%q] = %q, want %q (%s)", testCase.pattern, testCase.name, key, captures[key], wantValue, testCase.description)
 					}
 				}
 				// Check no extra keys
-				if len(captures) != len(tc.wantCaptures) {
-					t.Errorf("Match(%q, %q): captures has %d keys, want %d (%s)", tc.pattern, tc.name, len(captures), len(tc.wantCaptures), tc.desc)
+				if len(captures) != len(testCase.wantCaptures) {
+					t.Errorf("Match(%q, %q): captures has %d keys, want %d (%s)", testCase.pattern, testCase.name, len(captures), len(testCase.wantCaptures), testCase.description)
 				}
 			}
 		} else {
-			if captures != nil && len(captures) > 0 {
-				t.Errorf("Match(%q, %q): expected no match but got captures=%v (%s)", tc.pattern, tc.name, captures, tc.desc)
+			if len(captures) > 0 {
+				t.Errorf("Match(%q, %q): expected no match but got captures=%v (%s)", testCase.pattern, testCase.name, captures, testCase.description)
 			}
 		}
 	}
@@ -129,10 +129,10 @@ func TestPatternMatchMethod(t *testing.T) {
 		{"file.txt", false},
 	}
 
-	for _, tc := range cases {
-		matches, _ := pattern.Match(tc.name)
-		if matches != tc.matches {
-			t.Errorf("pattern.Match(%q) = %v, want %v", tc.name, matches, tc.matches)
+	for _, testCase := range cases {
+		matches, _ := pattern.Match(testCase.name)
+		if matches != testCase.matches {
+			t.Errorf("pattern.Match(%q) = %v, want %v", testCase.name, matches, testCase.matches)
 		}
 	}
 }
