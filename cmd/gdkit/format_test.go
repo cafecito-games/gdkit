@@ -361,7 +361,7 @@ func TestRunFormatRefusesToMoveASuppressionComment(t *testing.T) {
 	const suppressed = "func BadName():  # gdlint:ignore = function-name\n\tpass\n"
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", suppressed)
-	want := "player.gd:1: Error: formatting would move a lint suppression comment off the line it applies to (format.unsafe)\n"
+	want := "player.gd:1: Error: formatting would change the code a lint suppression comment applies to (format.unsafe)\n"
 	for _, command := range []string{"check", "write"} {
 		var stdout, stderr bytes.Buffer
 		if code := run([]string{"format", command, root}, &stdout, &stderr); code != 1 {

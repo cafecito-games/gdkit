@@ -34,8 +34,8 @@ func New(config Config) (*Formatter, error) {
 // Format computes the canonical form of every script in the snapshot. It
 // performs no I/O and leaves the snapshot untouched; Apply writes the results.
 // A file that does not parse, or whose formatted output does not keep its
-// syntax tree and its tokens or would move a lint suppression comment, gets a
-// diagnostic instead of a result.
+// syntax tree and its tokens or would change the code a lint suppression
+// comment applies to, gets a diagnostic instead of a result.
 func (f *Formatter) Format(snapshot *project.Snapshot) Report {
 	report := Report{Results: []Result{}, Diagnostics: []Diagnostic{}}
 	for _, outcome := range f.formatAll(snapshot) {
@@ -96,7 +96,7 @@ func (f *Formatter) formatScript(script *project.Script) (Result, *Diagnostic) {
 	if line, column, changed := changedToken(script.Source, formatted, f.options); changed {
 		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: tokensChanged, Path: script.Path, Line: line, Column: column}
 	}
-	if line, column, moved := movedSuppression(script.Source, formatted); moved {
+	if line, column, moved := movedSuppression(script.Source, formatted, f.options); moved {
 		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: suppressionMoved, Path: script.Path, Line: line, Column: column}
 	}
 	return Result{Path: script.Path, Changed: true, Formatted: formatted}, nil

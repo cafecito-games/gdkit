@@ -279,8 +279,8 @@ A file with a diagnostic is left exactly as it is:
 
 - `source-parse` reports a file that does not parse, so it cannot be formatted.
 - `format.unsafe` reports a file whose formatted output would not keep the
-  syntax tree or the tokens of its source, or would move a lint suppression
-  comment off the line it applies to.
+  syntax tree or the tokens of its source, or would change the code a lint
+  suppression comment applies to.
 
 ### Write safety
 
@@ -308,12 +308,30 @@ case this catches today: the formatter rewrites an inferred parameter default,
 changes what the function accepts and returns. Such a file is reported as
 `format.unsafe`.
 
-A rewrite is also refused as `format.unsafe` when it would move a lint
-suppression comment. The formatter moves a comment that trails a block header,
-such as `func f():  # gdlint:ignore = function-name`, onto its own line in the
-body ([gdparser#67](https://github.com/cafecito-games/gdparser/issues/67)). The
-syntax tree is unchanged, but the comment would stop applying to the header, so
-the file is left alone; put the comment on the line above the header instead.
+A rewrite is also refused as `format.unsafe` when it would change the code a
+lint suppression comment applies to. A directive reaches lines rather than
+syntax, so each one must stay the same directive, still trailing code or still
+on a line of its own, with the same tokens on its line and on the line below it
+before and after formatting. The syntax tree is unchanged in every case below,
+but lint would report something it did not report before, so the file is left
+alone:
+
+- A comment that trails a block header, such as
+  `func f():  # gdlint:ignore = function-name`, which the formatter moves onto
+  its own line in the body
+  ([gdparser#67](https://github.com/cafecito-games/gdparser/issues/67)). Put
+  the comment on the line above the header instead.
+- A comment that trails a line the formatter wraps or splits, such as a long
+  call or `var a = 1; var b = 2  # gdlint:ignore = ...`, which leaves the
+  comment on the last of the new lines.
+- A comment whose line below is wrapped, joined, or separated from it by blank
+  lines the formatter adds.
+
+The rule is deliberately stricter than lint needs: wrapping the line below a
+`disable` comment is refused although the directive would still cover it.
+Formatting the affected lines by hand makes the file acceptable. A directive is
+recognized the way lint recognizes it, by searching each raw line, so one
+written inside a string literal counts; requoting that literal is allowed.
 
 What `write` does and does not touch:
 
