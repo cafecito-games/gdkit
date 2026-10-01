@@ -152,7 +152,8 @@ default:
 
 `disable` lists rules to turn off, and `--disable` takes the same names as a
 comma-separated list in addition to the file. `exclude` uses the same glob
-syntax as the architecture configuration.
+syntax as the architecture configuration. `gdkit lint check` also skips the
+paths listed in [`.gdkitignore`](#ignoring-files-with-gdkitignore).
 
 `tab-characters` is a setting and not a rule. `max-line-length` expands each
 tab to that many spaces before measuring a line.
@@ -328,6 +329,69 @@ default:
   function and class declarations, and `blank_lines.nested` is the most
   consecutive blank lines kept anywhere else.
 - `exclude` uses the same glob syntax as the architecture configuration.
+  `gdkit format check` and `gdkit format write` also skip the paths listed in
+  [`.gdkitignore`](#ignoring-files-with-gdkitignore).
+
+## Ignoring files with .gdkitignore
+
+A file named `.gdkitignore` at the project root lists paths that `gdkit lint`
+and `gdkit format` skip, so third-party and generated code is named once for
+both tools:
+
+```gitignore
+# Vendored plugins, wherever they sit in the tree
+addons/
+# Generated protocol code
+*.pb.gd
+```
+
+`gdkit arch` does not read it. Hiding a file from the architecture analyzer
+would remove its `class_name` from the index, and every reference to that class
+would then be misreported. Use the architecture configuration's `exclude` to
+change what `gdkit arch` analyzes.
+
+A project without the file ignores nothing. Only the file at the project root is
+read; a `.gdkitignore` in a subdirectory has no effect. A pattern that cannot be
+parsed is a configuration error that names its line, and the command exits `2`.
+
+The syntax is that of `.gitignore`:
+
+- One pattern per line. Blank lines are skipped, and a line that starts with `#`
+  is a comment. There are no trailing comments; write `\#` for a pattern that
+  starts with a hash. Trailing spaces are dropped unless escaped with a
+  backslash. CRLF line endings and a leading UTF-8 byte order mark are accepted.
+- A leading `!` negates the pattern and re-includes what it matches. Write `\!`
+  for a pattern that starts with an exclamation mark.
+- A trailing `/` makes the pattern match directories only.
+- A pattern with no other slash matches a name at any depth: `addons/` matches
+  `addons` and `apps/editor/addons`, and `*.pb.gd` matches in every directory.
+- A pattern with a leading or interior slash is anchored to the project root:
+  `/client/protocol/`, `client/protocol/*.gd`.
+- `*` and `?` do not cross `/`. `[abc]`, `[a-z]`, and `[!a]` are character
+  classes. A leading `**/` matches in any directory, a trailing `/**` matches
+  everything inside, and `/**/` matches zero or more directories. A backslash
+  escapes the next character.
+- Patterns are evaluated in order and the last one that matches decides.
+
+There is one deliberate difference from git: a negated pattern can re-include
+something inside an ignored directory. A path is tested as itself and through
+each of its ancestor directories, and the last pattern that matches the path or
+any ancestor decides.
+
+```gitignore
+addons/
+!addons/our_plugin/
+```
+
+This ignores every `addons` directory at any depth except the root-level
+`addons/our_plugin/`, whose files are processed. The second pattern contains an
+interior slash, so it is anchored to the project root and does not re-include
+`apps/editor/addons/our_plugin/`.
+
+`.gdkitignore` combines with each tool's `exclude` setting: a path is skipped
+when `exclude` covers it or `.gdkitignore` ignores it. A negated pattern does
+not override `exclude`, so re-including a directory under the root `addons/`
+also requires removing `addons/**` from the default `exclude` of that tool.
 
 ## Version information
 

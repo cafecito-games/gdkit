@@ -36,7 +36,7 @@ the default branch.
 
 ## Architecture
 
-`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Eight packages:
+`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Nine packages:
 
 - `architecture/` — the dependency analyzer: layer and feature boundaries, cycles,
   and engine purity (the substance of `gdkit arch`).
@@ -49,8 +49,13 @@ the default branch.
   `format.unsafe` and `source-parse` are its public diagnostic names and appear in
   JSON output.
 - `project/` — discovery and parsing. The only package that reads a project from
-  disk, so every tool agrees on scope and parses once.
+  disk, so every tool agrees on scope and parses once. `Config.HonorIgnoreFile`
+  is how lint and format share the root `.gdkitignore`; `architecture` leaves it
+  off, because hiding a file would drop its `class_name` from the index.
 - `internal/glob/` — the shared glob engine.
+- `internal/ignore/` — the gitignore-style matcher behind `.gdkitignore`. It
+  differs from git in one documented way: a negated pattern can re-include a
+  path inside an ignored directory.
 - `internal/textdiff/` — the unified diff behind `gdkit format check --diff`.
 - `cmd/gdkit/` — flag parsing, output formatting, and exit codes only. It holds no
   analysis logic; it loads a `Config`, builds an `Analyzer`, `Linter`, or `Formatter`,
