@@ -356,3 +356,22 @@ func TestRunHelpMentionsFormatCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestRunFormatRefusesToMoveASuppressionComment(t *testing.T) {
+	const suppressed = "func BadName():  # gdlint:ignore = function-name\n\tpass\n"
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", suppressed)
+	want := "player.gd:1: Error: formatting would move a lint suppression comment off the line it applies to (format.unsafe)\n"
+	for _, command := range []string{"check", "write"} {
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"format", command, root}, &stdout, &stderr); code != 1 {
+			t.Fatalf("%s exit %d: stdout=%s stderr=%s", command, code, stdout.String(), stderr.String())
+		}
+		if !strings.HasPrefix(stdout.String(), want) {
+			t.Errorf("%s output = %q, want it to start with %q", command, stdout.String(), want)
+		}
+		if got := readCLIFile(t, root, "player.gd"); got != suppressed {
+			t.Fatalf("%s rewrote the file: %q", command, got)
+		}
+	}
+}

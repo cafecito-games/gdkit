@@ -33,30 +33,40 @@ func New(config Config) (*Formatter, error) {
 // Format computes the canonical form of every script in the snapshot. It
 // performs no I/O and leaves the snapshot untouched; Apply writes the results.
 // A file that does not parse, or whose formatted output does not keep its
-// syntax tree, gets a diagnostic instead of a result.
+// syntax tree or would move a lint suppression comment, gets a diagnostic
+// instead of a result.
 func (f *Formatter) Format(snapshot *project.Snapshot) Report {
 	report := Report{Results: []Result{}, Diagnostics: []Diagnostic{}}
 	for _, path := range snapshot.Paths {
-		script := snapshot.Scripts[path]
-		if script.ParseError != nil {
-			report.Diagnostics = append(report.Diagnostics, parseDiagnostic(path, script.ParseError))
+		result, diagnostic := f.formatScript(snapshot.Scripts[path])
+		if diagnostic != nil {
+			report.Diagnostics = append(report.Diagnostics, *diagnostic)
 			continue
 		}
-		formatted := []byte(f.emit(script.File, f.options))
-		if bytes.Equal(formatted, script.Source) {
-			report.Results = append(report.Results, Result{Path: path})
-			continue
-		}
-		if err := verify(path, script.Source, formatted, f.options); err != nil {
-			report.Diagnostics = append(report.Diagnostics, Diagnostic{
-				Rule: ruleUnsafe, Message: err.Error(), Path: path, Line: 1, Column: 1,
-			})
-			continue
-		}
-		report.Results = append(report.Results, Result{Path: path, Changed: true, Formatted: formatted})
+		report.Results = append(report.Results, result)
 	}
 	report.sort()
 	return report
+}
+
+// formatScript computes the canonical form of one script, or the diagnostic
+// that explains why it has none.
+func (f *Formatter) formatScript(script *project.Script) (Result, *Diagnostic) {
+	if script.ParseError != nil {
+		diagnostic := parseDiagnostic(script.Path, script.ParseError)
+		return Result{}, &diagnostic
+	}
+	formatted := []byte(f.emit(script.File, f.options))
+	if bytes.Equal(formatted, script.Source) {
+		return Result{Path: script.Path}, nil
+	}
+	if err := verify(script.Path, script.Source, formatted, f.options); err != nil {
+		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: err.Error(), Path: script.Path, Line: 1, Column: 1}
+	}
+	if line, column, moved := movedSuppression(script.Source, formatted); moved {
+		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: suppressionMoved, Path: script.Path, Line: line, Column: column}
+	}
+	return Result{Path: script.Path, Changed: true, Formatted: formatted}, nil
 }
 
 // parseDiagnostic reports a parse failure at the position the parser gave, or
