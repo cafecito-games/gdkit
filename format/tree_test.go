@@ -99,8 +99,8 @@ func TestComparedFieldsSkipOnlySourceMetadata(t *testing.T) {
 }
 
 func TestSameTreeKeepsAnInferredParameterDefaultAcrossSpacing(t *testing.T) {
-	before := parseTree(t, "func f(x:=1, y=2):\n\tpass\n")
-	after := parseTree(t, "func f(x := 1, y = 2):\n\tpass\n")
+	before := parseTree(t, "func f(x:=1, y=2, z: = 3):\n\tpass\n")
+	after := parseTree(t, "func f(x := 1, y = 2, z := 3):\n\tpass\n")
 	if !sameTree(before, after, gdformat.GodotStyle()) {
 		t.Fatal("parameters that differ only in spacing were reported as different")
 	}

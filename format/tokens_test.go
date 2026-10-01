@@ -152,6 +152,10 @@ func TestFormatKeepsAnInferredParameterDefault(t *testing.T) {
 	cases := map[string]struct{ source, want string }{
 		"function": {"func f(a := 1): return a\n", "func f(a := 1):\n\treturn a\n"},
 		"lambda":   {"var f = func(a := 1): return a\nvar b=1\n", "var f = func(a := 1): return a\nvar b = 1\n"},
+		"spellings": {
+			"func f(a: = 1, b:=2, c: int = 3, d = 4):\n\tpass\n",
+			"func f(a := 1, b := 2, c: int = 3, d = 4):\n\tpass\n",
+		},
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {

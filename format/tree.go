@@ -31,13 +31,12 @@ type comparedStructField struct {
 }
 
 var (
-	fileType      = reflect.TypeFor[ast.File]()
-	literalType   = reflect.TypeFor[ast.Literal]()
-	commentType   = reflect.TypeFor[ast.Comment]()
-	binaryType    = reflect.TypeFor[ast.BinaryExpression]()
-	unaryType     = reflect.TypeFor[ast.UnaryExpression]()
-	parameterType = reflect.TypeFor[ast.Parameter]()
-	fieldsByType  sync.Map
+	fileType     = reflect.TypeFor[ast.File]()
+	literalType  = reflect.TypeFor[ast.Literal]()
+	commentType  = reflect.TypeFor[ast.Comment]()
+	binaryType   = reflect.TypeFor[ast.BinaryExpression]()
+	unaryType    = reflect.TypeFor[ast.UnaryExpression]()
+	fieldsByType sync.Map
 )
 
 // comparedFields lists the fields of a syntax tree struct that say what the
@@ -95,9 +94,6 @@ func sameValue(before, after reflect.Value, options gdformat.Options) bool {
 		if before.Type() == literalType {
 			return sameLiteral(before.Addr().Interface().(*ast.Literal), after.Addr().Interface().(*ast.Literal), options)
 		}
-		if before.Type() == parameterType && infersDefault(before) != infersDefault(after) {
-			return false
-		}
 		for _, field := range comparedFields(before.Type()) {
 			if !sameField(field, before.Field(field.index), after.Field(field.index), options) {
 				return false
@@ -125,16 +121,6 @@ func sameValue(before, after reflect.Value, options gdformat.Options) bool {
 	default:
 		return reflect.DeepEqual(before.Interface(), after.Interface())
 	}
-}
-
-// infersDefault reports whether a parameter's default was written with ":=",
-// which gives the parameter the type of the default, rather than with "=",
-// which leaves it untyped. The tree keeps no flag for it: the operator's span
-// is the only record, and the lexer reads ":=" as one two-character token, so
-// the width of the span tells the two apart.
-func infersDefault(parameter reflect.Value) bool {
-	span := parameter.Addr().Interface().(*ast.Parameter).DefaultOperatorSpan
-	return span.End.Offset-span.Start.Offset == len(":=")
 }
 
 func sameField(field comparedStructField, before, after reflect.Value, options gdformat.Options) bool {
