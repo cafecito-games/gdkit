@@ -138,6 +138,7 @@ func TestClassDefinitionsOrderStandaloneAnnotationDiscardsTheAnnotationBeforeIt(
 	assertNoRule(t, "class-definitions-order", "extends Node\nvar z\n@export\n@export_group(\"g\")\nvar a = 1\n")
 	assertNoRule(t, "class-definitions-order", "extends Node\nvar z\n@export\n@warning_ignore_start(\"unused_signal\")\nvar a = 1\n")
 	assertRule(t, "class-definitions-order", "extends Node\nvar z\n@onready\n@export_subgroup(\"g\")\nvar _a = 1\nvar b\n", 6)
+	assertNoRule(t, "class-definitions-order", "extends Node\n@onready\n@export_subgroup(\"g\")\nvar a = 1\nvar _b\n")
 	assertRule(t, "class-definitions-order", "extends Node\nvar z\n@export_group(\"g\")\n@export\nvar a = 1\n", 5)
 }
 
