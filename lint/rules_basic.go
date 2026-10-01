@@ -364,6 +364,9 @@ func countNames(function *ast.FunctionDeclaration) map[string]int {
 		case *ast.ForStatement:
 			counts[node.Variable]++
 		case *ast.LambdaExpression:
+			if node.Name != "" {
+				counts[node.Name]++
+			}
 			for _, parameter := range node.Parameters {
 				counts[parameter.Name]++
 			}

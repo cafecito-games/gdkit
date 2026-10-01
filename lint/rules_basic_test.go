@@ -352,6 +352,14 @@ func node_path(x, z):
 func own_name(own_name):
     pass
 
+func named_lambda_with_the_same_name(x):
+    var callback = func x(): return 1
+    return callback
+
+func named_lambda_called_get(get):
+    var callback = func get(): return 1
+    return callback
+
 func method_call_on_the_name(x):
     return x.call()
 
