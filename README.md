@@ -261,9 +261,11 @@ format check failed (1 to reformat, 1 diagnostics)
 
 `write` prints `reformatted player.gd` for each file it rewrote and ends with a
 line such as `format write: 1 reformatted, 12 unchanged, 1 skipped`. JSON output
-is the same for both commands: a `results` array with the `path` and `changed`
-flag of every file that could be formatted, and a `diagnostics` array. Both are
-sorted by path, so the output is stable between runs.
+has the same shape for both commands: a `results` array with the `path` and
+`changed` flag of every file that could be formatted, and a `diagnostics` array.
+Both are sorted by path, so the output is stable between runs. `write` adds a
+`written` array of the paths it replaced on disk, which lists the files written
+before the failure when a run stops part-way.
 
 `gdkit format check` exits `0` when every file is already formatted, `1` when a
 file would change or has a diagnostic, and `2` for configuration, usage, or I/O
@@ -277,7 +279,8 @@ A file with a diagnostic is left exactly as it is:
 
 - `source-parse` reports a file that does not parse, so it cannot be formatted.
 - `format.unsafe` reports a file whose formatted output would not keep the
-  syntax tree of its source.
+  syntax tree of its source, or would move a lint suppression comment off the
+  line it applies to.
 
 ### Write safety
 
@@ -287,6 +290,31 @@ configuration asks to normalize may differ. A file whose tree would change is
 reported as `format.unsafe` and is never written. Writes are atomic and keep the
 file mode: the new contents are written beside the file and renamed over it, so
 an interrupted run leaves either the old file or the new one.
+
+String values, numbers, and comment text are compared without consulting the
+formatter, so the check does not depend on the code it is checking. One case it
+catches today: the formatter trims trailing whitespace from every line, which
+would change a string literal that spans lines and has a line ending in spaces
+or tabs. Such a file is reported as `format.unsafe`.
+
+A rewrite is also refused as `format.unsafe` when it would move a lint
+suppression comment. The formatter moves a comment that trails a block header,
+such as `func f():  # gdlint:ignore = function-name`, onto its own line in the
+body ([gdparser#67](https://github.com/cafecito-games/gdparser/issues/67)). The
+syntax tree is unchanged, but the comment would stop applying to the header, so
+the file is left alone; put the comment on the line above the header instead.
+
+What `write` does and does not touch:
+
+- CRLF line endings are rewritten as LF, and a UTF-8 byte order mark is dropped.
+  A line break inside a string literal is kept as written.
+- Symlinked files and directories are not discovered, so they are never
+  rewritten.
+- A rewrite replaces the file rather than editing it in place, so other hard
+  links to it keep the old contents.
+- A read-only file in a writable directory is replaced, and stays read-only.
+- A file that changed on disk after it was read is not overwritten. The run
+  stops there and exits `2`, with the files already written left in place.
 
 ### Format configuration
 
