@@ -26,9 +26,10 @@ goreleaser release --snapshot --clean
 ```
 
 CI (`.github/workflows/ci.yml`) runs `go test -race`, `go vet`, `go build`, and a
-GoReleaser snapshot on every push and pull request. Releases are cut by manually
-dispatching the **Release** workflow with `patch`/`minor`/`major`; it computes the
-next version from the latest published GitHub Release and tags the default branch.
+GoReleaser snapshot on every pull request and every push to `main`. Releases are
+cut by manually dispatching the **Release** workflow with `patch`/`minor`/`major`;
+it computes the next version from the latest published GitHub Release and tags
+the default branch.
 
 ## Architecture
 

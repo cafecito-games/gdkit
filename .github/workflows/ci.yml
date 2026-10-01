@@ -1,7 +1,11 @@
 name: CI
 
+# Branch pushes are covered by their pull request, so only the default branch
+# runs on push. Triggering on both would test every pull request commit twice.
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 permissions:
