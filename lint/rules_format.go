@@ -20,7 +20,21 @@ func init() {
 	register(mixedTabsAndSpacesRule{})
 }
 
-// trailingWhitespaceRule reports any line ending in whitespace, as Unicode defines it.
+// isPythonLineBreak reports whether r is a character Python's str.splitlines
+// treats as a line terminator. gdlint splits source that way, so these never
+// appear at the end of a line and are not trailing whitespace for parity.
+func isPythonLineBreak(r rune) bool {
+	switch r {
+	case '\v', '\f', '\x1c', '\x1d', '\x1e', '\u0085', '\u2028', '\u2029':
+		return true
+	}
+	return false
+}
+
+func isTrailingSpace(r rune) bool { return unicode.IsSpace(r) && !isPythonLineBreak(r) }
+
+// trailingWhitespaceRule reports any line ending in whitespace, as Unicode
+// defines it, except the characters gdlint treats as line terminators.
 type trailingWhitespaceRule struct{}
 
 func (trailingWhitespaceRule) Name() string { return "trailing-whitespace" }
@@ -29,7 +43,7 @@ func (trailingWhitespaceRule) Check(context *Context, script *project.Script) []
 	var found []Diagnostic
 	for number := 1; number <= script.LineCount(); number++ {
 		text := script.Line(number)
-		trimmed := strings.TrimRightFunc(text, unicode.IsSpace)
+		trimmed := strings.TrimRightFunc(text, isTrailingSpace)
 		if len(trimmed) == len(text) {
 			continue
 		}

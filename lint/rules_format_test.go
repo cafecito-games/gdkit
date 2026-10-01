@@ -76,3 +76,32 @@ func TestFormatTrailingWhitespaceMatchesUnicodeSpace(t *testing.T) {
 	source := "# a\u00a0\n# b\u2003\nvar d := 4\n"
 	assertRule(t, "trailing-whitespace", source, 1, 2)
 }
+
+func TestTrailingWhitespaceFollowsPythonLineBreakSemantics(t *testing.T) {
+	cases := []struct {
+		name   string
+		suffix string
+		fires  bool
+	}{
+		{"space", " ", true},
+		{"tab", "\t", true},
+		{"no-break space", " ", true},
+		{"em space", " ", true},
+		{"form feed", "\f", false},
+		{"vertical tab", "\v", false},
+		{"file separator", "\x1c", false},
+		{"next line", "\u0085", false},
+		{"line separator", " ", false},
+		{"paragraph separator", " ", false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			source := "# comment" + testCase.suffix + "\n"
+			if testCase.fires {
+				assertRule(t, "trailing-whitespace", source, 1)
+			} else {
+				assertNoRule(t, "trailing-whitespace", source)
+			}
+		})
+	}
+}

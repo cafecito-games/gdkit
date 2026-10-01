@@ -17,7 +17,8 @@ const (
 	SeverityWarning Severity = "warning"
 )
 
-// Diagnostic is one rule violation at one source position.
+// Diagnostic is one rule violation at one source position. Line and Column are
+// 1-based, and Column counts runes rather than bytes.
 type Diagnostic struct {
 	Rule      string   `json:"rule"`
 	Severity  Severity `json:"severity"`

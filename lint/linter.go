@@ -1,7 +1,6 @@
 package lint
 
 import (
-	"fmt"
 	"regexp"
 	"sort"
 
@@ -20,8 +19,7 @@ type Rule interface {
 
 // Context gives a rule the project and its resolved configuration.
 type Context struct {
-	Snapshot *project.Snapshot
-	Config   Config
+	Config Config
 
 	patterns map[string]*regexp.Regexp
 }
@@ -33,6 +31,10 @@ var registry = map[string]Rule{}
 
 // register adds a rule. Called from each rule file's init.
 func register(rule Rule) {
+	switch rule.Name() {
+	case "source-parse", "unknown-ignore":
+		panic("lint: reserved rule name " + rule.Name())
+	}
 	if _, exists := registry[rule.Name()]; exists {
 		panic("lint: duplicate rule " + rule.Name())
 	}
@@ -64,55 +66,58 @@ func RuleNames() []string {
 type Linter struct {
 	context  Context
 	enabled  []Rule
+	disabled map[string]bool
 	severity map[string]Severity
 }
 
 // New validates the configuration and compiles every name pattern, so a bad
 // pattern is a configuration error rather than a silently dead rule.
 func New(config Config) (*Linter, error) {
-	if err := config.Validate(); err != nil {
+	names := make([]string, 0, len(registry))
+	for name := range registry {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	rules := make([]Rule, 0, len(names))
+	for _, name := range names {
+		rules = append(rules, registry[name])
+	}
+	return newLinter(config, rules)
+}
+
+// newLinter builds a linter over an explicit rule set, bypassing the global
+// registry so the driver can be tested in isolation.
+func newLinter(config Config, rules []Rule) (*Linter, error) {
+	patterns, err := config.validate()
+	if err != nil {
 		return nil, err
 	}
 	disabled := make(map[string]bool, len(config.Disable))
 	for _, name := range config.Disable {
 		disabled[name] = true
 	}
-	patterns := make(map[string]*regexp.Regexp)
-	for rule, pattern := range config.namePatterns() {
-		compiled, err := regexp.Compile("^(?:" + pattern + ")$")
-		if err != nil {
-			return nil, fmt.Errorf("pattern for %s: %w", rule, err)
-		}
-		patterns[rule] = compiled
-	}
-	names := make([]string, 0, len(registry))
-	for name := range registry {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	enabled := make([]Rule, 0, len(names))
-	for _, name := range names {
-		if !disabled[name] {
-			enabled = append(enabled, registry[name])
+	enabled := make([]Rule, 0, len(rules))
+	for _, rule := range rules {
+		if !disabled[rule.Name()] {
+			enabled = append(enabled, rule)
 		}
 	}
 	return &Linter{
 		context:  Context{Config: config, patterns: patterns},
 		enabled:  enabled,
+		disabled: disabled,
 		severity: config.Severity,
 	}, nil
 }
 
 // Lint runs every enabled rule over every script in the snapshot.
 func (l *Linter) Lint(snapshot *project.Snapshot) Report {
-	context := l.context
-	context.Snapshot = snapshot
 	report := Report{Diagnostics: make([]Diagnostic, 0)}
 
 	for _, path := range snapshot.Paths {
 		script := snapshot.Scripts[path]
 		if script.ParseError != nil {
-			if !l.disabled("source-parse") {
+			if !l.disabled["source-parse"] {
 				report.Diagnostics = append(report.Diagnostics, Diagnostic{
 					Rule: "source-parse", Severity: l.severityOf("source-parse"),
 					Message: script.ParseError.Error(), Path: path, Line: 1, Column: 1,
@@ -121,7 +126,7 @@ func (l *Linter) Lint(snapshot *project.Snapshot) Report {
 			continue
 		}
 		for _, rule := range l.enabled {
-			for _, diagnostic := range rule.Check(&context, script) {
+			for _, diagnostic := range rule.Check(&l.context, script) {
 				diagnostic.Rule = rule.Name()
 				diagnostic.Path = script.Path
 				diagnostic.Severity = l.severityOf(rule.Name())
@@ -138,13 +143,4 @@ func (l *Linter) severityOf(rule string) Severity {
 		return severity
 	}
 	return SeverityError
-}
-
-func (l *Linter) disabled(rule string) bool {
-	for _, name := range l.context.Config.Disable {
-		if name == rule {
-			return true
-		}
-	}
-	return false
 }

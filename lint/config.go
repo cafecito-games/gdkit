@@ -1,11 +1,13 @@
 package lint
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/cafecito-games/gdkit/internal/glob"
@@ -126,25 +128,46 @@ func (c Config) namePatterns() map[string]string {
 	}
 }
 
-// LoadConfig loads a lint config, or returns defaults when the default path
-// does not exist. Values are unmarshalled onto the defaults, so an omitted
+// compileNamePatterns compiles every name rule's pattern, anchored to the whole
+// identifier. An empty or invalid pattern is a configuration error.
+func (c Config) compileNamePatterns() (map[string]*regexp.Regexp, error) {
+	patterns := make(map[string]*regexp.Regexp)
+	for rule, pattern := range c.namePatterns() {
+		if pattern == "" {
+			return nil, fmt.Errorf("pattern for %s must not be empty", rule)
+		}
+		compiled, err := regexp.Compile("^(?:" + pattern + ")$")
+		if err != nil {
+			return nil, fmt.Errorf("pattern for %s: %w", rule, err)
+		}
+		patterns[rule] = compiled
+	}
+	return patterns, nil
+}
+
+// LoadConfig loads a lint config. When name is empty it uses the default path
+// and returns defaults if that file does not exist; an explicitly named file
+// that is missing is an error. Values are unmarshalled onto the defaults, so an omitted
 // field keeps gdlint's built-in policy.
 func LoadConfig(root, name string) (Config, error) {
-	if name == "" {
+	implicit := name == ""
+	if implicit {
 		name = DefaultConfigPath
 	}
 	if !filepath.IsAbs(name) {
 		name = filepath.Join(root, filepath.FromSlash(name))
 	}
 	data, err := os.ReadFile(name)
-	if errors.Is(err, os.ErrNotExist) && filepath.Clean(name) == filepath.Join(filepath.Clean(root), filepath.FromSlash(DefaultConfigPath)) {
+	if implicit && errors.Is(err, os.ErrNotExist) {
 		return DefaultConfig(), nil
 	}
 	if err != nil {
 		return Config{}, fmt.Errorf("read lint config: %w", err)
 	}
 	config := DefaultConfig()
-	if err := json.Unmarshal(data, &config); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&config); err != nil {
 		return Config{}, fmt.Errorf("parse lint config: %w", err)
 	}
 	if err := config.Validate(); err != nil {
@@ -153,43 +176,66 @@ func LoadConfig(root, name string) (Config, error) {
 	return config, nil
 }
 
-// Validate checks configuration values, compiles every exclude pattern, and
-// rejects names that no rule uses, so a typo fails loudly.
+// Validate checks configuration values, compiles every exclude and name
+// pattern, and rejects names that no rule uses, so a typo fails loudly.
 func (c Config) Validate() error {
+	_, err := c.validate()
+	return err
+}
+
+// validate is Validate, also returning the compiled name patterns so a caller
+// that needs them does not compile twice.
+func (c Config) validate() (map[string]*regexp.Regexp, error) {
 	if c.Version != 1 {
-		return fmt.Errorf("unsupported lint config version %d", c.Version)
+		return nil, fmt.Errorf("unsupported lint config version %d", c.Version)
 	}
 	if len(c.SourceRoots) == 0 {
-		return errors.New("lint config needs at least one source_root")
+		return nil, errors.New("lint config needs at least one source_root")
 	}
 	for _, root := range c.SourceRoots {
 		clean := filepath.Clean(filepath.FromSlash(root))
 		if root == "" || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(filepath.ToSlash(clean), "../") {
-			return fmt.Errorf("source_root %q must be a project-relative path", root)
+			return nil, fmt.Errorf("source_root %q must be a project-relative path", root)
 		}
 	}
 	for _, pattern := range c.Exclude {
 		if _, err := glob.Compile(pattern); err != nil {
-			return fmt.Errorf("exclude pattern %q: %w", pattern, err)
+			return nil, fmt.Errorf("exclude pattern %q: %w", pattern, err)
 		}
 	}
 	for _, name := range c.Disable {
 		if !IsRule(name) {
-			return fmt.Errorf("disable names unknown rule %q", name)
+			return nil, fmt.Errorf("disable names unknown rule %q", name)
 		}
 	}
 	for name, severity := range c.Severity {
 		if !IsRule(name) {
-			return fmt.Errorf("severity names unknown rule %q", name)
+			return nil, fmt.Errorf("severity names unknown rule %q", name)
 		}
 		if severity != SeverityError && severity != SeverityWarning {
-			return fmt.Errorf("severity for %q must be \"error\" or \"warning\"", name)
+			return nil, fmt.Errorf("severity for %q must be \"error\" or \"warning\"", name)
 		}
 	}
 	for _, slot := range c.ClassDefinitionsOrder {
 		if !knownOrderSlots[slot] {
-			return fmt.Errorf("class-definitions-order names unknown slot %q", slot)
+			return nil, fmt.Errorf("class-definitions-order names unknown slot %q", slot)
 		}
 	}
-	return nil
+	limits := []struct {
+		name  string
+		value int
+	}{
+		{"max-returns", c.MaxReturns},
+		{"max-public-methods", c.MaxPublicMethods},
+		{"function-arguments-number", c.FunctionArgumentsNumber},
+		{"max-file-lines", c.MaxFileLines},
+		{"max-line-length", c.MaxLineLength},
+		{"tab-characters", c.TabCharacters},
+	}
+	for _, limit := range limits {
+		if limit.value < 0 {
+			return nil, fmt.Errorf("%s must not be negative, got %d", limit.name, limit.value)
+		}
+	}
+	return c.compileNamePatterns()
 }
