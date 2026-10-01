@@ -33,7 +33,8 @@ func New(config Config) (*Formatter, error) {
 
 // Format computes the canonical form of every script in the snapshot. It
 // performs no I/O and leaves the snapshot untouched; Apply writes the results.
-// A file that does not parse, or whose formatted output does not keep its
+// A file that does not parse, that holds a one-line class body the parser
+// reads differently from Godot, or whose formatted output does not keep its
 // syntax tree and its tokens or would change the code a lint suppression
 // comment applies to, gets a diagnostic instead of a result.
 func (f *Formatter) Format(snapshot *project.Snapshot) Report {
@@ -85,6 +86,9 @@ func (f *Formatter) formatScript(script *project.Script) (Result, *Diagnostic) {
 	if script.ParseError != nil {
 		diagnostic := parseDiagnostic(script)
 		return Result{}, &diagnostic
+	}
+	if line, column, found := ambiguousClass(script.File, script.Source); found {
+		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: ambiguousClassBody, Path: script.Path, Line: line, Column: column}
 	}
 	formatted := []byte(f.emit(script.File, f.options))
 	if bytes.Equal(formatted, script.Source) {

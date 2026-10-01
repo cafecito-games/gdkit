@@ -471,3 +471,22 @@ func TestRunFormatRefusesAnUnsafeRewrite(t *testing.T) {
 		t.Fatalf("written = %v, want none", written)
 	}
 }
+
+func TestRunFormatLeavesOneLineClassWithSeveralMembersAlone(t *testing.T) {
+	const source = "class A: var v = 1; var u = 2\n"
+	for _, command := range []string{"check", "write"} {
+		root := t.TempDir()
+		writeCLIFile(t, root, "inner.gd", source)
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"format", command, root}, &stdout, &stderr); code != 1 {
+			t.Fatalf("%s: exit %d: stdout=%s stderr=%s", command, code, stdout.String(), stderr.String())
+		}
+		output := stdout.String()
+		if !strings.Contains(output, "inner.gd:1: Error: a one-line class body with several members is ambiguous") || !strings.Contains(output, "(format.unsafe)") {
+			t.Fatalf("%s: refusal missing from output: %s", command, output)
+		}
+		if got := readCLIFile(t, root, "inner.gd"); got != source {
+			t.Fatalf("%s rewrote the file: %q", command, got)
+		}
+	}
+}
