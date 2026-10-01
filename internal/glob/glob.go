@@ -12,6 +12,7 @@ import (
 )
 
 // Pattern is a compiled glob together with the names it captures.
+// A Pattern must be created by Compile; a zero Pattern has a nil regexp and will panic.
 type Pattern struct {
 	re       *regexp.Regexp
 	captures []string
@@ -61,21 +62,28 @@ func Compile(pattern string) (Pattern, error) {
 	return compiled, nil
 }
 
-// Match reports whether name matches pattern, returning any captures.
+// Match reports whether name matches the compiled pattern, returning any
+// captures. Use this to match one pattern against many paths.
+func (p Pattern) Match(name string) (bool, map[string]string) {
+	submatch := p.re.FindStringSubmatch(filepath.ToSlash(strings.TrimPrefix(name, "./")))
+	if submatch == nil {
+		return false, nil
+	}
+	captures := make(map[string]string, len(p.captures))
+	for index, capture := range p.captures {
+		captures[capture] = submatch[index+1]
+	}
+	return true, captures
+}
+
+// Match reports whether name matches pattern, returning any captures. An
+// invalid pattern never matches.
 func Match(pattern, name string) (bool, map[string]string) {
 	compiled, err := Compile(pattern)
 	if err != nil {
 		return false, nil
 	}
-	match := compiled.re.FindStringSubmatch(filepath.ToSlash(strings.TrimPrefix(name, "./")))
-	if match == nil {
-		return false, nil
-	}
-	captures := make(map[string]string, len(compiled.captures))
-	for i, capture := range compiled.captures {
-		captures[capture] = match[i+1]
-	}
-	return true, captures
+	return compiled.Match(name)
 }
 
 // MatchAny reports whether name matches at least one pattern.
