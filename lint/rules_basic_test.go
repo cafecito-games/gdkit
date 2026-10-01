@@ -491,3 +491,57 @@ func TestComparisonWithItselfReportsTheLeftOperandStart(t *testing.T) {
 `)
 	assertRule(t, "comparison-with-itself", source, 2, 8, 10)
 }
+
+// gdlint's grammar calls a comparison "comparison" only where it leads its
+// expression. After "and", "or", "not", or "in", and in the condition or
+// alternative of a ternary, the same syntax is an "asless_comparison", which
+// gdlint's check never visits.
+func TestComparisonWithItselfStaysSilentWhereGdlintNamesTheComparisonDifferently(t *testing.T) {
+	source := gd(`func f(a, b, foo):
+    var r1 = b and a == a
+    var r2 = b or a == a
+    var r3 = not a == a
+    var r4 = !a == a
+    var r5 = b if a == a else b
+    var r6 = b if b else a == a
+    var r7 = b in a == a
+    var r8 = b or a == a and b
+    var r9 = b and a == a or b
+    var r10 = (b and a == a)
+    var r11 = foo.call(b or a == a)
+    var r12 = b && a == a
+    var r13 = b || a == a
+    var r14 = b and b and a == a
+    var r15 = b if b else b if b else a == a
+    var r16 = b not in a == a
+    var r17 = not not a == a
+    var r18 = b and a == a as bool
+`)
+	assertNoRule(t, "comparison-with-itself", source)
+}
+
+func TestComparisonWithItselfReportsALeadingOrBracketedComparison(t *testing.T) {
+	source := gd(`func f(a, b, foo):
+    var r1 = a == a or b
+    var r2 = a == a and b or b
+    var r3 = b and (a == a)
+    var r4 = not (a == a)
+    var r5 = a == a if b else b
+    var r6 = b and foo.call(a == a)
+    var r7 = b or [a == a]
+    var r8 = a == a in b
+    var r9 = b if (a == a) else b
+    var r10 = b and (a == a or b)
+    var r11 = (a == a and b) or b
+    var r12 = a == a and b if b else b
+    var r13 = b or ((a == a))
+    var r14 = b and a[a == a]
+    var r15 = b or {a: a == a}
+    var r16 = b and (func(): return a == a)
+    var r17 = a == a as bool
+    var r18 = b and ((a) == (a))
+    var r19 = b and (a == a) == (a == a)
+`)
+	assertRule(t, "comparison-with-itself", source,
+		2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 20)
+}

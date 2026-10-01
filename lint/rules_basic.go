@@ -407,7 +407,10 @@ func bareNodePathNames(path string) []string {
 // same sequence of tokens. gdlint compares syntax subtrees, and its grammar
 // names an arithmetic or bitwise subtree differently on the right of a
 // comparison than on the left, so an unparenthesized operand such as a + 1
-// never matches its twin; parentheses restore the match.
+// never matches its twin; parentheses restore the match. The same grammar
+// names the comparison itself differently wherever it does not lead its
+// expression, and gdlint looks only at the leading name, so b and a == a is
+// never reported while a == a and b is.
 type comparisonWithItselfRule struct{}
 
 func (comparisonWithItselfRule) Name() string { return "comparison-with-itself" }
@@ -430,13 +433,23 @@ func (comparisonWithItselfRule) Check(_ *Context, script *project.Script) []Diag
 		return nil
 	}
 	var found []Diagnostic
+	parents := map[ast.Node]ast.Node{}
+	var ancestors []ast.Node
 	ast.Inspect(script.File, func(node ast.Node) bool {
+		if node == nil {
+			ancestors = ancestors[:len(ancestors)-1]
+			return true
+		}
+		if len(ancestors) > 0 {
+			parents[node] = ancestors[len(ancestors)-1]
+		}
+		ancestors = append(ancestors, node)
 		comparison, ok := node.(*ast.BinaryExpression)
 		if !ok || !comparisonOperators[comparison.Operator] {
 			return true
 		}
 		operator := tokens.firstAtOrAfter(comparison.OperatorSpan.Start.Offset)
-		if !tokens.operandsMatch(comparison, operator) {
+		if !tokens.operandsMatch(comparison, operator) || !tokens.leadsItsExpression(comparison, parents) {
 			return true
 		}
 		leftStart := tokens.operandStart(comparison.Left, operator)
@@ -448,6 +461,79 @@ func (comparisonWithItselfRule) Check(_ *Context, script *project.Script) []Diag
 		return true
 	})
 	return found
+}
+
+// trailingOperandOperators take a right operand that gdlint's grammar builds
+// from differently named rules than the left one.
+var trailingOperandOperators = map[string]bool{
+	"and": true, "&&": true, "or": true, "||": true, "in": true, "not in": true,
+}
+
+// leadsItsExpression reports whether gdlint's grammar names the comparison
+// "comparison", the only name its check looks for. The grammar switches to a
+// parallel family of rules, in which the node is an "asless_comparison", for
+// the right operand of "and", "or", and "in", for the operand of "not", and
+// for the condition and alternative of a ternary. Everything below such a
+// position stays in that family until a bracket starts a fresh expression.
+func (s *significantTokens) leadsItsExpression(comparison ast.Expression, parents map[ast.Node]ast.Node) bool {
+	current := comparison
+	for {
+		if s.isParenthesized(current) {
+			return true
+		}
+		switch parent := parents[current].(type) {
+		case *ast.BinaryExpression:
+			switch {
+			case trailingOperandOperators[parent.Operator]:
+				if parent.Right == current {
+					return false
+				}
+			case parent.Operator != "as":
+				return true
+			}
+			current = parent
+		case *ast.UnaryExpression:
+			return parent.Operator != "not" && parent.Operator != "!"
+		case *ast.TernaryExpression:
+			if parent.Value != current {
+				return false
+			}
+			current = parent
+		default:
+			return true
+		}
+	}
+}
+
+// isParenthesized reports whether the expression sits directly inside its own
+// pair of parentheses. The parser leaves parentheses out of a span, so the
+// span is first widened over the ones that belong to its outermost operands.
+func (s *significantTokens) isParenthesized(expression ast.Expression) bool {
+	span := expression.Span()
+	first := s.firstAtOrAfter(span.Start.Offset)
+	last := s.lastEndingAtOrBefore(span.End.Offset)
+	if first >= len(s.tokens) || last < first {
+		return false
+	}
+	depth, lowest := 0, 0
+	for current := first; current <= last; current++ {
+		switch s.tokens[current].Type {
+		case token.LParen, token.LBracket, token.LBrace:
+			depth++
+		case token.RParen, token.RBracket, token.RBrace:
+			depth--
+			if depth < lowest {
+				lowest = depth
+			}
+		}
+	}
+	for unmatched := -lowest; unmatched > 0 && s.is(first-1, token.LParen); unmatched-- {
+		first--
+	}
+	for unmatched := depth - lowest; unmatched > 0 && s.is(last+1, token.RParen); unmatched-- {
+		last++
+	}
+	return s.is(first-1, token.LParen) && s.closerOf(first-1) == last+1
 }
 
 // operandStart is the index of the first token of the left operand of the
