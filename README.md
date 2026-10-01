@@ -56,11 +56,9 @@ configuration, usage, or I/O failures.
 
 ## Linting
 
-`gdkit lint` is a GDScript linter with the same 29 rules, names, defaults, and
-inline suppression comments as `gdlint` from
-[godot-gdscript-toolkit](https://github.com/Scony/godot-gdscript-toolkit). Like
-the architecture analyzer, it works from the parsed AST and shares its project
-discovery, so both tools agree on which files are in scope.
+`gdkit lint` reports 29 naming, structural, design, and formatting problems in
+GDScript. Like the architecture analyzer, it works from the parsed AST and shares
+its project discovery, so both tools agree on which files are in scope.
 
 ```sh
 gdkit lint check .
@@ -69,7 +67,7 @@ gdkit lint check --disable max-line-length,max-file-lines .
 gdkit lint init .
 ```
 
-Text output uses `gdlint`'s form, so tooling written against it keeps working:
+Text output is one line per diagnostic, naming the rule in parentheses:
 
 ```text
 player.gd:12: Error: Function name "DoThing" is not valid (function-name)
@@ -113,7 +111,7 @@ Format rules:
 - `max-file-lines`, `max-line-length`, `trailing-whitespace`, and
   `mixed-tabs-and-spaces`.
 
-Two further rules belong to gdkit rather than to `gdlint`:
+Two further rules are reported by the driver rather than by a rule:
 
 - `source-parse` reports a file that does not parse. Rules cannot run on it.
 - `unknown-ignore` reports a suppression comment that names a rule that does not
@@ -125,11 +123,10 @@ Two further rules belong to gdkit rather than to `gdlint`:
 existing files are preserved unless `--force` is supplied. Pass an alternate
 file with `--config`, relative to the project root. `gdkit lint check` runs with
 the defaults when no configuration file exists. Unknown keys, unknown rule
-names, and patterns that do not compile are configuration errors. A `gdlintrc`
-file is not read.
+names, and patterns that do not compile are configuration errors.
 
 Values are applied on top of the defaults, so an omitted field keeps its
-default. The defaults equal `gdlint`'s defaults:
+default:
 
 | Field | Default |
 | --- | --- |
@@ -152,7 +149,7 @@ syntax as the architecture configuration.
 tab to that many spaces before measuring a line.
 
 Each name rule has a key of the same name holding a regular expression that must
-match the whole identifier. The defaults are `gdlint`'s, for example:
+match the whole identifier, for example:
 
 ```json
 {
@@ -182,47 +179,42 @@ make the run fail:
 
 ### Suppressing diagnostics
 
-Comments name one or more rules in a comma-separated list. `gdkit` may be
-written in place of `gdlint` in each directive.
+Comments name one or more rules in a comma-separated list. `gdlint` is accepted
+in place of `gdkit` in each directive, so existing suppression comments keep
+working.
 
 ```gdscript
-# gdlint:ignore = function-name, unused-argument
+# gdkit:ignore = function-name, unused-argument
 func DoThing(unused):
 	pass
 
-# gdlint:disable = max-line-length
+# gdkit:disable = max-line-length
 # ... a region where long lines are fine ...
-# gdlint:enable = max-line-length
+# gdkit:enable = max-line-length
 ```
 
-- `# gdlint:ignore = rule-a, rule-b` applies to its own line and the line below.
-- `# gdlint:disable = rule` applies from that line to the end of the file.
-- `# gdlint:enable = rule` ends a disable.
+- `# gdkit:ignore = rule-a, rule-b` applies to its own line and the line below.
+- `# gdkit:disable = rule` applies from that line to the end of the file.
+- `# gdkit:enable = rule` ends a disable.
 
-Two behaviors are reproduced from `gdlint` for parity and are easy to trip on:
+Two behaviors are easy to trip on:
 
 - The earliest `enable` for a rule ends every `disable` of that rule, including
   a `disable` that appears later in the file.
 - The rule list runs to the end of the line, so a trailing comment becomes part
-  of the last rule name. `# gdlint:ignore = function-name # note` suppresses
+  of the last rule name. `# gdkit:ignore = function-name # note` suppresses
   nothing, and `unknown-ignore` reports `function-name # note` as an unknown
   rule.
 
-### Parity with gdlint
+### Severity and exit codes
 
-On a corpus of 2,843 real GDScript files, `gdkit lint` and `gdlint` reported
-identical findings: the same count, with no difference in either direction on
-`(file, line, rule)`. That is one corpus, and the comparison key is file, line,
-and rule rather than message text or column.
+Every rule is an error by default. Setting a rule's severity to `warning` in
+`.gdkit/lint.json` reports it without failing the run, which is useful for a rule
+a project is working toward rather than enforcing.
 
-The differences are deliberate:
-
-- `gdkit` reports a real 1-based rune column, where `gdlint` reports column `0`
-  for several rules. Only the JSON output exposes columns.
-- `unknown-ignore` has no `gdlint` equivalent.
-- The `warning` severity has no `gdlint` equivalent, since `gdlint` has no
-  concept of one.
-- `gdlintrc` is not read. Configuration lives in `.gdkit/lint.json`.
+`gdkit lint check` exits `0` when clean or when the only diagnostics are
+warnings, `1` when any error-severity diagnostic is reported, and `2` for
+configuration, usage, or I/O failures.
 
 ## Version information
 

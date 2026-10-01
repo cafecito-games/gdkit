@@ -13,9 +13,7 @@ go build ./...
 # One test or one package
 go test -race ./architecture -run TestAnalyzerRejectsDirectionCyclesAndEngineAccess
 go test -race ./lint -run TestName
-go test -race ./lint -run TestDifferential              # needs gdlint on PATH
 GDKIT_CORPUS=/path/to/project go test -race ./lint -run TestCorpus
-GDKIT_PARITY_CORPUS=/path/to/project go test -race ./lint -run TestDifferentialCorpus
 
 # Run the CLI from the checkout
 go run ./cmd/gdkit arch check /path/to/godot-project
@@ -50,11 +48,13 @@ next version from the latest published GitHub Release and tags the default branc
 - `internal/buildinfo/` — version metadata, injected by GoReleaser `-ldflags` and
   falling back to the Go toolchain's embedded VCS settings for local builds.
 
-`gdkit lint` is meant to match `gdlint` from godot-gdscript-toolkit. Parity is
-verified by the differential test (`TestDifferential`), and gdlint's own source is
-the reference whenever a rule's behavior is in question. `tab-characters` is a
-configuration value used by `max-line-length`, not a rule; `source-parse` and
-`unknown-ignore` are reported by the driver rather than by a registered rule.
+`tab-characters` is a configuration value used by `max-line-length`, not a rule.
+`source-parse` and `unknown-ignore` are reported by the driver rather than by a
+registered rule. Several rules encode deliberately unusual behavior — token-based
+rather than scope-based name counting in `unused-argument`, token-stream
+comparison in `comparison-with-itself`, annotation re-pairing in
+`class-definitions-order`. The comments in `lint/` record why; do not "simplify"
+them without reading those.
 
 ### Analysis pipeline
 
