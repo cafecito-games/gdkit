@@ -29,14 +29,14 @@ type match struct {
 	oldIndex, newIndex int
 }
 
-// Unified returns the line-based unified diff that turns old into new, with
+// Unified returns the line-based unified diff that turns before into after, with
 // three lines of context around each change. It returns the empty string when
 // the two are identical.
-func Unified(oldName, newName string, old, new []byte) string {
-	if bytes.Equal(old, new) {
+func Unified(oldName, newName string, before, after []byte) string {
+	if bytes.Equal(before, after) {
 		return ""
 	}
-	operations := editScript(splitLines(old), splitLines(new))
+	operations := editScript(splitLines(before), splitLines(after))
 	var output strings.Builder
 	fmt.Fprintf(&output, "--- %s\n+++ %s\n", oldName, newName)
 	writeHunks(&output, operations)
@@ -56,46 +56,46 @@ func splitLines(text []byte) []string {
 	return lines
 }
 
-// editScript returns the kept, removed, and inserted lines that turn old into
-// new, in output order.
-func editScript(old, new []string) []operation {
+// editScript returns the kept, removed, and inserted lines that turn before into
+// after, in output order.
+func editScript(before, after []string) []operation {
 	prefix := 0
-	for prefix < len(old) && prefix < len(new) && old[prefix] == new[prefix] {
+	for prefix < len(before) && prefix < len(after) && before[prefix] == after[prefix] {
 		prefix++
 	}
 	suffix := 0
-	for suffix < len(old)-prefix && suffix < len(new)-prefix && old[len(old)-1-suffix] == new[len(new)-1-suffix] {
+	for suffix < len(before)-prefix && suffix < len(after)-prefix && before[len(before)-1-suffix] == after[len(after)-1-suffix] {
 		suffix++
 	}
-	oldEnd, newEnd := len(old)-suffix, len(new)-suffix
+	oldEnd, newEnd := len(before)-suffix, len(after)-suffix
 
-	operations := make([]operation, 0, len(old)+len(new))
-	for _, line := range old[:prefix] {
+	operations := make([]operation, 0, len(before)+len(after))
+	for _, line := range before[:prefix] {
 		operations = append(operations, operation{keep, line})
 	}
 	oldIndex, newIndex := prefix, prefix
 	flush := func(oldStop, newStop int) {
 		for ; oldIndex < oldStop; oldIndex++ {
-			operations = append(operations, operation{remove, old[oldIndex]})
+			operations = append(operations, operation{remove, before[oldIndex]})
 		}
 		for ; newIndex < newStop; newIndex++ {
-			operations = append(operations, operation{insert, new[newIndex]})
+			operations = append(operations, operation{insert, after[newIndex]})
 		}
 	}
-	for _, pair := range matchLines(old[prefix:oldEnd], new[prefix:newEnd]) {
+	for _, pair := range matchLines(before[prefix:oldEnd], after[prefix:newEnd]) {
 		flush(prefix+pair.oldIndex, prefix+pair.newIndex)
-		operations = append(operations, operation{keep, old[oldIndex]})
+		operations = append(operations, operation{keep, before[oldIndex]})
 		oldIndex++
 		newIndex++
 	}
 	flush(oldEnd, newEnd)
-	for _, line := range old[oldEnd:] {
+	for _, line := range before[oldEnd:] {
 		operations = append(operations, operation{keep, line})
 	}
 	return operations
 }
 
-// matchLines returns a longest common subsequence of old and new as index
+// matchLines returns a longest common subsequence of before and after as index
 // pairs in increasing order.
 //
 // A line that appears on only one side can never be matched, so those lines
@@ -103,17 +103,17 @@ func editScript(old, new []string) []operation {
 // proportional to the square of the number of differences it has to step over,
 // and a reformatted file is mostly lines the other side does not have; without
 // this a file whose every line was reindented would be the worst case.
-func matchLines(old, new []string) []match {
-	inOld := make(map[string]bool, len(old))
-	for _, line := range old {
+func matchLines(before, after []string) []match {
+	inOld := make(map[string]bool, len(before))
+	for _, line := range before {
 		inOld[line] = true
 	}
-	inNew := make(map[string]bool, len(new))
-	for _, line := range new {
+	inNew := make(map[string]bool, len(after))
+	for _, line := range after {
 		inNew[line] = true
 	}
-	oldLines, oldIndexes := shared(old, inNew)
-	newLines, newIndexes := shared(new, inOld)
+	oldLines, oldIndexes := shared(before, inNew)
+	newLines, newIndexes := shared(after, inOld)
 	matches := shortestEdit(oldLines, newLines)
 	for index, pair := range matches {
 		matches[index] = match{oldIndexes[pair.oldIndex], newIndexes[pair.newIndex]}
@@ -137,11 +137,11 @@ func shared(lines []string, other map[string]bool) ([]string, []int) {
 // shortestEdit is Myers' greedy algorithm: it advances the furthest-reaching
 // path on every diagonal one edit at a time, then walks the recorded frontiers
 // backwards to recover the matched lines.
-func shortestEdit(old, new []string) []match {
-	if len(old) == 0 || len(new) == 0 {
+func shortestEdit(before, after []string) []match {
+	if len(before) == 0 || len(after) == 0 {
 		return nil
 	}
-	limit := len(old) + len(new)
+	limit := len(before) + len(after)
 	// frontier[limit+k] is the furthest old index reached on diagonal k, where
 	// k is the old index minus the new index.
 	frontier := make([]int32, 2*limit+2)
@@ -160,19 +160,19 @@ search:
 				oldIndex = int(frontier[limit+diagonal-1]) + 1
 			}
 			newIndex := oldIndex - diagonal
-			for oldIndex < len(old) && newIndex < len(new) && old[oldIndex] == new[newIndex] {
+			for oldIndex < len(before) && newIndex < len(after) && before[oldIndex] == after[newIndex] {
 				oldIndex++
 				newIndex++
 			}
 			frontier[limit+diagonal] = int32(oldIndex)
-			if oldIndex >= len(old) && newIndex >= len(new) {
+			if oldIndex >= len(before) && newIndex >= len(after) {
 				break search
 			}
 		}
 	}
 
 	var matches []match
-	oldIndex, newIndex := len(old), len(new)
+	oldIndex, newIndex := len(before), len(after)
 	for ; distance > 0; distance-- {
 		// previous holds diagonals -distance..distance as they stood before
 		// this round, so diagonal k sits at offset distance+k.

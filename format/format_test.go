@@ -286,3 +286,36 @@ func TestFormatReportsLexerErrorAtItsPosition(t *testing.T) {
 		t.Fatalf("String() = %q", got)
 	}
 }
+
+// These pin how the formatter treats the edges of a file, so a change in
+// gdparser that alters them is noticed.
+func TestFormatAtTheEdgesOfAFile(t *testing.T) {
+	cases := map[string]struct {
+		source  string
+		changed bool
+		want    string
+	}{
+		"windows line endings":           {"var a=1\r\nvar b = 2\r\n", true, "var a = 1\nvar b = 2\n"},
+		"formatted windows line endings": {"var a = 1\r\n# note\r\n", true, "var a = 1\n# note\n"},
+		"windows line ending in string":  {"var a = \"\"\"x\r\ny\"\"\"\r\n", true, "var a = \"\"\"x\r\ny\"\"\"\n"},
+		"byte order mark":                {"\xef\xbb\xbfvar a=1\n", true, "var a = 1\n"},
+		"formatted byte order mark":      {"\xef\xbb\xbfvar a = 1\n", true, "var a = 1\n"},
+		"empty file":                     {"", false, ""},
+		"blank file":                     {"\n\n  \n", true, ""},
+		"no final newline":               {"var a = 1", true, "var a = 1\n"},
+		"comment without final newline":  {"#c", true, "# c\n"},
+		"extra final newlines":           {"var a = 1\n\n\n", true, "var a = 1\n"},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			report, _ := formatProject(t, DefaultConfig(), map[string]string{"a.gd": testCase.source})
+			if report.HasDiagnostics() || len(report.Results) != 1 {
+				t.Fatalf("report = %+v, want one result", report)
+			}
+			result := report.Results[0]
+			if result.Changed != testCase.changed || string(result.Formatted) != testCase.want {
+				t.Fatalf("changed = %v, formatted = %q; want %v, %q", result.Changed, result.Formatted, testCase.changed, testCase.want)
+			}
+		})
+	}
+}

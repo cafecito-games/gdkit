@@ -123,7 +123,7 @@ func runFormatWrite(args []string, stdout, stderr io.Writer) int {
 	}
 	written, applyError := format.Apply(snapshot, report)
 	if *outputFormat == "json" {
-		if err := writeFormatReport(stdout, report); err != nil {
+		if err := writeFormatReport(stdout, writeReport{Report: report, Written: written}); err != nil {
 			fmt.Fprintln(stderr, "gdkit: write report:", err)
 			return 2
 		}
@@ -213,13 +213,18 @@ func formatProject(root, configName string) (*project.Snapshot, format.Report, e
 	return snapshot, formatter.Format(snapshot), nil
 }
 
-func writeFormatReport(stdout io.Writer, report format.Report) error {
-	if report.Results == nil {
-		report.Results = []format.Result{}
-	}
-	if report.Diagnostics == nil {
-		report.Diagnostics = []format.Diagnostic{}
-	}
+// writeReport is the JSON output of format write: the report, plus the paths
+// the run actually replaced on disk.
+type writeReport struct {
+	format.Report
+	// Written is project-relative and in path order. It lists the files
+	// written before a failure when the run stopped part-way.
+	Written []string `json:"written"`
+}
+
+// writeFormatReport prints report, a format.Report or a wrapper around one, as
+// indented JSON.
+func writeFormatReport(stdout io.Writer, report any) error {
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(report)

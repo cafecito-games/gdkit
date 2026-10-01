@@ -375,3 +375,118 @@ func TestRunFormatRefusesToMoveASuppressionComment(t *testing.T) {
 		}
 	}
 }
+
+// decodeWritten returns the "written" member of a JSON report, and whether the
+// report has one at all.
+func decodeWritten(t *testing.T, output []byte) ([]string, bool) {
+	t.Helper()
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(output, &members); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, output)
+	}
+	for _, name := range []string{"results", "diagnostics"} {
+		if _, ok := members[name]; !ok {
+			t.Fatalf("JSON has no %q member: %s", name, output)
+		}
+	}
+	raw, ok := members["written"]
+	if !ok {
+		return nil, false
+	}
+	var written []string
+	if err := json.Unmarshal(raw, &written); err != nil || written == nil {
+		t.Fatalf("written is not an array: %s", raw)
+	}
+	return written, true
+}
+
+func TestRunFormatWriteJSONListsWrittenPaths(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "clean.gd", formattedScript)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"format", "write", "--format", "json", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if written, ok := decodeWritten(t, stdout.Bytes()); !ok || len(written) != 0 {
+		t.Fatalf("written = %v (present %v), want an empty array: %s", written, ok, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "  \"written\": []") {
+		t.Fatalf("written should be an empty array: %s", stdout.String())
+	}
+
+	writeCLIFile(t, root, "broken.gd", unparseableScript)
+	writeCLIFile(t, root, "b/player.gd", unformattedScript)
+	writeCLIFile(t, root, "a/player.gd", unformattedScript)
+	stdout.Reset()
+	if code := run([]string{"format", "check", "--format", "json", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("check exit %d: %s", code, stderr.String())
+	}
+	if _, ok := decodeWritten(t, stdout.Bytes()); ok {
+		t.Fatalf("check reported written files: %s", stdout.String())
+	}
+	stdout.Reset()
+	if code := run([]string{"format", "write", "--format", "json", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("write exit %d: %s", code, stderr.String())
+	}
+	written, _ := decodeWritten(t, stdout.Bytes())
+	if strings.Join(written, ",") != "a/player.gd,b/player.gd" {
+		t.Fatalf("written = %v: %s", written, stdout.String())
+	}
+}
+
+func TestRunFormatWriteJSONListsWrittenPathsAfterAFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a read-only directory does not stop the superuser")
+	}
+	root := t.TempDir()
+	writeCLIFile(t, root, "a.gd", unformattedScript)
+	writeCLIFile(t, root, "locked/b.gd", unformattedScript)
+	writeCLIFile(t, root, "z.gd", unformattedScript)
+	locked := filepath.Join(root, "locked")
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"format", "write", "--format", "json", root}, &stdout, &stderr); code != 2 {
+		t.Fatalf("exit %d, want 2: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if written, _ := decodeWritten(t, stdout.Bytes()); strings.Join(written, ",") != "a.gd" {
+		t.Fatalf("written = %v, want only a.gd: %s", written, stdout.String())
+	}
+	if !strings.HasPrefix(stderr.String(), "gdkit: write locked/b.gd: ") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunFormatRefusesAnUnsafeRewrite(t *testing.T) {
+	// The formatter trims the spaces that end the first line of the string,
+	// which changes the string's value.
+	const unsafe = "var a=\"\"\"one  \ntwo\"\"\"\n"
+	root := t.TempDir()
+	writeCLIFile(t, root, "text.gd", unsafe)
+	writeCLIFile(t, root, "player.gd", unformattedScript)
+	want := "text.gd:1: Error: formatting changed the syntax tree (format.unsafe)\n"
+	for _, command := range []string{"check", "write"} {
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"format", command, root}, &stdout, &stderr); code != 1 {
+			t.Fatalf("%s exit %d: stdout=%s stderr=%s", command, code, stdout.String(), stderr.String())
+		}
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("%s output = %q, want it to contain %q", command, stdout.String(), want)
+		}
+		if got := readCLIFile(t, root, "text.gd"); got != unsafe {
+			t.Fatalf("%s rewrote the refused file: %q", command, got)
+		}
+	}
+	if got := readCLIFile(t, root, "player.gd"); got == unformattedScript {
+		t.Fatal("write did not rewrite the safe file")
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"format", "write", "--format", "json", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("json write exit %d: %s", code, stderr.String())
+	}
+	if written, _ := decodeWritten(t, stdout.Bytes()); len(written) != 0 {
+		t.Fatalf("written = %v, want none", written)
+	}
+}
