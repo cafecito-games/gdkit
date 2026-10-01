@@ -6,5 +6,8 @@ func trailing():
 
 
 func mixed():
-	 var x = 1
-	 print(x)
+	var x = [
+	 1,
+	 2,
+	]
+	print(x)

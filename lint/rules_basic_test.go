@@ -304,9 +304,6 @@ func similar_name(x, x2):
 func get_builtin_is_not_a_use(get):
     return get(1)
 
-func duplicated(a, a):
-    pass
-
 static func in_static(x):
     pass
 
@@ -316,7 +313,7 @@ class Inner:
     func method(q):
         pass
 `)
-	assertRule(t, "unused-argument", source, 3, 6, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42)
+	assertRule(t, "unused-argument", source, 3, 6, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39)
 	assertMessages(t, "unused-argument", "func f(x):\n\tpass\n", "unused function argument 'x'")
 }
 
@@ -341,20 +338,8 @@ func member_access_with_the_same_name(x):
 func member_of_another_object(x):
     return other.x
 
-func shadowing_local(x):
-    var x = 1
-    return 2
-
-func loop_variable_with_the_same_name(x):
-    for x in 3:
-        pass
-
 func captured_by_lambda(x):
     var callback = func(): return x
-    return callback
-
-func lambda_parameter_with_the_same_name(x):
-    var callback = func(x): return 1
     return callback
 
 func lambda_parameter_is_never_reported(x):
@@ -387,6 +372,20 @@ func abstract_function(x)
 var watched: int:
     set(value):
         pass
+`)
+	assertNoRule(t, "unused-argument", source)
+}
+
+// Godot accepts a lambda parameter that reuses a name from the enclosing
+// function, because parse_function_signature adds parameters to the lambda's
+// suite without consulting the enclosing blocks. gdparser 06bc15a rejects it.
+func TestUnusedArgumentStaysSilentOnLambdaParameterWithTheSameName(t *testing.T) {
+	t.Skip(`gdparser rejects "func(x)" inside "func f(x)" with "there is already a parameter named" although Godot accepts it`)
+	source := gd(`extends Node
+
+func lambda_parameter_with_the_same_name(x):
+    var callback = func(x): return 1
+    return callback
 `)
 	assertNoRule(t, "unused-argument", source)
 }

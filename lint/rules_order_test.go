@@ -98,8 +98,8 @@ func TestClassDefinitionsOrderCombinedClassNameExtendsIsExtends(t *testing.T) {
 }
 
 func TestClassDefinitionsOrderToolAnnotationIsASlot(t *testing.T) {
-	source := "extends Node\nstatic func f():\n\tpass\n@abstract\nfunc g()\nclass I:\n\tpass\n@tool\nvar t\n"
-	assertRule(t, "class-definitions-order", source, 8, 9)
+	source := "\"\"\"Docs.\"\"\"\n@tool\nextends Node\nstatic func f():\n\tpass\n@abstract\nfunc g()\nclass I:\n\tpass\nvar t\n"
+	assertRule(t, "class-definitions-order", source, 2, 3, 10)
 }
 
 func TestClassDefinitionsOrderAnnotationPairing(t *testing.T) {
@@ -118,7 +118,7 @@ var e = 1
 @warning_ignore("unused_variable") @export var f = 1
 @warning_ignore("unused_variable")
 @export var g = 1
-@icon("x")
+@export_category("x")
 var h
 `
 	assertRule(t, "class-definitions-order", source, 4, 5, 7, 12, 13, 15, 17)

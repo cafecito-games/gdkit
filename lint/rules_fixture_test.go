@@ -84,8 +84,8 @@ var fixtureExpectations = map[string][]fixtureFinding{
 		{4, "trailing-whitespace"},
 		{5, "trailing-whitespace"},
 		// Fires per offending line, not once per file.
-		{9, "mixed-tabs-and-spaces"},
 		{10, "mixed-tabs-and-spaces"},
+		{11, "mixed-tabs-and-spaces"},
 	},
 }
 

@@ -16,7 +16,7 @@ func init() {
 // all always return, or a "match" with a wildcard case whose cases all always
 // return. Only direct statements are examined, so a return buried in a loop
 // does not count.
-func alwaysReturns(source []byte, statements []ast.Statement) bool {
+func alwaysReturns(statements []ast.Statement) bool {
 	for _, statement := range statements {
 		if _, ok := statement.(*ast.ReturnStatement); ok {
 			return true
@@ -25,11 +25,11 @@ func alwaysReturns(source []byte, statements []ast.Statement) bool {
 	for _, statement := range statements {
 		switch statement := statement.(type) {
 		case *ast.IfStatement:
-			if ifAlwaysReturns(source, statement) {
+			if ifAlwaysReturns(statement) {
 				return true
 			}
 		case *ast.MatchStatement:
-			if matchAlwaysReturns(source, statement) {
+			if matchAlwaysReturns(statement) {
 				return true
 			}
 		}
@@ -37,11 +37,11 @@ func alwaysReturns(source []byte, statements []ast.Statement) bool {
 	return false
 }
 
-func ifAlwaysReturns(source []byte, statement *ast.IfStatement) bool {
-	if !hasElse(statement) || !branchesAlwaysReturn(source, statement) {
+func ifAlwaysReturns(statement *ast.IfStatement) bool {
+	if !hasElse(statement) || !branchesAlwaysReturn(statement) {
 		return false
 	}
-	return alwaysReturns(source, statement.Else)
+	return alwaysReturns(statement.Else)
 }
 
 // hasElse reports whether the statement has an "else" branch. An empty body
@@ -50,22 +50,22 @@ func hasElse(statement *ast.IfStatement) bool {
 	return statement.ElseKeywordSpan.End.Offset > statement.ElseKeywordSpan.Start.Offset || len(statement.Else) > 0
 }
 
-func branchesAlwaysReturn(source []byte, statement *ast.IfStatement) bool {
+func branchesAlwaysReturn(statement *ast.IfStatement) bool {
 	for _, branch := range statement.Branches {
-		if !alwaysReturns(source, branch.Body) {
+		if !alwaysReturns(branch.Body) {
 			return false
 		}
 	}
 	return true
 }
 
-func matchAlwaysReturns(source []byte, statement *ast.MatchStatement) bool {
+func matchAlwaysReturns(statement *ast.MatchStatement) bool {
 	wildcard := false
 	for _, matchCase := range statement.Cases {
 		if len(matchCase.Patterns) != 1 {
 			continue
 		}
-		if identifier, ok := matchCase.Patterns[0].(*ast.Identifier); ok && identifier.Name == "_" && !parenthesized(source, identifier) {
+		if _, ok := matchCase.Patterns[0].(*ast.WildcardPattern); ok {
 			wildcard = true
 		}
 	}
@@ -73,27 +73,11 @@ func matchAlwaysReturns(source []byte, statement *ast.MatchStatement) bool {
 		return false
 	}
 	for _, matchCase := range statement.Cases {
-		if !alwaysReturns(source, matchCase.Body) {
+		if !alwaysReturns(matchCase.Body) {
 			return false
 		}
 	}
 	return true
-}
-
-// parenthesized reports whether an opening parenthesis directly precedes the
-// identifier. The syntax tree drops parentheses, but gdlint's grammar does not
-// treat "(_)" as a wildcard pattern.
-func parenthesized(source []byte, identifier *ast.Identifier) bool {
-	for offset := identifier.Span().Start.Offset - 1; offset >= 0; offset-- {
-		switch source[offset] {
-		case ' ', '\t', '\r', '\n':
-			continue
-		case '(':
-			return true
-		}
-		return false
-	}
-	return false
 }
 
 // blockBodies calls visit with the statements of every block in the script,
@@ -156,7 +140,7 @@ func (noElseReturnRule) Check(_ *Context, script *project.Script) []Diagnostic {
 		var enclosing map[string]bool
 		for _, statement := range statements {
 			ifStatement, ok := statement.(*ast.IfStatement)
-			if !ok || !hasElse(ifStatement) || !branchesAlwaysReturn(script.Source, ifStatement) {
+			if !ok || !hasElse(ifStatement) || !branchesAlwaysReturn(ifStatement) {
 				continue
 			}
 			if enclosing == nil {
@@ -197,7 +181,7 @@ func (noElifReturnRule) Check(_ *Context, script *project.Script) []Diagnostic {
 			return true
 		}
 		for index := 0; index+1 < len(ifStatement.Branches); index++ {
-			if !alwaysReturns(script.Source, ifStatement.Branches[index].Body) {
+			if !alwaysReturns(ifStatement.Branches[index].Body) {
 				break
 			}
 			found = append(found, spanDiagnostic(script, `Unnecessary "elif" after "return"`, ifStatement.Branches[index+1].KeywordSpan))
