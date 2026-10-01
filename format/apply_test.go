@@ -165,3 +165,33 @@ func TestApplyFailsWhenTargetIsMissing(t *testing.T) {
 	}
 	assertNoTemporaryFiles(t, snapshot.Root)
 }
+
+func TestApplyRefusesToOverwriteAFileChangedSinceItWasRead(t *testing.T) {
+	const edited = "extends Node\nvar edited_meanwhile=2\n"
+	report, snapshot := formatProject(t, DefaultConfig(), map[string]string{
+		"a.gd": unformatted,
+		"b.gd": unformatted,
+		"c.gd": unformatted,
+	})
+	if err := os.WriteFile(filepath.Join(snapshot.Root, "b.gd"), []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	written, err := Apply(snapshot, report)
+	if err == nil || err.Error() != "write b.gd: file changed on disk since it was read" {
+		t.Fatalf("error = %v, want a refusal naming b.gd", err)
+	}
+	if !reflect.DeepEqual(written, []string{"a.gd"}) {
+		t.Fatalf("written = %v, want only a.gd", written)
+	}
+	for name, want := range map[string]string{"b.gd": edited, "c.gd": unformatted} {
+		got, readErr := os.ReadFile(filepath.Join(snapshot.Root, name))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if string(got) != want {
+			t.Fatalf("%s holds %q, want %q", name, got, want)
+		}
+	}
+	assertNoTemporaryFiles(t, snapshot.Root)
+}
