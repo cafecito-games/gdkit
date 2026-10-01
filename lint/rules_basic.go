@@ -398,13 +398,14 @@ func bareNodePathNames(path string) []string {
 }
 
 // comparisonWithItselfRule reports a comparison whose two operands are the
-// same sequence of tokens. gdlint compares syntax subtrees, and its grammar
-// names an arithmetic or bitwise subtree differently on the right of a
-// comparison than on the left, so an unparenthesized operand such as a + 1
-// never matches its twin; parentheses restore the match. The same grammar
-// names the comparison itself differently wherever it does not lead its
-// expression, and gdlint looks only at the leading name, so b and a == a is
-// never reported while a == a and b is.
+// same sequence of tokens. Tokens stand in for gdlint's syntax subtrees, which
+// keep the parentheses that the parser's tree drops, so (a) == a is not a
+// match. gdlint's grammar also names an arithmetic or bitwise subtree
+// differently on the right of a comparison than on the left, so an
+// unparenthesized operand such as a + 1 never matches its twin; parentheses
+// restore the match. The same grammar names the comparison itself differently
+// wherever it does not lead its expression, and gdlint looks only at the
+// leading name, so b and a == a is never reported while a == a and b is.
 type comparisonWithItselfRule struct{}
 
 func (comparisonWithItselfRule) Name() string { return "comparison-with-itself" }
