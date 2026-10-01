@@ -206,7 +206,7 @@ func formatProject(root, configName string) (*project.Snapshot, format.Report, e
 	if err != nil {
 		return nil, format.Report{}, err
 	}
-	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude})
+	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude, HonorIgnoreFile: true})
 	if err != nil {
 		return nil, format.Report{}, err
 	}

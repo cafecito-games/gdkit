@@ -296,7 +296,7 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "gdkit:", err)
 		return 2
 	}
-	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude})
+	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude, HonorIgnoreFile: true})
 	if err != nil {
 		fmt.Fprintln(stderr, "gdkit:", err)
 		return 2
