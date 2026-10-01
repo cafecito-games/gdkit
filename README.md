@@ -12,6 +12,14 @@ string contents cannot accidentally create class dependencies.
 
 ## Install
 
+Homebrew is the supported way to get a prebuilt binary on macOS and Linux:
+
+```sh
+brew install cafecito-games/tap/gdkit
+```
+
+Or build from source with the Go toolchain:
+
 ```sh
 go install github.com/cafecito-games/gdkit/cmd/gdkit@latest
 ```
@@ -376,6 +384,8 @@ failed publishing attempt can be retried with the same increment as long as its
 tag still points to the current default-branch commit.
 
 The release contains macOS, Linux, and Windows archives for AMD64 and ARM64,
-plus a SHA-256 checksum manifest. Release versions omit the leading `v`, so tag
+plus a SHA-256 checksum manifest. GoReleaser also updates the `gdkit` cask in
+[cafecito-games/homebrew-tap](https://github.com/cafecito-games/homebrew-tap),
+using the `HOMEBREW_TAP_TOKEN` secret to push to that repository. Release versions omit the leading `v`, so tag
 `v0.1.0` is reported by the binary as `0.1.0`. Directly pushed `v*` tags remain
 supported for automation and advanced use.
