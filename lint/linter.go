@@ -41,10 +41,11 @@ func register(rule Rule) {
 	registry[rule.Name()] = rule
 }
 
-// IsRule reports whether name is a known rule. "source-parse" is reported by
-// the driver rather than by a registered rule, but is nameable in config.
+// IsRule reports whether name is a known rule. "source-parse" and
+// "unknown-ignore" are reported by the driver rather than by a registered rule,
+// but are nameable in config and in suppression comments.
 func IsRule(name string) bool {
-	if name == "source-parse" {
+	if name == "source-parse" || name == "unknown-ignore" {
 		return true
 	}
 	_, ok := registry[name]
@@ -53,8 +54,8 @@ func IsRule(name string) bool {
 
 // RuleNames lists every rule, sorted.
 func RuleNames() []string {
-	names := make([]string, 0, len(registry)+1)
-	names = append(names, "source-parse")
+	names := make([]string, 0, len(registry)+2)
+	names = append(names, "source-parse", "unknown-ignore")
 	for name := range registry {
 		names = append(names, name)
 	}
@@ -125,13 +126,27 @@ func (l *Linter) Lint(snapshot *project.Snapshot) Report {
 			}
 			continue
 		}
+		var found []Diagnostic
 		for _, rule := range l.enabled {
 			for _, diagnostic := range rule.Check(&l.context, script) {
 				diagnostic.Rule = rule.Name()
-				diagnostic.Path = script.Path
-				diagnostic.Severity = l.severityOf(rule.Name())
-				report.Diagnostics = append(report.Diagnostics, diagnostic)
+				found = append(found, diagnostic)
 			}
+		}
+		suppressions := parseSuppressions(script)
+		if !l.disabled["unknown-ignore"] {
+			for _, diagnostic := range suppressions.unknownNames() {
+				diagnostic.Rule = "unknown-ignore"
+				found = append(found, diagnostic)
+			}
+		}
+		for _, diagnostic := range found {
+			if suppressions.silences(diagnostic.Rule, diagnostic.Line) {
+				continue
+			}
+			diagnostic.Path = script.Path
+			diagnostic.Severity = l.severityOf(diagnostic.Rule)
+			report.Diagnostics = append(report.Diagnostics, diagnostic)
 		}
 	}
 	report.sort()
