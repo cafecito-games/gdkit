@@ -131,6 +131,16 @@ var h
 	}
 }
 
+// gdparser attaches an annotation to its declaration across a standalone
+// annotation and lists the standalone one first. gdlint reads them in source
+// order, where the standalone annotation discards the one written before it.
+func TestClassDefinitionsOrderStandaloneAnnotationDiscardsTheAnnotationBeforeIt(t *testing.T) {
+	assertNoRule(t, "class-definitions-order", "extends Node\nvar z\n@export\n@export_group(\"g\")\nvar a = 1\n")
+	assertNoRule(t, "class-definitions-order", "extends Node\nvar z\n@export\n@warning_ignore_start(\"unused_signal\")\nvar a = 1\n")
+	assertRule(t, "class-definitions-order", "extends Node\nvar z\n@onready\n@export_subgroup(\"g\")\nvar _a = 1\nvar b\n", 6)
+	assertRule(t, "class-definitions-order", "extends Node\nvar z\n@export_group(\"g\")\n@export\nvar a = 1\n", 5)
+}
+
 func TestClassDefinitionsOrderWarningIgnoreAttachesOnlyForDeclarationWarnings(t *testing.T) {
 	source := `extends Node
 var z
