@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/cafecito-games/gdparser/ast"
+	gdformat "github.com/cafecito-games/gdparser/format"
 )
 
 // loadProject writes files into a temp project and loads it with config's
@@ -60,4 +62,29 @@ func formatSource(t *testing.T, config Config, source string) string {
 		return source
 	}
 	return string(report.Results[0].Formatted)
+}
+
+// formatForged formats one file named a.gd with a formatter that emits forged
+// whatever the source says, standing in for a formatter that damages its input.
+func formatForged(t *testing.T, source, forged string) Report {
+	t.Helper()
+	snapshot := loadProject(t, DefaultConfig(), map[string]string{"a.gd": source})
+	formatter, err := New(DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	formatter.emit = func(*ast.File, gdformat.Options) string { return forged }
+	return formatter.Format(snapshot)
+}
+
+// assertRefused fails unless report holds no result and the one diagnostic
+// want.
+func assertRefused(t *testing.T, report Report, want Diagnostic) {
+	t.Helper()
+	if len(report.Results) != 0 {
+		t.Fatalf("results = %+v (%q), want none", report.Results, report.Results[0].Formatted)
+	}
+	if len(report.Diagnostics) != 1 || report.Diagnostics[0] != want {
+		t.Fatalf("diagnostics = %+v, want %+v", report.Diagnostics, want)
+	}
 }

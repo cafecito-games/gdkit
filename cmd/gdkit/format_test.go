@@ -357,25 +357,6 @@ func TestRunHelpMentionsFormatCommands(t *testing.T) {
 	}
 }
 
-func TestRunFormatRefusesToMoveASuppressionComment(t *testing.T) {
-	const suppressed = "func BadName():  # gdlint:ignore = function-name\n\tpass\n"
-	root := t.TempDir()
-	writeCLIFile(t, root, "player.gd", suppressed)
-	want := "player.gd:1: Error: formatting would change the code a lint suppression comment applies to (format.unsafe)\n"
-	for _, command := range []string{"check", "write"} {
-		var stdout, stderr bytes.Buffer
-		if code := run([]string{"format", command, root}, &stdout, &stderr); code != 1 {
-			t.Fatalf("%s exit %d: stdout=%s stderr=%s", command, code, stdout.String(), stderr.String())
-		}
-		if !strings.HasPrefix(stdout.String(), want) {
-			t.Errorf("%s output = %q, want it to start with %q", command, stdout.String(), want)
-		}
-		if got := readCLIFile(t, root, "player.gd"); got != suppressed {
-			t.Fatalf("%s rewrote the file: %q", command, got)
-		}
-	}
-}
-
 // decodeWritten returns the "written" member of a JSON report, and whether the
 // report has one at all.
 func decodeWritten(t *testing.T, output []byte) ([]string, bool) {
@@ -460,13 +441,13 @@ func TestRunFormatWriteJSONListsWrittenPathsAfterAFailure(t *testing.T) {
 }
 
 func TestRunFormatRefusesAnUnsafeRewrite(t *testing.T) {
-	// The formatter trims the spaces that end the first line of the string,
-	// which changes the string's value.
-	const unsafe = "var a=\"\"\"one  \ntwo\"\"\"\n"
+	// Splitting the two statements would leave the second on a line the
+	// directive no longer reaches.
+	const unsafe = "var BadOne = 1; var BadTwo = 2 # gdlint:ignore=class-variable-name\n"
 	root := t.TempDir()
 	writeCLIFile(t, root, "text.gd", unsafe)
 	writeCLIFile(t, root, "player.gd", unformattedScript)
-	want := "text.gd:1: Error: formatting changed the syntax tree (format.unsafe)\n"
+	want := "text.gd:1: Error: formatting would change the code a lint suppression comment applies to (format.unsafe)\n"
 	for _, command := range []string{"check", "write"} {
 		var stdout, stderr bytes.Buffer
 		if code := run([]string{"format", command, root}, &stdout, &stderr); code != 1 {

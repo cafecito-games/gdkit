@@ -395,9 +395,8 @@ var watched: int:
 
 // Godot accepts a lambda parameter that reuses a name from the enclosing
 // function, because parse_function_signature adds parameters to the lambda's
-// suite without consulting the enclosing blocks. gdparser rejects it.
+// suite without consulting the enclosing blocks.
 func TestUnusedArgumentStaysSilentOnLambdaParameterWithTheSameName(t *testing.T) {
-	t.Skip("gdparser rejects a lambda parameter that reuses an enclosing name, although Godot accepts it")
 	source := gd(`extends Node
 
 func lambda_parameter_with_the_same_name(x):

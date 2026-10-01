@@ -43,6 +43,8 @@ func TestSameTreeSeesEveryMeaningfulDifference(t *testing.T) {
 		"statement order":    {"var a = 1\nvar b = 2\n", "var b = 2\nvar a = 1\n"},
 		"annotation":         {"@export var a = 1\n", "@onready var a = 1\n"},
 		"annotation line":    {"@export\nvar a = 1\n", "@export var a = 1\n"},
+		"header comment":     {"func f():  # c\n\tpass\n", "func f():\n\t# c\n\tpass\n"},
+		"branch comment":     {"func f():\n\tif x:  # c\n\t\tpass\n", "func f():\n\tif x:\n\t\t# c\n\t\tpass\n"},
 		"trailing comment":   {"var a = 1  # c\n", "var a = 1\n# c\n"},
 		"collection comment": {"var a = [\n\t1,  # c\n\t2,\n]\n", "var a = [\n\t1,\n\t# c\n\t2,\n]\n"},
 		"dictionary style":   {"var a = {b = 1}\n", "var a = {\"b\": 1}\n"},

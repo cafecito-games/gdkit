@@ -11,9 +11,9 @@ import (
 )
 
 // suppressionMoved is reported when the formatter would change the code a lint
-// suppression comment applies to. The syntax tree cannot show it: a comment
-// trailing a block header and the same comment on the body's first line parse
-// alike, yet only the first silences a diagnostic on the header.
+// suppression comment applies to. The syntax tree cannot show it: a directive
+// reaches the lines around it, and the tree records what a file says, not
+// which line says it.
 const suppressionMoved = "formatting would change the code a lint suppression comment applies to"
 
 // suppressionComment is one lint suppression directive and what decides the

@@ -75,7 +75,8 @@ func TestChangedTokenAcceptsOnlyTheRespellingsTheOptionsAskFor(t *testing.T) {
 
 // tokenFixtures are sources chosen to make the formatter do everything it does
 // to tokens that carry no meaning: add and drop parentheses, commas, and
-// semicolons, join continued lines, move comments, and reorder accessors.
+// semicolons, join continued lines, split one-line bodies, and reorder
+// accessors.
 var tokenFixtures = map[string]string{
 	"redundant parentheses":  "var a = ((b + c)) * (d)\nfunc f():\n\tif (a):\n\t\treturn (a)\n\twhile (a): pass\n",
 	"needed parentheses":     "var a = (b + c) * d\nvar e = -(b + c)\nvar g = (b if c else d) + 1\nvar h = (func(): return 1).call()\n",
@@ -88,10 +89,11 @@ var tokenFixtures = map[string]string{
 	"strings":                "var a = 'x'\nvar b = \"it's\"\nvar c = 'say \"hi\"'\nvar d = 'it\\'s'\nvar e = r'raw\\n'\nvar g = &'name'\nvar h = ^'A/B'\nvar i = '''triple'''\nvar j = \"tab\\t\\u0041\"\n",
 	"numbers":                "var a = .5\nvar b = 5.\nvar c = 0XFF\nvar d = 0B101\nvar e = 1_000\nvar g = 1E5\nvar h = 1.e5\n",
 	"comments":               "#note\n##doc\n#region A\nvar a = 1  #why  \n#endregion\nvar b = [\n\t1, #one\n\t#two\n\t2\n]\n",
-	"moved header comment":   "func f():  # why\n\tif a:  # because\n\t\tpass\n\telse:  # otherwise\n\t\tpass\n",
+	"header comments":        "func f():  # why\n\tif a:  # because\n\t\tpass\n\telse:  # otherwise\n\t\tpass\n",
+	"one-line body comment":  "func f():\n\tif a: pass  # why\n\tfor i in a: continue  #why\n",
 	"operators":              "var a = b && !c || d\nvar e = b and not c or d\nvar g = b != c\nvar h = b not in c\nvar i = b is not C\n",
 	"inferred variable":      "var a := 1\nvar b: = 2\nconst C := 3\nvar d: int = 4\n",
-	"parameters":             "func f(a, b: int, c = 1, d: int = 2, ...rest):\n\tpass\nfunc g( a,b ) -> void: pass\n",
+	"parameters":             "func f(a, b: int, c = 1, d: int = 2, e := 3, g: = 4, ...rest):\n\tpass\nfunc g( a,b ) -> void: pass\n",
 	"accessors":              "var a: int = 1:\n\tset(value):\n\t\ta = value\n\tget:\n\t\treturn a\nvar b: int: get = _get_b, set = _set_b\nvar c: int: set = _set_c, get = _get_c\n",
 	"lambdas":                "var a = func(): return 1\nvar b = func named(x): x += 1; return x\nvar c = f(func():\n\tpass\n\treturn 2\n)\nvar d = [func(): pass, func(): pass]\n",
 	"match":                  "func f(a):\n\tmatch a:\n\t\t1, 2:\n\t\t\tpass\n\t\t[var b, ..]:\n\t\t\tpass\n\t\t{\"k\": var c, ..}:\n\t\t\tpass\n\t\tvar d when d > 1:\n\t\t\tpass\n\t\t_:\n\t\t\tpass\n",
@@ -146,20 +148,30 @@ func TestChangedTokenAcceptsRealFormatterOutput(t *testing.T) {
 	}
 }
 
-func TestFormatRefusesAnInferredParameterDefaultTheFormatterUntypes(t *testing.T) {
-	cases := map[string]string{
-		"function": "func f(a := 1): return a\n",
-		"lambda":   "var f = func(a := 1): return a\nvar b=1\n",
+func TestFormatKeepsAnInferredParameterDefault(t *testing.T) {
+	cases := map[string]struct{ source, want string }{
+		"function": {"func f(a := 1): return a\n", "func f(a := 1):\n\treturn a\n"},
+		"lambda":   {"var f = func(a := 1): return a\nvar b=1\n", "var f = func(a := 1): return a\nvar b = 1\n"},
 	}
-	for name, source := range cases {
+	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			report, _ := formatProject(t, DefaultConfig(), map[string]string{"a.gd": source})
-			if len(report.Results) != 0 {
-				t.Fatalf("results = %+v (%q), want none", report.Results, report.Results[0].Formatted)
+			if got := formatSource(t, DefaultConfig(), testCase.source); got != testCase.want {
+				t.Fatalf("formatted = %q, want %q", got, testCase.want)
 			}
-			if len(report.Diagnostics) != 1 || report.Diagnostics[0].Rule != "format.unsafe" {
-				t.Fatalf("diagnostics = %+v, want one format.unsafe", report.Diagnostics)
-			}
+		})
+	}
+}
+
+func TestFormatRefusesAFormatterThatUntypesAnInferredParameterDefault(t *testing.T) {
+	cases := map[string]struct{ source, forged string }{
+		"function":      {"func f(a := 1): return a\n", "func f(a = 1):\n\treturn a\n"},
+		"lambda":        {"var f = func(a := 1): return a\nvar b=1\n", "var f = func(a = 1): return a\nvar b = 1\n"},
+		"made inferred": {"func f(a = 1): return a\n", "func f(a := 1):\n\treturn a\n"},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			report := formatForged(t, testCase.source, testCase.forged)
+			assertRefused(t, report, Diagnostic{Rule: "format.unsafe", Message: "formatting changed the syntax tree", Path: "a.gd", Line: 1, Column: 1})
 		})
 	}
 }

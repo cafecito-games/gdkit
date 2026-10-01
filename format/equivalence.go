@@ -104,9 +104,10 @@ func normalizedNumber(raw string) string {
 }
 
 // commentKey returns a string that is equal for two comments exactly when
-// options lets the formatter turn one into the other. The formatter emits no
-// line with trailing whitespace, whatever the options, so a comment's own
-// trailing whitespace is not part of what must be kept.
+// options lets the formatter turn one into the other. The formatter ends no
+// line with whitespace, whatever the options, and a comment runs to the end of
+// its line, so a comment's own trailing whitespace is not part of what must be
+// kept.
 func commentKey(text string, options gdformat.Options) string {
 	text = strings.TrimRight(text, " \t")
 	if options.CommentSpacing == gdformat.NormalizeComments {

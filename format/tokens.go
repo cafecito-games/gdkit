@@ -12,9 +12,8 @@ import (
 
 // tokensChanged is reported when the formatted output does not hold the tokens
 // of its source. It backs up the tree comparison, which can only see what the
-// parser chose to record: a token whose choice the tree does not keep, such as
-// the ":=" of a parameter default, changes the meaning without changing the
-// tree.
+// parser chose to record: a token whose choice the tree does not keep changes
+// the meaning without changing the tree.
 const tokensChanged = "formatting changed the token stream"
 
 // significantToken is one token that says something, reduced to a key that is
@@ -33,10 +32,11 @@ type significantToken struct {
 //
 // The comparison is of multisets, not of sequences. The formatter reorders
 // tokens without changing what they say: it writes a property's getter before
-// its setter whatever the source order, and it moves a comment that trails a
-// block header into the body. The tree comparison already holds every token
-// the tree records in its place, so what is left for this check is that no
-// token appears, vanishes, or turns into another, which counting decides.
+// its setter whatever the source order, and it writes the comment that ended
+// a one-line body after the header, ahead of that body. The tree comparison
+// already holds every token the tree records in its place, so what is left
+// for this check is that no token appears, vanishes, or turns into another,
+// which counting decides.
 func changedToken(source, formatted []byte, options gdformat.Options) (line, column int, changed bool) {
 	before, err := significantTokens(source, options)
 	if err != nil {

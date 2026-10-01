@@ -166,9 +166,9 @@ func TestFormatSpellsTrickyLiterals(t *testing.T) {
 	}
 }
 
-// The formatter trims trailing whitespace from every line it emits. That is
-// harmless at the end of a comment and changes the value of a string literal
-// that spans lines.
+// The formatter ends none of its own lines with whitespace, which trims what
+// follows a comment. A line break inside a string literal is not the
+// formatter's, and the whitespace before it is part of the string's value.
 func TestFormatAcceptsACommentThatLosesTrailingWhitespace(t *testing.T) {
 	for name, style := range map[string]string{"normalize": "normalize", "preserve": "preserve"} {
 		t.Run(name, func(t *testing.T) {
@@ -183,21 +183,33 @@ func TestFormatAcceptsACommentThatLosesTrailingWhitespace(t *testing.T) {
 	}
 }
 
-func TestFormatRefusesToTrimWhitespaceInsideAString(t *testing.T) {
-	for name, source := range map[string]string{
-		"triple quoted": "var a = \"\"\"one  \ntwo\"\"\"\n",
-		"single quoted": "var a = 'one\t\ntwo'\n",
-		"blank line":    "var a = \"\"\"one\n  \ntwo\"\"\"\n",
-	} {
+func TestFormatKeepsWhitespaceInsideAString(t *testing.T) {
+	cases := map[string]struct{ source, want string }{
+		"triple quoted":        {"var a = \"\"\"one  \ntwo\"\"\"\n", "var a = \"\"\"one  \ntwo\"\"\"\n"},
+		"triple quoted spaced": {"var a=\"\"\"one  \ntwo\"\"\"\n", "var a = \"\"\"one  \ntwo\"\"\"\n"},
+		"single quoted":        {"var a = 'one\t\ntwo'\n", "var a = \"one\t\ntwo\"\n"},
+		"blank line":           {"var a = \"\"\"one\n  \ntwo\"\"\"\n", "var a = \"\"\"one\n  \ntwo\"\"\"\n"},
+		"windows line ending":  {"var a = \"\"\"x  \r\ny\"\"\"\r\n", "var a = \"\"\"x  \r\ny\"\"\"\n"},
+	}
+	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			report, _ := formatProject(t, DefaultConfig(), map[string]string{"a.gd": source})
-			if len(report.Results) != 0 {
-				t.Fatalf("results = %+v (%q), want none", report.Results, report.Results[0].Formatted)
+			if got := formatSource(t, DefaultConfig(), testCase.source); got != testCase.want {
+				t.Fatalf("formatted = %q, want %q", got, testCase.want)
 			}
-			want := Diagnostic{Rule: "format.unsafe", Message: "formatting changed the syntax tree", Path: "a.gd", Line: 1, Column: 1}
-			if len(report.Diagnostics) != 1 || report.Diagnostics[0] != want {
-				t.Fatalf("diagnostics = %+v, want %+v", report.Diagnostics, want)
-			}
+		})
+	}
+}
+
+func TestFormatRefusesAFormatterThatTrimsWhitespaceInsideAString(t *testing.T) {
+	cases := map[string]struct{ source, forged string }{
+		"triple quoted": {"var a=\"\"\"one  \ntwo\"\"\"\n", "var a = \"\"\"one\ntwo\"\"\"\n"},
+		"single quoted": {"var a = 'one\t\ntwo'\n", "var a = \"one\ntwo\"\n"},
+		"blank line":    {"var a=\"\"\"one\n  \ntwo\"\"\"\n", "var a = \"\"\"one\n\ntwo\"\"\"\n"},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			report := formatForged(t, testCase.source, testCase.forged)
+			assertRefused(t, report, Diagnostic{Rule: "format.unsafe", Message: "formatting changed the syntax tree", Path: "a.gd", Line: 1, Column: 1})
 		})
 	}
 }

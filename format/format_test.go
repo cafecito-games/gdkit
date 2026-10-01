@@ -239,7 +239,7 @@ func TestFormatIsIdenticalAcrossRunsOfALargeProject(t *testing.T) {
 		case 5:
 			files[name] = "var a = 1\n"
 		case 7:
-			files[name] = "func BadName():  # gdlint:ignore = function-name\n\tpass\n"
+			files[name] = "var BadOne = 1; var BadTwo = 2 # gdlint:ignore=class-variable-name\n"
 		default:
 			files[name] = fmt.Sprintf("extends Node\nvar value_%d=%d\nfunc f( x ):\n\treturn x+value_%d  #why\n", index, index, index)
 		}
