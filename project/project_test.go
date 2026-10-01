@@ -94,3 +94,70 @@ func TestLineStartsCoverEveryLine(t *testing.T) {
 		t.Errorf("Lines = %v, want [0 11 22]", lines)
 	}
 }
+
+func loadSingleScript(t *testing.T, source string) *Script {
+	t.Helper()
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"a.gd": source})
+	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := snapshot.Scripts["a.gd"]
+	if script == nil {
+		t.Fatal("a.gd was not discovered")
+	}
+	return script
+}
+
+func TestScriptLineAndLineCount(t *testing.T) {
+	tests := []struct {
+		name      string
+		source    string
+		wantCount int
+		wantLines []string
+	}{
+		{"ordinary", "var a := 1\nvar b := 2\nvar c := 3\n", 3, []string{"var a := 1", "var b := 2", "var c := 3"}},
+		{"no trailing newline", "var a := 1\nvar b := 2", 2, []string{"var a := 1", "var b := 2"}},
+		{"trailing newline adds no line", "var a := 1\n", 1, []string{"var a := 1"}},
+		{"empty file", "", 0, nil},
+		{"only a newline", "\n", 1, []string{""}},
+		{"blank line in the middle", "a\n\nb\n", 3, []string{"a", "", "b"}},
+		{"trailing blank line", "a\n\n", 2, []string{"a", ""}},
+		{"crlf", "var a := 1\r\nvar b := 2\r\n", 2, []string{"var a := 1", "var b := 2"}},
+		{"crlf without trailing newline", "a\r\nb", 2, []string{"a", "b"}},
+		{"trailing whitespace is preserved", "a \t\nb\n", 2, []string{"a \t", "b"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			script := loadSingleScript(t, test.source)
+			if got := script.LineCount(); got != test.wantCount {
+				t.Fatalf("LineCount() = %d, want %d", got, test.wantCount)
+			}
+			if len(script.Lines) != script.LineCount() {
+				t.Errorf("len(Lines) = %d, LineCount() = %d", len(script.Lines), script.LineCount())
+			}
+			if test.wantCount > 0 && script.Lines[0] != 0 {
+				t.Errorf("Lines[0] = %d, want 0", script.Lines[0])
+			}
+			for index, want := range test.wantLines {
+				if got := script.Line(index + 1); got != want {
+					t.Errorf("Line(%d) = %q, want %q", index+1, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestScriptLineOutOfRangeReturnsEmpty(t *testing.T) {
+	script := loadSingleScript(t, "var a := 1\nvar b := 2\nvar c := 3\n")
+	for _, number := range []int{0, -1, 4, 1000} {
+		if got := script.Line(number); got != "" {
+			t.Errorf("Line(%d) = %q, want empty", number, got)
+		}
+	}
+	empty := loadSingleScript(t, "")
+	if got := empty.Line(1); got != "" {
+		t.Errorf("Line(1) on an empty file = %q, want empty", got)
+	}
+}
