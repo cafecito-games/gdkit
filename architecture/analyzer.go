@@ -2,16 +2,13 @@ package architecture
 
 import (
 	"fmt"
-	"io/fs"
-	"os"
 	"path"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/cafecito-games/gdparser"
+	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdparser/ast"
 	"github.com/cafecito-games/gdparser/token"
 )
@@ -61,10 +58,16 @@ func (a *Analyzer) Analyze() (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	paths, uidPaths, err := a.discover()
+	snapshot, err := project.Load(project.Config{
+		Root:        a.Root,
+		SourceRoots: a.Config.SourceRoots,
+		Exclude:     a.Config.Exclude,
+	})
 	if err != nil {
 		return Report{}, err
 	}
+	paths := snapshot.Paths
+	uidPaths := snapshot.UIDs
 	report := Report{
 		Files:       make([]File, 0, len(paths)),
 		Edges:       make([]Edge, 0),
@@ -74,11 +77,7 @@ func (a *Analyzer) Analyze() (Report, error) {
 	classes := make(map[string]string)
 
 	for _, name := range paths {
-		absolute := filepath.Join(a.Root, filepath.FromSlash(name))
-		source, readErr := os.ReadFile(absolute)
-		if readErr != nil {
-			return Report{}, fmt.Errorf("read %s: %w", name, readErr)
-		}
+		script := snapshot.Scripts[name]
 		classification, classified := a.Config.classify(name)
 		indexed := File{Path: name, Classification: classification}
 		if !classified && a.Config.Unclassified == "error" {
@@ -87,15 +86,14 @@ func (a *Analyzer) Analyze() (Report, error) {
 				Message: "GDScript file is not assigned to a layer and feature", Location: Location{Path: name, Line: 1, Column: 1},
 			})
 		}
-		tree, parseErr := gdparser.ParseFile(name, source)
-		if parseErr != nil {
+		if script.ParseError != nil {
 			report.Diagnostics = append(report.Diagnostics, Diagnostic{
-				Rule: "source.parse", Severity: SeverityError, Message: parseErr.Error(), Location: Location{Path: name},
+				Rule: "source.parse", Severity: SeverityError, Message: script.ParseError.Error(), Location: Location{Path: name},
 			})
 			report.Files = append(report.Files, indexed)
 			continue
 		}
-		if className, location := declaredClass(tree); className != "" {
+		if className, location := declaredClass(script.File); className != "" {
 			indexed.ClassName = className
 			if previous, exists := classes[className]; exists {
 				report.Diagnostics = append(report.Diagnostics, Diagnostic{
@@ -107,7 +105,7 @@ func (a *Analyzer) Analyze() (Report, error) {
 				classes[className] = name
 			}
 		}
-		parsed[name] = &parsedFile{file: indexed, tree: tree}
+		parsed[name] = &parsedFile{file: indexed, tree: script.File}
 		report.Files = append(report.Files, indexed)
 	}
 
@@ -132,65 +130,6 @@ func (a *Analyzer) Analyze() (Report, error) {
 	report.Diagnostics = unsuppressed
 	report.sort()
 	return report, nil
-}
-
-func (a *Analyzer) discover() ([]string, map[string]string, error) {
-	seen := make(map[string]struct{})
-	uids := make(map[string]string)
-	for _, sourceRoot := range a.Config.SourceRoots {
-		absolute := filepath.Join(a.Root, filepath.FromSlash(sourceRoot))
-		relativeRoot, relErr := filepath.Rel(a.Root, absolute)
-		if relErr != nil || relativeRoot == ".." || strings.HasPrefix(filepath.ToSlash(relativeRoot), "../") {
-			return nil, nil, fmt.Errorf("source root %q is outside the project root", sourceRoot)
-		}
-		if info, err := os.Stat(absolute); err != nil || !info.IsDir() {
-			if err == nil {
-				err = fmt.Errorf("not a directory")
-			}
-			return nil, nil, fmt.Errorf("source root %q: %w", sourceRoot, err)
-		}
-		err := filepath.WalkDir(absolute, func(name string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			relative, err := filepath.Rel(a.Root, name)
-			if err != nil {
-				return err
-			}
-			relative = filepath.ToSlash(relative)
-			if relative == "." {
-				return nil
-			}
-			if matchesAny(a.Config.Exclude, relative) || entry.IsDir() && matchesAny(a.Config.Exclude, relative+"/") {
-				if entry.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if entry.Type().IsRegular() && strings.HasSuffix(relative, ".gd") {
-				seen[relative] = struct{}{}
-			}
-			if entry.Type().IsRegular() && strings.HasSuffix(relative, ".uid") {
-				data, readErr := os.ReadFile(name)
-				if readErr == nil {
-					uid := strings.TrimSpace(string(data))
-					if strings.HasPrefix(uid, "uid://") {
-						uids[uid] = strings.TrimSuffix(relative, ".uid")
-					}
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("discover GDScript in %q: %w", sourceRoot, err)
-		}
-	}
-	paths := make([]string, 0, len(seen))
-	for name := range seen {
-		paths = append(paths, name)
-	}
-	sort.Strings(paths)
-	return paths, uids, nil
 }
 
 func declaredClass(file *ast.File) (string, token.Span) {
