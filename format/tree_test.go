@@ -35,6 +35,9 @@ func TestSameTreeSeesEveryMeaningfulDifference(t *testing.T) {
 		"inferred type":      {"var a := 1\n", "var a = 1\n"},
 		"static":             {"static func f():\n\tpass\n", "func f():\n\tpass\n"},
 		"parameter default":  {"func f(x = 1):\n\tpass\n", "func f(x = 2):\n\tpass\n"},
+		"inferred default":   {"func f(x := 1):\n\tpass\n", "func f(x = 1):\n\tpass\n"},
+		"lambda default":     {"var a = func(x := 1): return x\n", "var a = func(x = 1): return x\n"},
+		"typed default":      {"func f(x: int := 1):\n\tpass\n", "func f(x: int = 1):\n\tpass\n"},
 		"missing value":      {"func f():\n\treturn\n", "func f():\n\treturn null\n"},
 		"else branch":        {"func f():\n\tif x:\n\t\tpass\n", "func f():\n\tif x:\n\t\tpass\n\telse:\n\t\tpass\n"},
 		"statement order":    {"var a = 1\nvar b = 2\n", "var b = 2\nvar a = 1\n"},
@@ -90,5 +93,13 @@ func TestComparedFieldsSkipOnlySourceMetadata(t *testing.T) {
 		if len(name) < 4 || name[len(name)-4:] != "Span" {
 			t.Errorf("%s is skipped, want it compared", name)
 		}
+	}
+}
+
+func TestSameTreeKeepsAnInferredParameterDefaultAcrossSpacing(t *testing.T) {
+	before := parseTree(t, "func f(x:=1, y=2):\n\tpass\n")
+	after := parseTree(t, "func f(x := 1, y = 2):\n\tpass\n")
+	if !sameTree(before, after, gdformat.GodotStyle()) {
+		t.Fatal("parameters that differ only in spacing were reported as different")
 	}
 }

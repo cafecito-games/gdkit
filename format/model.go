@@ -12,8 +12,8 @@ const (
 	// alone.
 	ruleSourceParse = "source-parse"
 	// ruleUnsafe marks a file whose formatted output did not keep the syntax
-	// tree of its source, or would move a lint suppression comment, and so was
-	// refused.
+	// tree or the tokens of its source, or would move a lint suppression
+	// comment, and so was refused.
 	ruleUnsafe = "format.unsafe"
 )
 

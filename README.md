@@ -279,8 +279,8 @@ A file with a diagnostic is left exactly as it is:
 
 - `source-parse` reports a file that does not parse, so it cannot be formatted.
 - `format.unsafe` reports a file whose formatted output would not keep the
-  syntax tree of its source, or would move a lint suppression comment off the
-  line it applies to.
+  syntax tree or the tokens of its source, or would move a lint suppression
+  comment off the line it applies to.
 
 ### Write safety
 
@@ -296,6 +296,17 @@ formatter, so the check does not depend on the code it is checking. One case it
 catches today: the formatter trims trailing whitespace from every line, which
 would change a string literal that spans lines and has a line ending in spaces
 or tabs. Such a file is reported as `format.unsafe`.
+
+The tokens of the output are then compared with the tokens of the source,
+because the tree records only what the parser chose to keep. Line breaks,
+indentation, parentheses, commas, and semicolons are left out, since the
+formatter adds and removes them, and the same normalized spellings are allowed;
+every other token must appear exactly as often after formatting as before. One
+case this catches today: the formatter rewrites an inferred parameter default,
+`func f(a := 1)`, as the untyped `func f(a = 1)`
+([gdparser#70](https://github.com/cafecito-games/gdparser/issues/70)), which
+changes what the function accepts and returns. Such a file is reported as
+`format.unsafe`.
 
 A rewrite is also refused as `format.unsafe` when it would move a lint
 suppression comment. The formatter moves a comment that trails a block header,
