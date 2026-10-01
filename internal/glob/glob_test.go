@@ -36,7 +36,8 @@ func TestConsumerContracts(t *testing.T) {
 		wantCaptures map[string]string
 		description  string
 	}{
-		// Trailing-slash directory matching (analyzer.go:164 calls with relative+"/")
+		// Trailing-slash directory matching, as project.Load does when deciding
+		// whether to prune an excluded directory.
 		{"addons/**", "addons/", true, map[string]string{}, "trailing slash matches"},
 
 		// Anchoring
