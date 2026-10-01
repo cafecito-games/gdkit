@@ -291,8 +291,10 @@ reported as `format.unsafe` and is never written. Writes are atomic and keep the
 file mode: the new contents are written beside the file and renamed over it, so
 an interrupted run leaves either the old file or the new one.
 
-String values, numbers, and comment text are compared without consulting the
-formatter, so the check does not depend on the code it is checking. One case it
+String literals, numbers, and comment text are compared without consulting the
+formatter, so the check does not depend on the code it is checking. A string
+may change only its quote character and the escaping of the quotes inside it;
+every other escape must stay as written. One case it
 catches today: the formatter trims trailing whitespace from every line, which
 would change a string literal that spans lines and has a line ending in spaces
 or tabs. Such a file is reported as `format.unsafe`.

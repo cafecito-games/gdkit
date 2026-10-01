@@ -7,36 +7,23 @@ import (
 	gdformat "github.com/cafecito-games/gdparser/format"
 )
 
-func TestDecodeString(t *testing.T) {
-	cases := map[string]struct {
-		body string
-		want string
-		ok   bool
-	}{
-		"plain":                {`abc`, "abc", true},
-		"simple escapes":       {`\a\b\f\n\r\t\v`, "\a\b\f\n\r\t\v", true},
-		"quotes":               {`\'\"\\`, `'"\`, true},
-		"bare quote":           {`it's`, "it's", true},
-		"short unicode":        {`éx`, "éx", true},
-		"long unicode":         {`\U01F600`, "😀", true},
-		"surrogate pair":       {`😀`, "😀", true},
-		"continuation":         {"a\\\nb", "ab", true},
-		"windows continuation": {"a\\\r\nb", "ab", true},
-		"escaped return":       {"a\\\rb", "a\rb", true},
-		"real newline":         {"a\nb", "a\nb", true},
-		"lone high surrogate":  {`\uD83Dx`, "", false},
-		"lone low surrogate":   {`\uDE00`, "", false},
-		"beyond unicode":       {`\UFFFFFF`, "", false},
-		"unknown escape":       {`\x41`, "", false},
-		"dangling backslash":   {`a\`, "", false},
-		"short unicode digits": {`\u00e`, "", false},
-		"bad unicode digit":    {`\u00zz`, "", false},
+func TestDelimiterNeutralBody(t *testing.T) {
+	cases := map[string]struct{ body, want string }{
+		"plain":                {`abc`, `abc`},
+		"bare quotes":          {`it's "x"`, `it's "x"`},
+		"escaped quotes":       {`it\'s \"x\"`, `it's "x"`},
+		"other escapes kept":   {`\a\b\f\n\r\t\v`, `\a\b\f\n\r\t\v`},
+		"unicode escapes kept": {`\u00e9\U01F600`, `\u00e9\U01F600`},
+		"escaped backslash":    {`\\'`, `\\'`},
+		"backslash then quote": {`\\\'`, `\\'`},
+		"continuation kept":    {"a\\\nb", "a\\\nb"},
+		"real newline":         {"a\nb", "a\nb"},
+		"dangling backslash":   {`a\`, `a\`},
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, ok := decodeString(testCase.body)
-			if ok != testCase.ok || got != testCase.want {
-				t.Fatalf("decodeString(%q) = %q, %v; want %q, %v", testCase.body, got, ok, testCase.want, testCase.ok)
+			if got := delimiterNeutralBody(testCase.body); got != testCase.want {
+				t.Fatalf("delimiterNeutralBody(%q) = %q, want %q", testCase.body, got, testCase.want)
 			}
 		})
 	}
@@ -227,6 +214,15 @@ func TestVerifyComparesLiteralValues(t *testing.T) {
 		"requoted with escape added":   {`var a = "it's"`, `var a = 'it\'s'`, single, true},
 		"requoted keeping an escape":   {`var a = 'a\tb'`, `var a = "a\tb"`, gdformat.GodotStyle(), true},
 		"raw requoted":                 {`var a = r'\n'`, `var a = r"\n"`, gdformat.GodotStyle(), true},
+
+		"unicode escape decoded":    {`var a = '\u0041'`, `var a = "A"`, gdformat.GodotStyle(), false},
+		"unicode escape encoded":    {`var a = 'A'`, `var a = "\u0041"`, gdformat.GodotStyle(), false},
+		"tab escape decoded":        {`var a = '\t'`, "var a = \"\t\"", gdformat.GodotStyle(), false},
+		"newline escape decoded":    {`var a = 'a\nb'`, "var a = \"a\nb\"", gdformat.GodotStyle(), false},
+		"long escape as surrogates": {`var a = '\U01F600'`, `var a = "\uD83D\uDE00"`, gdformat.GodotStyle(), false},
+		"escape digits recased":     {`var a = '\u00e9'`, `var a = "\u00E9"`, gdformat.GodotStyle(), false},
+		"continuation joined":       {"var a = 'a\\\nb'", `var a = "ab"`, gdformat.GodotStyle(), false},
+		"same spelling unescaped":   {`var a = '\u0041'`, `var a = '\u0041'`, gdformat.GodotStyle(), true},
 
 		"escape left behind":        {`var a = 'it\'s'`, `var a = "it\\'s"`, gdformat.GodotStyle(), false},
 		"escape changed":            {`var a = 'a\tb'`, `var a = "a\nb"`, gdformat.GodotStyle(), false},

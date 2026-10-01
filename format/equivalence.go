@@ -2,7 +2,6 @@ package format
 
 import (
 	"strings"
-	"unicode/utf8"
 
 	"github.com/cafecito-games/gdparser/ast"
 	gdformat "github.com/cafecito-games/gdparser/format"
@@ -32,10 +31,10 @@ func literalKey(literal *ast.Literal, options gdformat.Options) string {
 // apart from every key built from a decoded value.
 func exactKey(raw string) string { return "exact\x00" + raw }
 
-// stringValueKey identifies a string literal by its prefix and value rather
-// than by its spelling. It declines, leaving the caller to compare spellings,
-// wherever the formatter keeps the literal as written: under PreserveQuotes
-// and for a triple-quoted literal.
+// stringValueKey identifies a string literal by its prefix and its body
+// spelled without regard to the delimiter. It declines, leaving the caller to
+// compare spellings, wherever the formatter keeps the literal as written:
+// under PreserveQuotes and for a triple-quoted literal.
 func stringValueKey(literal *ast.Literal, options gdformat.Options) (string, bool) {
 	if options.QuoteStyle == gdformat.PreserveQuotes || literal.Triple || literal.Quote == 0 {
 		return "", false
@@ -50,108 +49,33 @@ func stringValueKey(literal *ast.Literal, options gdformat.Options) (string, boo
 		// included, whichever quote delimits it.
 		return "raw\x00" + prefix + "\x00" + body, true
 	}
-	value, ok := decodeString(body)
-	if !ok {
-		return "", false
-	}
-	return "value\x00" + prefix + "\x00" + value, true
+	return "value\x00" + prefix + "\x00" + delimiterNeutralBody(body), true
 }
 
-// simpleEscapes maps the character after a backslash to the character the
-// escape stands for, as Godot's tokenizer does.
-var simpleEscapes = map[byte]byte{
-	'a': '\a', 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t', 'v': '\v',
-	'\'': '\'', '"': '"', '\\': '\\',
-}
-
-// decodeString returns the value of the body of a string literal that is not
-// raw. It reports false for a body Godot would give no single value: an
-// unknown or cut-off escape, an unpaired surrogate, or a code point beyond
-// Unicode.
-func decodeString(body string) (string, bool) {
+// delimiterNeutralBody spells the body of a string literal that is not raw
+// without regard to the quote that delimits it: an escaped quote becomes the
+// quote itself, and every other escape is kept as written. Swapping the
+// delimiter and the escapes it calls for is all the formatter does to a
+// string, so nothing else may differ, not even between two spellings of one
+// value such as "\u0041" and "A".
+func delimiterNeutralBody(body string) string {
 	if !strings.Contains(body, `\`) {
-		return body, true
+		return body
 	}
-	var value strings.Builder
-	value.Grow(len(body))
+	var neutral strings.Builder
+	neutral.Grow(len(body))
 	for index := 0; index < len(body); index++ {
-		if body[index] != '\\' {
-			value.WriteByte(body[index])
+		if body[index] != '\\' || index+1 >= len(body) {
+			neutral.WriteByte(body[index])
 			continue
 		}
 		index++
-		if index >= len(body) {
-			return "", false
+		if escaped := body[index]; escaped != '\'' && escaped != '"' {
+			neutral.WriteByte('\\')
 		}
-		switch code := body[index]; code {
-		case '\n':
-			// A backslash before a line break joins the two lines.
-		case '\r':
-			if index+1 < len(body) && body[index+1] == '\n' {
-				index++
-			} else {
-				value.WriteByte('\r')
-			}
-		case 'u', 'U':
-			digits := 4
-			if code == 'U' {
-				digits = 6
-			}
-			point, ok := hexadecimal(body, index+1, digits)
-			if !ok {
-				return "", false
-			}
-			index += digits
-			if code == 'u' && utf16HighSurrogate(point) {
-				// Godot joins a "\u" pair of UTF-16 surrogates into the one
-				// code point they encode.
-				if index+2 >= len(body) || body[index+1] != '\\' || body[index+2] != 'u' {
-					return "", false
-				}
-				low, ok := hexadecimal(body, index+3, 4)
-				if !ok || !utf16LowSurrogate(low) {
-					return "", false
-				}
-				index += 6
-				point = 0x10000 + (point-0xd800)<<10 + (low - 0xdc00)
-			}
-			if !utf8.ValidRune(point) {
-				return "", false
-			}
-			value.WriteRune(point)
-		default:
-			decoded, ok := simpleEscapes[code]
-			if !ok {
-				return "", false
-			}
-			value.WriteByte(decoded)
-		}
+		neutral.WriteByte(body[index])
 	}
-	return value.String(), true
-}
-
-func utf16HighSurrogate(point rune) bool { return point >= 0xd800 && point <= 0xdbff }
-func utf16LowSurrogate(point rune) bool  { return point >= 0xdc00 && point <= 0xdfff }
-
-// hexadecimal reads exactly count hexadecimal digits of text from start.
-func hexadecimal(text string, start, count int) (rune, bool) {
-	if start+count > len(text) {
-		return 0, false
-	}
-	var value rune
-	for _, digit := range []byte(text[start : start+count]) {
-		switch {
-		case digit >= '0' && digit <= '9':
-			value = value<<4 | rune(digit-'0')
-		case digit >= 'a' && digit <= 'f':
-			value = value<<4 | rune(digit-'a'+10)
-		case digit >= 'A' && digit <= 'F':
-			value = value<<4 | rune(digit-'A'+10)
-		default:
-			return 0, false
-		}
-	}
-	return value, true
+	return neutral.String()
 }
 
 // normalizedNumber is the spelling NormalizeNumbers gives a numeric literal:
