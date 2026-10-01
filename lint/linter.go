@@ -119,9 +119,10 @@ func (l *Linter) Lint(snapshot *project.Snapshot) Report {
 		script := snapshot.Scripts[path]
 		if script.ParseError != nil {
 			if !l.disabled["source-parse"] {
+				line, column, message := script.ParseFailure()
 				report.Diagnostics = append(report.Diagnostics, Diagnostic{
 					Rule: "source-parse", Severity: l.severityOf("source-parse"),
-					Message: script.ParseError.Error(), Path: path, Line: 1, Column: 1,
+					Message: message, Path: path, Line: line, Column: column,
 				})
 			}
 			continue

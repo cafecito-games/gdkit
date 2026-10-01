@@ -1,6 +1,7 @@
 package project
 
 import (
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -322,5 +323,35 @@ func TestLoadDoesNotRegisterUIDOfIgnoredScript(t *testing.T) {
 	want := map[string]string{"uid://player": "player.gd", "uid://ourplugin": "addons/our_plugin/plugin.gd"}
 	if !maps.Equal(snapshot.UIDs, want) {
 		t.Fatalf("UIDs = %v, want %v", snapshot.UIDs, want)
+	}
+}
+
+func TestParseFailureLocatesParserAndLexerErrors(t *testing.T) {
+	cases := map[string]struct {
+		source       string
+		line, column int
+		message      string
+	}{
+		"parser": {"var a = 1\nvar b = 2\nfunc (:\n", 3, 6, "expected function name"},
+		"lexer":  {"var a = 1\nvar s = \"\\x\"\n", 2, 11, `invalid escape "\x" in string`},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			script := loadSingleScript(t, testCase.source)
+			if script.ParseError == nil {
+				t.Fatal("fixture parsed")
+			}
+			line, column, message := script.ParseFailure()
+			if line != testCase.line || column != testCase.column || message != testCase.message {
+				t.Fatalf("ParseFailure() = %d, %d, %q; want %d, %d, %q", line, column, message, testCase.line, testCase.column, testCase.message)
+			}
+		})
+	}
+}
+
+func TestParseFailureFallsBackToTheStartOfTheFile(t *testing.T) {
+	script := &Script{Path: "a.gd", ParseError: errors.New("opaque failure")}
+	if line, column, message := script.ParseFailure(); line != 1 || column != 1 || message != "opaque failure" {
+		t.Fatalf("ParseFailure() = %d, %d, %q", line, column, message)
 	}
 }

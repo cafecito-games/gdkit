@@ -248,3 +248,25 @@ func TestLintSourceFailsOnUnparseableFixture(t *testing.T) {
 		t.Errorf("asking for source-parse must still work, got %v", got)
 	}
 }
+
+func TestSourceParseReportsThePositionOfTheFailure(t *testing.T) {
+	cases := map[string]struct {
+		source       string
+		line, column int
+		message      string
+	}{
+		"parser": {"var a = 1\nvar b = 2\nfunc (:\n", 3, 6, "expected function name"},
+		"lexer":  {"var a = 1\nvar s = \"\\x\"\n", 2, 11, `invalid escape "\x" in string`},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := lintSource(t, "source-parse", testCase.source)
+			if len(got) != 1 {
+				t.Fatalf("got %v, want one diagnostic", got)
+			}
+			if got[0].Line != testCase.line || got[0].Column != testCase.column || got[0].Message != testCase.message {
+				t.Fatalf("got %d:%d %q, want %d:%d %q", got[0].Line, got[0].Column, got[0].Message, testCase.line, testCase.column, testCase.message)
+			}
+		})
+	}
+}

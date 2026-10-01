@@ -275,3 +275,14 @@ func TestFormatIsIdenticalAcrossRunsOfALargeProject(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatReportsLexerErrorAtItsPosition(t *testing.T) {
+	report, _ := formatProject(t, DefaultConfig(), map[string]string{"a.gd": "var a = 1\nvar s = \"\\x\"\n"})
+	want := Diagnostic{Rule: "source-parse", Message: `invalid escape "\x" in string`, Path: "a.gd", Line: 2, Column: 11}
+	if len(report.Diagnostics) != 1 || report.Diagnostics[0] != want {
+		t.Fatalf("diagnostics = %+v, want %+v", report.Diagnostics, want)
+	}
+	if got := report.Diagnostics[0].String(); got != `a.gd:2: Error: invalid escape "\x" in string (source-parse)` {
+		t.Fatalf("String() = %q", got)
+	}
+}

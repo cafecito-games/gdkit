@@ -16,6 +16,9 @@ import (
 	"github.com/cafecito-games/gdkit/internal/ignore"
 	"github.com/cafecito-games/gdparser"
 	"github.com/cafecito-games/gdparser/ast"
+	"github.com/cafecito-games/gdparser/lexer"
+	"github.com/cafecito-games/gdparser/parser"
+	"github.com/cafecito-games/gdparser/token"
 )
 
 // IgnoreFileName is the gitignore-style file at the project root that lists
@@ -62,6 +65,26 @@ func (s *Script) Line(number int) string {
 	text := string(s.Source[start:end])
 	text = strings.TrimSuffix(text, "\n")
 	return strings.TrimSuffix(text, "\r")
+}
+
+// ParseFailure describes ParseError as a one-based position and a message
+// that does not repeat the file name or the position. A failure that carries no
+// position is placed at the start of the file. It must only be called when
+// ParseError is set.
+func (s *Script) ParseFailure() (line, column int, message string) {
+	position, message := token.Position{}, s.ParseError.Error()
+	var syntaxError *parser.Error
+	var lexicalError *lexer.Error
+	switch {
+	case errors.As(s.ParseError, &syntaxError):
+		position, message = syntaxError.Token.Span.Start, syntaxError.Message
+	case errors.As(s.ParseError, &lexicalError):
+		position, message = lexicalError.Position, lexicalError.Message
+	}
+	if position.Line < 1 {
+		return 1, 1, message
+	}
+	return position.Line, max(position.Column, 1), message
 }
 
 // LineCount is the number of lines in the file.

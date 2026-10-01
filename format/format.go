@@ -2,7 +2,6 @@ package format
 
 import (
 	"bytes"
-	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -10,7 +9,6 @@ import (
 	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdparser/ast"
 	gdformat "github.com/cafecito-games/gdparser/format"
-	"github.com/cafecito-games/gdparser/parser"
 )
 
 // Formatter computes the canonical form of every script in a project.
@@ -85,7 +83,7 @@ func (f *Formatter) formatAll(snapshot *project.Snapshot) []outcome {
 // that explains why it has none.
 func (f *Formatter) formatScript(script *project.Script) (Result, *Diagnostic) {
 	if script.ParseError != nil {
-		diagnostic := parseDiagnostic(script.Path, script.ParseError)
+		diagnostic := parseDiagnostic(script)
 		return Result{}, &diagnostic
 	}
 	formatted := []byte(f.emit(script.File, f.options))
@@ -101,17 +99,9 @@ func (f *Formatter) formatScript(script *project.Script) (Result, *Diagnostic) {
 	return Result{Path: script.Path, Changed: true, Formatted: formatted}, nil
 }
 
-// parseDiagnostic reports a parse failure at the position the parser gave, or
-// at the start of the file when the error carries none.
-func parseDiagnostic(path string, parseError error) Diagnostic {
-	diagnostic := Diagnostic{Rule: ruleSourceParse, Message: parseError.Error(), Path: path, Line: 1, Column: 1}
-	var located *parser.Error
-	if errors.As(parseError, &located) {
-		diagnostic.Message = located.Message
-		if start := located.Token.Span.Start; start.Line > 0 {
-			diagnostic.Line = start.Line
-			diagnostic.Column = max(start.Column, 1)
-		}
-	}
-	return diagnostic
+// parseDiagnostic reports a parse failure at the position the parser or lexer
+// gave, or at the start of the file when the error carries none.
+func parseDiagnostic(script *project.Script) Diagnostic {
+	line, column, message := script.ParseFailure()
+	return Diagnostic{Rule: ruleSourceParse, Message: message, Path: script.Path, Line: line, Column: column}
 }
