@@ -36,7 +36,7 @@ the default branch.
 
 ## Architecture
 
-`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Nine packages:
+`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Ten packages:
 
 - `architecture/` — the dependency analyzer: layer and feature boundaries, cycles,
   and engine purity (the substance of `gdkit arch`).
@@ -44,8 +44,12 @@ the default branch.
   Rule names are a public contract; they appear in JSON output, in config, and in
   inline ignore comments, so renaming one breaks user projects.
 - `format/` — the formatter: drives gdparser's formatter over a `project.Snapshot`
-  and refuses any rewrite whose reparsed output does not keep the source's syntax
-  tree. It is pure except for `LoadConfig` and `Apply`; `Format` performs no I/O.
+  and verifies every rewrite before offering it. Verification covers the syntax
+  tree (the reparsed output must keep it), the token stream (no token other than
+  layout, parentheses, commas, and semicolons may appear, vanish, or change),
+  and suppression placement (the code a lint suppression comment applies to
+  must not change). It is pure except for `LoadConfig` and `Apply`; `Format`
+  performs no I/O.
   `format.unsafe` and `source-parse` are its public diagnostic names and appear in
   JSON output.
 - `project/` — discovery and parsing. The only package that reads a project from
@@ -56,6 +60,9 @@ the default branch.
 - `internal/ignore/` — the gitignore-style matcher behind `.gdkitignore`. It
   differs from git in one documented way: a negated pattern can re-include a
   path inside an ignored directory.
+- `internal/suppression/` — the lint suppression directive grammar, shared by
+  `lint`, which obeys the comments, and `format`, which must not change what
+  they cover.
 - `internal/textdiff/` — the unified diff behind `gdkit format check --diff`.
 - `cmd/gdkit/` — flag parsing, output formatting, and exit codes only. It holds no
   analysis logic; it loads a `Config`, builds an `Analyzer`, `Linter`, or `Formatter`,
