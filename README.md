@@ -2,7 +2,8 @@
 
 `gdkit` is a Go 1.26 toolkit for static analysis and source processing of
 Godot 4 GDScript. `gdkit arch` enforces architectural boundaries across a
-project, and `gdkit lint` checks GDScript style and correctness.
+project, `gdkit lint` checks GDScript style and correctness, and `gdkit format`
+rewrites GDScript into one canonical style.
 
 The analyzer uses [`gdparser`](https://github.com/cafecito-games/gdparser) and
 does not search source text with regular expressions. It parses GDScript,
@@ -223,6 +224,110 @@ a project is working toward rather than enforcing.
 `gdkit lint check` exits `0` when clean or when the only diagnostics are
 warnings, `1` when any error-severity diagnostic is reported, and `2` for
 configuration, usage, or I/O failures.
+
+## Formatting
+
+`gdkit format` rewrites GDScript into one canonical style, which defaults to the
+Godot GDScript style guide. It shares project discovery with the other tools and
+prints each file from its parsed syntax tree.
+
+```sh
+gdkit format check .
+gdkit format check --diff .
+gdkit format check --format json .
+gdkit format write .
+gdkit format init .
+```
+
+- `gdkit format check [--config path] [--format text|json] [--diff] [project-root]`
+  reports the files that are not formatted and never writes to the project.
+  `--diff` prints a unified diff after each file that would change; it cannot be
+  combined with `--format json`.
+- `gdkit format write [--config path] [--format text|json] [project-root]`
+  rewrites those files in place.
+- `gdkit format init [--force] [project-root]` writes `.gdkit/format.json` with
+  the default style.
+
+Running `gdkit format` without a subcommand runs `check`.
+
+Text output names each file, then each diagnostic, then a summary:
+
+```text
+would reformat player.gd
+broken.gd:3: Error: expected expression (source-parse)
+format check failed (1 to reformat, 1 diagnostics)
+```
+
+`write` prints `reformatted player.gd` for each file it rewrote and ends with a
+line such as `format write: 1 reformatted, 12 unchanged, 1 skipped`. JSON output
+is the same for both commands: a `results` array with the `path` and `changed`
+flag of every file that could be formatted, and a `diagnostics` array. Both are
+sorted by path, so the output is stable between runs.
+
+`gdkit format check` exits `0` when every file is already formatted, `1` when a
+file would change or has a diagnostic, and `2` for configuration, usage, or I/O
+failures. `gdkit format write` exits `0` when every file is formatted once it
+finishes, `1` when a file was skipped because of a diagnostic, and `2` for
+configuration, usage, or I/O failures.
+
+### Format diagnostics
+
+A file with a diagnostic is left exactly as it is:
+
+- `source-parse` reports a file that does not parse, so it cannot be formatted.
+- `format.unsafe` reports a file whose formatted output would not keep the
+  syntax tree of its source.
+
+### Write safety
+
+Before a file is reported as changed, its formatted output is parsed again and
+compared structurally with the source. Only layout and the spellings the
+configuration asks to normalize may differ. A file whose tree would change is
+reported as `format.unsafe` and is never written. Writes are atomic and keep the
+file mode: the new contents are written beside the file and renamed over it, so
+an interrupted run leaves either the old file or the new one.
+
+### Format configuration
+
+`gdkit format init` writes `.gdkit/format.json` with the default style, and an
+existing file is preserved unless `--force` is supplied. Pass an alternate file
+with `--config`, relative to the project root. Both commands run with the
+defaults when no configuration file exists. Unknown keys, unknown values, and
+exclude patterns that do not compile are configuration errors.
+
+Values are applied on top of the defaults, so an omitted field keeps its
+default:
+
+| Field | Allowed values | Default |
+| --- | --- | --- |
+| `version` | `1` | `1` |
+| `source_roots` | project-relative paths, at least one | `["."]` |
+| `exclude` | glob patterns | `[".git/**", ".godot/**", ".gdkit/**", "addons/**"]` |
+| `line_width` | `1` or more | `100` |
+| `tab_width` | `1` or more | `4` |
+| `indent` | `"tabs"`, `"spaces"` | `"tabs"` |
+| `quote_style` | `"double"`, `"single"`, `"preserve"` | `"double"` |
+| `comment_spacing` | `"normalize"`, `"preserve"` | `"normalize"` |
+| `operators` | `"words"`, `"preserve"` | `"words"` |
+| `numbers` | `"normalize"`, `"preserve"` | `"normalize"` |
+| `trailing_commas` | `"when-broken"`, `"never"` | `"when-broken"` |
+| `blank_lines.top_level` | `1` or more | `2` |
+| `blank_lines.nested` | `1` or more | `1` |
+
+- `line_width` is the column budget a line is kept within where possible. A
+  line that has no place to break, such as a long name or string, stays long.
+- `tab_width` is the columns a tab occupies when a line is measured, and the
+  number of spaces per level when `indent` is `"spaces"`.
+- `operators` set to `"words"` writes `and`, `or`, and `not` in place of `&&`,
+  `||`, and `!`.
+- `numbers` set to `"normalize"` rewrites literals such as `.5` and `0XFF` as
+  `0.5` and `0xff`.
+- `trailing_commas` set to `"when-broken"` adds a trailing comma to a list that
+  spans several lines.
+- `blank_lines.top_level` is the exact number of blank lines around top-level
+  function and class declarations, and `blank_lines.nested` is the most
+  consecutive blank lines kept anywhere else.
+- `exclude` uses the same glob syntax as the architecture configuration.
 
 ## Version information
 

@@ -19,6 +19,9 @@ GDKIT_CORPUS=/path/to/project go test -race ./lint -run TestCorpus
 go run ./cmd/gdkit arch check /path/to/godot-project
 go run ./cmd/gdkit arch check --format json --show-edges .
 go run ./cmd/gdkit lint check /path/to/godot-project
+go run ./cmd/gdkit format check /path/to/godot-project
+go run ./cmd/gdkit format check --diff /path/to/godot-project
+go run ./cmd/gdkit format write /path/to/godot-project
 
 # Release packaging (same commands CI runs)
 goreleaser check
@@ -33,19 +36,25 @@ the default branch.
 
 ## Architecture
 
-`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Six packages:
+`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Eight packages:
 
 - `architecture/` — the dependency analyzer: layer and feature boundaries, cycles,
   and engine purity (the substance of `gdkit arch`).
 - `lint/` — the linter: a registry of single-file rules over a `project.Snapshot`.
   Rule names are a public contract; they appear in JSON output, in config, and in
   inline ignore comments, so renaming one breaks user projects.
+- `format/` — the formatter: drives gdparser's formatter over a `project.Snapshot`
+  and refuses any rewrite whose reparsed output does not keep the source's syntax
+  tree. It is pure except for `LoadConfig` and `Apply`; `Format` performs no I/O.
+  `format.unsafe` and `source-parse` are its public diagnostic names and appear in
+  JSON output.
 - `project/` — discovery and parsing. The only package that reads a project from
-  disk, so both tools agree on scope and parse once.
+  disk, so every tool agrees on scope and parses once.
 - `internal/glob/` — the shared glob engine.
+- `internal/textdiff/` — the unified diff behind `gdkit format check --diff`.
 - `cmd/gdkit/` — flag parsing, output formatting, and exit codes only. It holds no
-  analysis logic; it loads a `Config`, builds an `Analyzer` or `Linter`, and prints
-  a `Report`.
+  analysis logic; it loads a `Config`, builds an `Analyzer`, `Linter`, or `Formatter`,
+  and prints a `Report`.
 - `internal/buildinfo/` — version metadata, injected by GoReleaser `-ldflags` and
   falling back to the Go toolchain's embedded VCS settings for local builds.
 
