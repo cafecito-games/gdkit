@@ -105,3 +105,22 @@ func TestTrailingWhitespaceFollowsPythonLineBreakSemantics(t *testing.T) {
 		})
 	}
 }
+
+// A comment may sit deeper than the block containing it. Godot and gdlint both
+// accept this, and gdparser rejected it until cafecito-games/gdparser#5. If the
+// parser regresses, every rule silently stops running on the affected file, so
+// this guards the dependency rather than any one rule.
+func TestDeeperIndentedCommentsStillParse(t *testing.T) {
+	sources := map[string]string{
+		"deeper.gd":      "func a():\n\tpass\n\t\t# deeper than the body\n",
+		"between.gd":     "func a():\n\tvar first := 1\n\t\t# deeper\n\tvar second := 2\n",
+		"nested.gd":      "func a():\n\tif true:\n\t\tpass\n\t\t\t# deeper\n",
+		"class_level.gd": "var value := 1\n\t# deeper than class level\n",
+	}
+	report := lintProject(t, DefaultConfig(), sources)
+	for _, diagnostic := range report.Diagnostics {
+		if diagnostic.Rule == "source-parse" {
+			t.Errorf("%s failed to parse: %s", diagnostic.Path, diagnostic.Message)
+		}
+	}
+}
