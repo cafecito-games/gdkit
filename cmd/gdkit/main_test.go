@@ -222,3 +222,32 @@ func TestRunLintInit(t *testing.T) {
 		t.Fatal("--force did not replace the config")
 	}
 }
+
+func TestLintCheckWarningsPassButAreReported(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".gdkit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `{"version": 1, "severity": {"function-name": "warning"}}`
+	if err := os.WriteFile(filepath.Join(root, ".gdkit", "lint.json"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.gd"), []byte("func doThing():\n\tpass\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("a warning must not fail the run, got exit %d: %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "Warning:") {
+		t.Errorf("the warning should still be reported: %q", output)
+	}
+	if strings.Contains(output, "failed") {
+		t.Errorf("the summary must not say the run failed: %q", output)
+	}
+	if !strings.Contains(output, "1 warning)") {
+		t.Errorf("the summary should count one warning, singular: %q", output)
+	}
+}

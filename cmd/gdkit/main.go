@@ -309,9 +309,18 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 		for _, diagnostic := range report.Diagnostics {
 			fmt.Fprintln(writer, diagnostic.String())
 		}
-		if report.HasFindings() {
+		switch {
+		case report.HasErrors():
 			fmt.Fprintf(writer, "lint check failed (%d diagnostics)\n", len(report.Diagnostics))
-		} else {
+		case report.HasFindings():
+			// Warnings do not fail the run, so the summary must not claim it failed.
+			count := len(report.Diagnostics)
+			noun := "warnings"
+			if count == 1 {
+				noun = "warning"
+			}
+			fmt.Fprintf(writer, "lint check passed (%d %s)\n", count, noun)
+		default:
 			fmt.Fprintln(writer, "lint check passed (no diagnostics)")
 		}
 		if err := writer.Flush(); err != nil {
