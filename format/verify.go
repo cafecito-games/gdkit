@@ -37,17 +37,18 @@ func verify(path string, source, formatted []byte, options gdformat.Options) err
 // change under options: literal spelling, comment spacing, and the boolean
 // operators. Comparing source spellings would report each of those as lost
 // structure; comparing canonical spellings still fails when the literal,
-// comment, or operator itself changes.
+// comment, or operator itself changes. The canonical spellings are computed
+// here rather than by the formatter, whose output is what is being checked.
 func canonicalize(file *ast.File, options gdformat.Options) {
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch current := node.(type) {
 		case *ast.Literal:
-			current.Raw = canonicalStatement(&ast.ExpressionStatement{Expression: current}, options)
+			current.Raw = literalKey(current, options)
 			// The quote metadata restates the spelling Raw now carries
 			// canonically, so it would only repeat a permitted difference.
 			current.Quote, current.Triple, current.RawPrefix = 0, false, false
 		case *ast.Comment:
-			current.Text = canonicalStatement(&ast.Comment{Text: current.Text}, options)
+			current.Text = commentKey(current.Text, options)
 		case *ast.BinaryExpression:
 			current.Operator = canonicalOperator(current.Operator, options)
 		case *ast.UnaryExpression:
@@ -57,13 +58,7 @@ func canonicalize(file *ast.File, options gdformat.Options) {
 	})
 }
 
-// canonicalStatement returns the single line the formatter emits for statement.
-func canonicalStatement(statement ast.Statement, options gdformat.Options) string {
-	formatted := gdformat.FileWithOptions(&ast.File{Statements: []ast.Statement{statement}}, options)
-	return strings.TrimSuffix(formatted, "\n")
-}
-
-// canonicalOperator is the spelling the formatter emits for a boolean operator.
+// canonicalOperator is the spelling WordOperators gives a boolean operator.
 func canonicalOperator(operator string, options gdformat.Options) string {
 	if options.Operators != gdformat.WordOperators {
 		return operator
