@@ -3,7 +3,9 @@ package format
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -224,5 +226,52 @@ func TestEmptyReportMarshalsEmptyArrays(t *testing.T) {
 	}
 	if string(data) != `{"results":[],"diagnostics":[]}` {
 		t.Fatalf("JSON = %s", data)
+	}
+}
+
+func TestFormatIsIdenticalAcrossRunsOfALargeProject(t *testing.T) {
+	files := make(map[string]string, 200)
+	for index := range 200 {
+		name := fmt.Sprintf("group_%d/script_%03d.gd", index%7, index)
+		switch index % 10 {
+		case 3:
+			files[name] = "func (:\n"
+		case 5:
+			files[name] = "var a = 1\n"
+		case 7:
+			files[name] = "func BadName():  # gdlint:ignore = function-name\n\tpass\n"
+		default:
+			files[name] = fmt.Sprintf("extends Node\nvar value_%d=%d\nfunc f( x ):\n\treturn x+value_%d  #why\n", index, index, index)
+		}
+	}
+	config := DefaultConfig()
+	snapshot := loadProject(t, config, files)
+	formatter, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := formatter.Format(snapshot)
+	if len(first.Results) != 160 || len(first.Changed()) != 140 || len(first.Diagnostics) != 40 {
+		t.Fatalf("got %d results, %d changed, %d diagnostics", len(first.Results), len(first.Changed()), len(first.Diagnostics))
+	}
+	if !sort.SliceIsSorted(first.Results, func(i, j int) bool { return first.Results[i].Path < first.Results[j].Path }) {
+		t.Fatal("results are not in path order")
+	}
+	firstJSON, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		again := formatter.Format(snapshot)
+		againJSON, err := json.Marshal(again)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(againJSON) != string(firstJSON) {
+			t.Fatal("report differs between runs")
+		}
+		if !reflect.DeepEqual(again, first) {
+			t.Fatal("formatted contents differ between runs")
+		}
 	}
 }

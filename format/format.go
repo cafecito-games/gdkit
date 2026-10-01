@@ -3,6 +3,9 @@ package format
 import (
 	"bytes"
 	"errors"
+	"runtime"
+	"sync"
+	"sync/atomic"
 
 	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdparser/ast"
@@ -37,16 +40,45 @@ func New(config Config) (*Formatter, error) {
 // instead of a result.
 func (f *Formatter) Format(snapshot *project.Snapshot) Report {
 	report := Report{Results: []Result{}, Diagnostics: []Diagnostic{}}
-	for _, path := range snapshot.Paths {
-		result, diagnostic := f.formatScript(snapshot.Scripts[path])
-		if diagnostic != nil {
-			report.Diagnostics = append(report.Diagnostics, *diagnostic)
+	for _, outcome := range f.formatAll(snapshot) {
+		if outcome.diagnostic != nil {
+			report.Diagnostics = append(report.Diagnostics, *outcome.diagnostic)
 			continue
 		}
-		report.Results = append(report.Results, result)
+		report.Results = append(report.Results, outcome.result)
 	}
 	report.sort()
 	return report
+}
+
+// outcome is what formatting one script produced: a result, or the diagnostic
+// that replaces it.
+type outcome struct {
+	result     Result
+	diagnostic *Diagnostic
+}
+
+// formatAll formats every script of the snapshot on a bounded pool of workers
+// and returns the outcomes in snapshot.Paths order. Each worker writes only the
+// slot of the path it took, so the order does not depend on scheduling.
+func (f *Formatter) formatAll(snapshot *project.Snapshot) []outcome {
+	outcomes := make([]outcome, len(snapshot.Paths))
+	var next atomic.Int64
+	var workers sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), len(snapshot.Paths)) {
+		workers.Go(func() {
+			for {
+				index := int(next.Add(1)) - 1
+				if index >= len(snapshot.Paths) {
+					return
+				}
+				result, diagnostic := f.formatScript(snapshot.Scripts[snapshot.Paths[index]])
+				outcomes[index] = outcome{result: result, diagnostic: diagnostic}
+			}
+		})
+	}
+	workers.Wait()
+	return outcomes
 }
 
 // formatScript computes the canonical form of one script, or the diagnostic
@@ -60,7 +92,7 @@ func (f *Formatter) formatScript(script *project.Script) (Result, *Diagnostic) {
 	if bytes.Equal(formatted, script.Source) {
 		return Result{Path: script.Path}, nil
 	}
-	if err := verify(script.Path, script.Source, formatted, f.options); err != nil {
+	if err := verifyTree(script.Path, script.File, formatted, f.options); err != nil {
 		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: err.Error(), Path: script.Path, Line: 1, Column: 1}
 	}
 	if line, column, moved := movedSuppression(script.Source, formatted); moved {

@@ -12,7 +12,12 @@ import (
 // discovery settings.
 func loadProject(t *testing.T, config Config, files map[string]string) *project.Snapshot {
 	t.Helper()
-	root := t.TempDir()
+	return loadProjectInto(t, t.TempDir(), config, files)
+}
+
+// loadProjectInto writes files under root and loads the project there.
+func loadProjectInto(t testing.TB, root string, config Config, files map[string]string) *project.Snapshot {
+	t.Helper()
 	for name, contents := range files {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
