@@ -48,6 +48,17 @@ type Report struct {
 // HasFindings reports whether anything was found.
 func (r Report) HasFindings() bool { return len(r.Diagnostics) > 0 }
 
+// HasErrors reports whether any diagnostic has error severity. Warnings alone
+// do not make a run fail.
+func (r Report) HasErrors() bool {
+	for _, diagnostic := range r.Diagnostics {
+		if diagnostic.Severity == SeverityError {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Report) sort() {
 	sort.SliceStable(r.Diagnostics, func(i, j int) bool {
 		a, b := r.Diagnostics[i], r.Diagnostics[j]

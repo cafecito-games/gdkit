@@ -72,3 +72,153 @@ func writeCLIFile(t *testing.T, root, name, contents string) {
 		t.Fatal(err)
 	}
 }
+
+func TestRunLintCleanAndFindings(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc do_thing() -> void:\n\tpass\n")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("clean exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "lint check passed") {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+
+	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("findings exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	want := `player.gd:4: Error: Function name "doThing" is not valid (function-name)`
+	if !strings.Contains(stdout.String(), want) || !strings.Contains(stdout.String(), "lint check failed (1 diagnostics)") {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestRunBareLintRunsCheck(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "(function-name)") {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestRunLintJSON(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", "extends Node\n")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "check", "--format", "json", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "\"diagnostics\": []") {
+		t.Fatalf("clean JSON should hold an empty array: %s", stdout.String())
+	}
+
+	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")
+	stdout.Reset()
+	if code := run([]string{"lint", "check", "--format", "json", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "  \"diagnostics\": [\n") || !strings.Contains(stdout.String(), `"rule": "function-name"`) {
+		t.Fatalf("unexpected JSON: %s", stdout.String())
+	}
+}
+
+func TestRunLintUsageErrors(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", "extends Node\n")
+	cases := map[string][]string{
+		"unknown format":    {"lint", "check", "--format", "xml", root},
+		"too many roots":    {"lint", "check", root, root},
+		"unknown disable":   {"lint", "check", "--disable", "no-such-rule", root},
+		"missing config":    {"lint", "check", "--config", "missing.json", root},
+		"unknown lint verb": {"lint", "bogus"},
+		"init extra roots":  {"lint", "init", root, root},
+	}
+	for name, args := range cases {
+		var stdout, stderr bytes.Buffer
+		if code := run(args, &stdout, &stderr); code != 2 {
+			t.Errorf("%s: exit %d, want 2 (stdout=%s stderr=%s)", name, code, stdout.String(), stderr.String())
+		}
+	}
+
+	writeCLIFile(t, root, ".gdkit/lint.json", "{not json")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 2 {
+		t.Errorf("bad config: exit %d, want 2", code)
+	}
+}
+
+func TestRunLintDisable(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "check", "--disable", "function-name", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "function-name") {
+		t.Fatalf("rule was not disabled: %s", stdout.String())
+	}
+}
+
+func TestRunLintWarningSeverityDoesNotFail(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")
+	writeCLIFile(t, root, ".gdkit/lint.json", `{"severity": {"function-name": "warning"}}`)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `player.gd:4: Warning: Function name "doThing" is not valid (function-name)`) {
+		t.Fatalf("warning missing from output: %s", stdout.String())
+	}
+}
+
+func TestRunLintInit(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "init", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init exit %d: %s", code, stderr.String())
+	}
+	name := filepath.Join(root, ".gdkit", "lint.json")
+	data, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "\"function-name\"") {
+		t.Fatalf("unexpected config: %s", data)
+	}
+	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("check with written config exit %d: %s", code, stderr.String())
+	}
+
+	if err := os.WriteFile(name, []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stderr.Reset()
+	if code := run([]string{"lint", "init", root}, &stdout, &stderr); code != 2 {
+		t.Fatalf("clobber exit %d, want 2", code)
+	}
+	if got, _ := os.ReadFile(name); string(got) != "custom" {
+		t.Fatalf("existing config was overwritten: %s", got)
+	}
+	if code := run([]string{"lint", "init", "--force", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("force exit %d: %s", code, stderr.String())
+	}
+	if got, _ := os.ReadFile(name); string(got) == "custom" {
+		t.Fatal("--force did not replace the config")
+	}
+}
