@@ -299,11 +299,11 @@ func (s *significantTokens) isParenthesizedArgument(callee *ast.Identifier, lite
 // unusedArgumentRule reports a named function's parameter that its function
 // never mentions. gdlint counts name tokens rather than resolving scopes, so
 // the parameter counts as used when any other identifier-like name in the
-// function matches it: a shadowing local, a member access such as self.x, a
-// node path, or a lambda parameter. Type annotations, strings, and the
-// get() and set() builtins do not count. Lambda parameters are never
-// reported, and neither are abstract functions or names starting with an
-// underscore.
+// function matches it: a member access such as self.x, a node path, a
+// dictionary key written {x = 1}, or the name or a parameter of a lambda. Type
+// annotations, strings, and the get() and set() builtins do not count. Lambda
+// parameters are never reported, and neither are abstract functions or names
+// starting with an underscore.
 type unusedArgumentRule struct{}
 
 func (unusedArgumentRule) Name() string { return "unused-argument" }
@@ -319,17 +319,11 @@ func (unusedArgumentRule) Check(_ *Context, script *project.Script) []Diagnostic
 			return true
 		}
 		occurrences := countNames(function)
-		declared := map[string]int{}
-		last := map[string]ast.Parameter{}
 		for _, parameter := range function.Parameters {
-			declared[parameter.Name]++
-			last[parameter.Name] = parameter
-		}
-		for name, count := range declared {
-			if count != occurrences[name] || strings.HasPrefix(name, "_") {
+			if occurrences[parameter.Name] != 1 || strings.HasPrefix(parameter.Name, "_") {
 				continue
 			}
-			found = append(found, spanDiagnostic(script, fmt.Sprintf("unused function argument '%s'", name), last[name].NameSpan))
+			found = append(found, spanDiagnostic(script, fmt.Sprintf("unused function argument '%s'", parameter.Name), parameter.NameSpan))
 		}
 		return true
 	})
@@ -338,7 +332,8 @@ func (unusedArgumentRule) Check(_ *Context, script *project.Script) []Diagnostic
 
 // countNames tallies every name gdlint's grammar lexes as a plain name inside
 // a function declaration: its own name, its parameters, and the names in its
-// defaults and body.
+// defaults and body. Names declared in the body are left out, because a local,
+// a loop variable, or a match bind can never share a parameter's name.
 func countNames(function *ast.FunctionDeclaration) map[string]int {
 	counts := map[string]int{function.Name: 1}
 	notNames := map[ast.Node]bool{}
@@ -359,10 +354,6 @@ func countNames(function *ast.FunctionDeclaration) map[string]int {
 			}
 		case *ast.MemberExpression:
 			count(node.Property)
-		case *ast.VariableDeclaration:
-			counts[node.Name]++
-		case *ast.ForStatement:
-			counts[node.Variable]++
 		case *ast.LambdaExpression:
 			if node.Name != "" {
 				counts[node.Name]++
