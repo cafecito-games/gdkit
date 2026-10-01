@@ -313,6 +313,14 @@ one-line class body with more than one member, such as
 rewrite would move `u` into the class. Writing the class as a block, or the
 second member on its own line, makes the file acceptable.
 
+Two layouts are currently refused as `format.unsafe` because the formatted
+output parses back to a different tree
+([gdparser#77](https://github.com/cafecito-games/gdparser/issues/77)): a lambda
+whose one-line body is a compound statement, such as
+`func(): if a: return 1`, and an annotation on the same line as `class_name`,
+such as `@abstract class_name X extends Node`. Writing the lambda body as a
+block, or the annotation on its own line, avoids both.
+
 A rewrite is also refused as `format.unsafe` when it would change the code a
 lint suppression comment applies to. A directive reaches lines rather than
 syntax, so each one must stay the same directive, still trailing code or still
@@ -433,10 +441,20 @@ The syntax is that of `.gitignore`:
 - Matching is case-sensitive, whatever the filesystem.
 - Patterns are evaluated in order and the last one that matches decides.
 
-There is one deliberate difference from git: a negated pattern can re-include
-something inside an ignored directory. A path is tested as itself and through
-each of its ancestor directories, and the last pattern that matches the path or
-any ancestor decides.
+The matcher differs from git in four ways:
+
+- Matching is case-sensitive whatever the filesystem; git follows
+  `core.ignoreCase`.
+- `?` and a character class match one character. Git matches one byte, so the
+  two disagree on names outside ASCII: `?.gd` matches `é.gd` here and not in
+  git.
+- A malformed pattern is an error with its line number, where git accepts it
+  silently: an unterminated character class, a range that runs backwards
+  (`[z-a]`), an unknown class name (`[[:word:]]`), a class that could only match
+  `/` (`[/]`), a lone `!`, and a trailing lone backslash.
+- A negated pattern can re-include something inside an ignored directory. A path
+  is tested as itself and through each of its ancestor directories, and the last
+  pattern that matches the path or any ancestor decides.
 
 ```gitignore
 addons/

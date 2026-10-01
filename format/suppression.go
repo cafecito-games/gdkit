@@ -16,9 +16,10 @@ import (
 // which line says it.
 const suppressionMoved = "formatting would change the code a lint suppression comment applies to"
 
-// suppressionComment is one lint suppression directive and what decides the
-// code it applies to: how it sits on its line, and the code on that line and
-// on the line below it.
+// suppressionComment is one lint suppression directive: its kind, the rules it
+// names, whether it stands alone on its line or trails code, and where it was
+// written. The code it reaches is not kept here; movedSuppression looks that
+// up from the position.
 type suppressionComment struct {
 	kind       suppression.Kind
 	names      []string

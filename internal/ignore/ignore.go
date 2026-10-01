@@ -2,9 +2,19 @@
 // .gdkitignore file: one pattern per line, "!" to re-include, a trailing "/"
 // for directories only, and the last matching pattern deciding.
 //
-// It differs from git in one way. A path is tested as itself and through each
-// of its ancestor directories, so a negated pattern can re-include something
-// inside an ignored directory.
+// It differs from git in four ways:
+//
+//   - A path is tested as itself and through each of its ancestor directories,
+//     so a negated pattern can re-include something inside an ignored
+//     directory.
+//   - Matching is case-sensitive whatever the filesystem, where git follows
+//     core.ignoreCase.
+//   - "?" and a character class match one character, where git matches one
+//     byte, so the two disagree on names outside ASCII.
+//   - A malformed pattern is an error that names its line, where git accepts
+//     it silently: an unterminated character class, a range that runs
+//     backwards, an unknown class name, a class that could only match "/", a
+//     lone "!", and a trailing lone backslash.
 package ignore
 
 import (

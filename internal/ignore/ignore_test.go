@@ -42,6 +42,10 @@ func TestIgnored(t *testing.T) {
 		{"crlf on the last pattern", "a.gd\r\nb.gd\r\n", "b.gd", false, true},
 		{"byte order mark", "\ufeffa.gd\n", "a.gd", false, true},
 		{"no trailing newline", "a.gd", "a.gd", false, true},
+		{"letter case is significant", "Player.gd\n", "player.gd", false, false},
+		{"question mark matches one multi-byte character", "?.gd\n", "é.gd", false, true},
+		{"question mark does not match one byte of a character", "??.gd\n", "é.gd", false, false},
+		{"class matches one multi-byte character", "[é].gd\n", "é.gd", false, true},
 
 		{"name matches at the root", "a.gd\n", "a.gd", false, true},
 		{"name matches at any depth", "a.gd\n", "x/y/a.gd", false, true},

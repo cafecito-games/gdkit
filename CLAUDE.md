@@ -58,8 +58,10 @@ the default branch.
   off, because hiding a file would drop its `class_name` from the index.
 - `internal/glob/` — the shared glob engine.
 - `internal/ignore/` — the gitignore-style matcher behind `.gdkitignore`. It
-  differs from git in one documented way: a negated pattern can re-include a
-  path inside an ignored directory.
+  differs from git in four documented ways: a negated pattern can re-include a
+  path inside an ignored directory; matching is case-sensitive whatever the
+  filesystem; `?` and character classes match one character, not one byte; and
+  a malformed pattern is an error naming its line where git accepts it silently.
 - `internal/suppression/` — the lint suppression directive grammar, shared by
   `lint`, which obeys the comments, and `format`, which must not change what
   they cover.
