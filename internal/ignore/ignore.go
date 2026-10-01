@@ -151,12 +151,21 @@ func compile(line string) (compiled pattern, matchable bool, err error) {
 				end++
 			}
 			atSegmentStart := index == 0 || characters[index-1] == '/'
+			// Git compares the literal text that opens an anchored pattern
+			// on its own and hands only the rest to its wildcard matcher,
+			// so a run of stars straight after that text is read as if it
+			// opened the pattern: "a**/b" matches "a/x/b", though "?a**/b"
+			// does not match "xa/y/b".
+			afterLiteralPrefix := anchored && !strings.ContainsAny(string(characters[:index]), `*?[\`)
+			crossesDirectories := end-index >= 2 && (atSegmentStart || afterLiteralPrefix)
 			switch {
-			case end-index == 2 && atSegmentStart && end < len(characters) && characters[end] == '/':
+			case crossesDirectories && end < len(characters) && characters[end] == '/':
 				expression.WriteString("(?:.*/)?")
 				end++
-			case end-index == 2 && atSegmentStart && end == len(characters):
+			case crossesDirectories && end == len(characters) && atSegmentStart:
 				expression.WriteString(".+")
+			case crossesDirectories && end == len(characters):
+				expression.WriteString(".*")
 			default:
 				expression.WriteString("[^/]*")
 			}
@@ -191,51 +200,112 @@ func compile(line string) (compiled pattern, matchable bool, err error) {
 }
 
 // compileClass translates the character class that opens at start and
-// returns the index just past its closing bracket.
+// returns the index just past its closing bracket. A class never matches a
+// path separator, as in git, so a range that spans "/" is written as the two
+// ranges on either side of it.
 func compileClass(characters []rune, start int) (string, int, error) {
 	var class strings.Builder
 	class.WriteString("[")
 	index := start + 1
 	negated := index < len(characters) && (characters[index] == '!' || characters[index] == '^')
 	if negated {
-		// A wildcard never matches a path separator, so a negated class must
-		// exclude it explicitly.
 		class.WriteString("^/")
 		index++
 	}
+	members := 0
 	first := true
 	for index < len(characters) {
 		character := characters[index]
-		switch {
-		case character == ']' && !first:
+		if character == ']' && !first {
+			if members == 0 && !negated {
+				return "", 0, fmt.Errorf(`character class %q matches nothing, because a class never matches "/"`, string(characters[start:index+1]))
+			}
 			class.WriteString("]")
 			return class.String(), index + 1, nil
-		case character == '\\':
-			if index+1 == len(characters) {
-				return "", 0, errors.New("trailing backslash escapes nothing")
-			}
-			class.WriteString(escapeClassMember(characters[index+1]))
-			index += 2
-		case character == '[' && index+1 < len(characters) && characters[index+1] == ':':
+		}
+		first = false
+		if character == '[' && index+1 < len(characters) && characters[index+1] == ':' {
 			end := strings.Index(string(characters[index:]), ":]")
 			if end == -1 {
 				return "", 0, errors.New("unterminated character class")
 			}
 			named := string(characters[index:])[:end+2]
-			class.WriteString(named)
+			ranges, known := namedClasses[named]
+			if !known {
+				return "", 0, fmt.Errorf("unknown character class name %q", named)
+			}
+			for _, bounds := range ranges {
+				members += writeClassRange(&class, bounds[0], bounds[1])
+			}
 			index += len([]rune(named))
-		case character == '-':
-			class.WriteString("-")
-			index++
-		case character == '/' && !negated:
-			index++
-		default:
-			class.WriteString(escapeClassMember(character))
-			index++
+			continue
 		}
-		first = false
+		low, next, err := classMember(characters, index)
+		if err != nil {
+			return "", 0, err
+		}
+		high := low
+		// A hyphen makes a range unless it is the last member of the class.
+		if next+1 < len(characters) && characters[next] == '-' && characters[next+1] != ']' {
+			high, next, err = classMember(characters, next+1)
+			if err != nil {
+				return "", 0, err
+			}
+			if high < low {
+				return "", 0, fmt.Errorf(`character class range "%c-%c" runs backwards`, low, high)
+			}
+		}
+		members += writeClassRange(&class, low, high)
+		index = next
 	}
 	return "", 0, errors.New("unterminated character class")
+}
+
+// namedClasses lists the POSIX classes git accepts as the ranges each stands
+// for, with the path separator left out of the ones that hold it.
+var namedClasses = map[string][][2]rune{
+	"[:alnum:]":  {{'0', '9'}, {'A', 'Z'}, {'a', 'z'}},
+	"[:alpha:]":  {{'A', 'Z'}, {'a', 'z'}},
+	"[:blank:]":  {{' ', ' '}, {'\t', '\t'}},
+	"[:cntrl:]":  {{0, 0x1f}, {0x7f, 0x7f}},
+	"[:digit:]":  {{'0', '9'}},
+	"[:graph:]":  {{'!', '~'}},
+	"[:lower:]":  {{'a', 'z'}},
+	"[:print:]":  {{' ', '~'}},
+	"[:punct:]":  {{'!', '/'}, {':', '@'}, {'[', '`'}, {'{', '~'}},
+	"[:space:]":  {{'\t', '\r'}, {' ', ' '}},
+	"[:upper:]":  {{'A', 'Z'}},
+	"[:xdigit:]": {{'0', '9'}, {'A', 'F'}, {'a', 'f'}},
+}
+
+// classMember reads the character at index of a class, taking a backslash as
+// escaping the character after it, and returns the index that follows.
+func classMember(characters []rune, index int) (rune, int, error) {
+	if characters[index] != '\\' {
+		return characters[index], index + 1, nil
+	}
+	if index+1 == len(characters) {
+		return 0, 0, errors.New("trailing backslash escapes nothing")
+	}
+	return characters[index+1], index + 2, nil
+}
+
+// writeClassRange writes the characters from low to high into a class, without
+// the path separator, and returns how many ranges that took: none when the
+// separator was all there was.
+func writeClassRange(class *strings.Builder, low, high rune) int {
+	if low <= '/' && '/' <= high {
+		return writeClassRange(class, low, '/'-1) + writeClassRange(class, '/'+1, high)
+	}
+	if low > high {
+		return 0
+	}
+	class.WriteString(escapeClassMember(low))
+	if high > low {
+		class.WriteString("-")
+		class.WriteString(escapeClassMember(high))
+	}
+	return 1
 }
 
 func escapeClassMember(character rune) string {

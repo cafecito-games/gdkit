@@ -427,9 +427,10 @@ The syntax is that of `.gitignore`:
 - A pattern with a leading or interior slash is anchored to the project root:
   `/client/protocol/`, `client/protocol/*.gd`.
 - `*` and `?` do not cross `/`. `[abc]`, `[a-z]`, and `[!a]` are character
-  classes. A leading `**/` matches in any directory, a trailing `/**` matches
-  everything inside, and `/**/` matches zero or more directories. A backslash
-  escapes the next character.
+  classes, and a class never matches `/`. A leading `**/` matches in any
+  directory, a trailing `/**` matches everything inside, and `/**/` matches
+  zero or more directories. A backslash escapes the next character.
+- Matching is case-sensitive, whatever the filesystem.
 - Patterns are evaluated in order and the last one that matches decides.
 
 There is one deliberate difference from git: a negated pattern can re-include
