@@ -1,8 +1,8 @@
 # gdkit
 
 `gdkit` is a Go 1.26 toolkit for static analysis and source processing of
-Godot 4 GDScript. Its first tool, `gdkit arch`, enforces architectural
-boundaries across a project.
+Godot 4 GDScript. `gdkit arch` enforces architectural boundaries across a
+project, and `gdkit lint` checks GDScript style and correctness.
 
 The analyzer uses [`gdparser`](https://github.com/cafecito-games/gdparser) and
 does not search source text with regular expressions. It parses GDScript,
@@ -52,6 +52,168 @@ gdkit arch check --show-edges .
 ```
 
 The command exits `0` when clean, `1` for architecture violations, and `2` for
+configuration, usage, or I/O failures.
+
+## Linting
+
+`gdkit lint` reports 29 naming, structural, design, and formatting problems in
+GDScript. Like the architecture analyzer, it works from the parsed AST and shares
+its project discovery, so both tools agree on which files are in scope.
+
+```sh
+gdkit lint check .
+gdkit lint check --format json .
+gdkit lint check --disable max-line-length,max-file-lines .
+gdkit lint init .
+```
+
+Text output is one line per diagnostic, naming the rule in parentheses:
+
+```text
+player.gd:12: Error: Function name "DoThing" is not valid (function-name)
+```
+
+JSON output carries the same diagnostics with a 1-based rune `column` and, for
+some rules, `end_line` and `end_column`. Diagnostics are sorted by path, line,
+column, and rule, so the output is stable between runs.
+
+The command exits `0` when clean, `1` when at least one `error` diagnostic was
+reported, and `2` for configuration, usage, or I/O failures.
+
+### Rules
+
+Name rules check an identifier against a pattern from the configuration:
+
+- `function-name`, `class-name`, `sub-class-name`, `signal-name`;
+- `class-variable-name`, `class-load-variable-name`, `function-variable-name`,
+  `function-preload-variable-name`, `function-argument-name`,
+  `loop-variable-name`;
+- `enum-name`, `enum-element-name`, `constant-name`, and `load-constant-name`.
+
+Basic correctness rules:
+
+- `duplicated-load`, `expression-not-assigned`, `unnecessary-pass`,
+  `unused-argument`, and `comparison-with-itself`.
+
+Structure rules:
+
+- `class-definitions-order` checks the order of members against the configured
+  slot order; and
+- `no-else-return` and `no-elif-return` flag an `else` or `elif` that follows
+  branches which return.
+
+Design limits:
+
+- `max-returns`, `max-public-methods`, and `function-arguments-number`.
+
+Format rules:
+
+- `max-file-lines`, `max-line-length`, `trailing-whitespace`, and
+  `mixed-tabs-and-spaces`.
+
+Two further rules are reported by the driver rather than by a rule:
+
+- `source-parse` reports a file that does not parse. Rules cannot run on it.
+- `unknown-ignore` reports a suppression comment that names a rule that does not
+  exist, so a misspelled name cannot silently suppress nothing.
+
+### Lint configuration
+
+`gdkit lint init` writes `.gdkit/lint.json` with the default policy, and
+existing files are preserved unless `--force` is supplied. Pass an alternate
+file with `--config`, relative to the project root. `gdkit lint check` runs with
+the defaults when no configuration file exists. Unknown keys, unknown rule
+names, and patterns that do not compile are configuration errors.
+
+Values are applied on top of the defaults, so an omitted field keeps its
+default:
+
+| Field | Default |
+| --- | --- |
+| `source_roots` | `["."]` |
+| `exclude` | `[".git/**", ".godot/**", ".gdkit/**", "addons/**"]` |
+| `disable` | none |
+| `severity` | none; every rule is an `error` |
+| `max-returns` | `6` |
+| `max-public-methods` | `20` |
+| `function-arguments-number` | `10` |
+| `max-file-lines` | `1000` |
+| `max-line-length` | `100` |
+| `tab-characters` | `1` |
+
+`disable` lists rules to turn off, and `--disable` takes the same names as a
+comma-separated list in addition to the file. `exclude` uses the same glob
+syntax as the architecture configuration.
+
+`tab-characters` is a setting and not a rule. `max-line-length` expands each
+tab to that many spaces before measuring a line.
+
+Each name rule has a key of the same name holding a regular expression that must
+match the whole identifier, for example:
+
+```json
+{
+  "class-name": "([A-Z][a-z0-9]*)+",
+  "signal-name": "[a-z][a-z0-9]*(_[a-z0-9]+)*",
+  "enum-element-name": "[A-Z][A-Z0-9]*(_[A-Z0-9]+)*"
+}
+```
+
+`class-definitions-order` is a list of slot names that defaults to `tools`,
+`classnames`, `extends`, `docstrings`, `signals`, `enums`, `consts`,
+`staticvars`, `exports`, `pubvars`, `prvvars`, `onreadypubvars`,
+`onreadyprvvars`, and `others`.
+
+A rule's severity can be lowered to `warning`. Warnings are printed but do not
+make the run fail:
+
+```json
+{
+  "severity": {
+    "max-line-length": "warning",
+    "unused-argument": "warning"
+  },
+  "disable": ["max-file-lines"]
+}
+```
+
+### Suppressing diagnostics
+
+Comments name one or more rules in a comma-separated list. `gdlint` is accepted
+in place of `gdkit` in each directive, so existing suppression comments keep
+working.
+
+```gdscript
+# gdkit:ignore = function-name, unused-argument
+func DoThing(unused):
+	pass
+
+# gdkit:disable = max-line-length
+# ... a region where long lines are fine ...
+# gdkit:enable = max-line-length
+```
+
+- `# gdkit:ignore = rule-a, rule-b` applies to its own line and the line below.
+- `# gdkit:disable = rule` applies from that line to the end of the file.
+- `# gdkit:enable = rule` ends a disable.
+
+Two behaviors are easy to trip on:
+
+- The earliest `enable` for a rule ends every `disable` of that rule, including
+  a `disable` that appears later in the file.
+- The rule list runs to the end of the line, so a trailing comment becomes part
+  of the last rule name. `# gdkit:ignore = function-name # note` suppresses
+  nothing, and `unknown-ignore` reports `function-name # note` as an unknown
+  rule.
+
+### Severity and exit codes
+
+Every rule is an error by default. Setting a rule's severity to `warning` in
+`.gdkit/lint.json` reports it without failing the run, which is useful for a rule
+a project is working toward rather than enforcing.
+
+`gdkit lint check` exits `0` when clean or when the only diagnostics are
+warnings, `1` when any error-severity diagnostic is reported, and `2` for
 configuration, usage, or I/O failures.
 
 ## Version information
