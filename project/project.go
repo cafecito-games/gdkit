@@ -4,6 +4,7 @@
 package project
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -12,15 +13,27 @@ import (
 	"strings"
 
 	"github.com/cafecito-games/gdkit/internal/glob"
+	"github.com/cafecito-games/gdkit/internal/ignore"
 	"github.com/cafecito-games/gdparser"
 	"github.com/cafecito-games/gdparser/ast"
+	"github.com/cafecito-games/gdparser/lexer"
+	"github.com/cafecito-games/gdparser/parser"
+	"github.com/cafecito-games/gdparser/token"
 )
+
+// IgnoreFileName is the gitignore-style file at the project root that lists
+// paths a tool skips when it sets Config.HonorIgnoreFile.
+const IgnoreFileName = ".gdkitignore"
 
 // Config selects the files that belong to a project.
 type Config struct {
 	Root        string
 	SourceRoots []string
 	Exclude     []string
+	// HonorIgnoreFile also skips the paths listed in the root IgnoreFileName.
+	// Exclude still applies: a path is skipped when either one covers it, so a
+	// negated ignore pattern cannot bring back an excluded path.
+	HonorIgnoreFile bool
 }
 
 // Script is one discovered GDScript file.
@@ -54,6 +67,26 @@ func (s *Script) Line(number int) string {
 	return strings.TrimSuffix(text, "\r")
 }
 
+// ParseFailure describes ParseError as a one-based position and a message
+// that does not repeat the file name or the position. A failure that carries no
+// position is placed at the start of the file. It must only be called when
+// ParseError is set.
+func (s *Script) ParseFailure() (line, column int, message string) {
+	position, message := token.Position{}, s.ParseError.Error()
+	var syntaxError *parser.Error
+	var lexicalError *lexer.Error
+	switch {
+	case errors.As(s.ParseError, &syntaxError):
+		position, message = syntaxError.Token.Span.Start, syntaxError.Message
+	case errors.As(s.ParseError, &lexicalError):
+		position, message = lexicalError.Position, lexicalError.Message
+	}
+	if position.Line < 1 {
+		return 1, 1, message
+	}
+	return position.Line, max(position.Column, 1), message
+}
+
 // LineCount is the number of lines in the file.
 func (s *Script) LineCount() int { return len(s.Lines) }
 
@@ -75,6 +108,13 @@ func Load(config Config) (*Snapshot, error) {
 	root, err := filepath.Abs(config.Root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project root: %w", err)
+	}
+	var ignored *ignore.Matcher
+	if config.HonorIgnoreFile {
+		ignored, err = loadIgnoreFile(root)
+		if err != nil {
+			return nil, err
+		}
 	}
 	sourceRoots := config.SourceRoots
 	if len(sourceRoots) == 0 {
@@ -114,13 +154,27 @@ func Load(config Config) (*Snapshot, error) {
 				}
 				return nil
 			}
+			if entry.IsDir() {
+				// A negated pattern can re-include something below an ignored
+				// directory, so the directory is only pruned when there is none.
+				if !ignored.HasNegation() && ignored.Ignored(relative, true) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 			if !entry.Type().IsRegular() {
 				return nil
 			}
 			switch {
 			case strings.HasSuffix(relative, ".gd"):
+				if ignored.Ignored(relative, false) {
+					return nil
+				}
 				seen[relative] = struct{}{}
 			case strings.HasSuffix(relative, ".uid"):
+				if ignored.Ignored(relative, false) || ignored.Ignored(strings.TrimSuffix(relative, ".uid"), false) {
+					return nil
+				}
 				data, readErr := os.ReadFile(name)
 				if readErr != nil {
 					return nil
@@ -159,6 +213,23 @@ func Load(config Config) (*Snapshot, error) {
 		scripts[name] = script
 	}
 	return &Snapshot{Root: root, Paths: paths, Scripts: scripts, UIDs: uids}, nil
+}
+
+// loadIgnoreFile reads the ignore file at the project root. A project without
+// one has no matcher, which ignores nothing.
+func loadIgnoreFile(root string) (*ignore.Matcher, error) {
+	source, err := os.ReadFile(filepath.Join(root, IgnoreFileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", IgnoreFileName, err)
+	}
+	matcher, err := ignore.Parse(source)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", IgnoreFileName, err)
+	}
+	return matcher, nil
 }
 
 // lineStarts returns the byte offset at which each line begins. A trailing

@@ -2,6 +2,7 @@ package lint
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/cafecito-games/gdparser/ast"
@@ -89,73 +90,98 @@ func checkClassOrder(script *project.Script, label string, members []orderedMemb
 func orderedMembers(body []ast.Statement) []orderedMember {
 	var members []orderedMember
 	var pending []*ast.Annotation
-	// consume feeds annotations through gdlint's pairing: a standalone
-	// annotation is a statement of its own and discards whatever annotations
-	// were waiting for a declaration.
-	consume := func(annotations []*ast.Annotation) {
-		for _, annotation := range annotations {
-			if !standaloneAnnotation(annotation) {
-				pending = append(pending, annotation)
-				continue
-			}
-			pending = nil
-			if annotation.Name == "tool" {
-				members = append(members, orderedMember{slot: "tools", start: annotation.Span().Start})
-			}
-		}
-	}
 	declare := func(slot string, start token.Position) {
 		members = append(members, orderedMember{slot: slot, start: start})
-		pending = nil
 	}
-	for _, statement := range body {
-		switch statement := statement.(type) {
+	for _, element := range sourceOrder(body) {
+		// gdlint hands the annotations waiting for a declaration to the next
+		// statement of any kind, and a standalone annotation is a statement.
+		if annotation, ok := element.node.(*ast.Annotation); ok && !standaloneAnnotation(annotation) {
+			pending = append(pending, annotation)
+			continue
+		}
+		switch statement := element.node.(type) {
 		case *ast.Annotation:
-			consume([]*ast.Annotation{statement})
-		case *ast.Comment:
-		case *ast.VariableDeclaration:
-			consume(statement.Annotations)
-			declare(variableSlot(statement, pending), variableStart(statement))
-		case *ast.FunctionDeclaration:
-			consume(statement.Annotations)
-			start := statement.KeywordSpan.Start
-			if statement.Static {
-				start = statement.StaticSpan.Start
+			if statement.Name == "tool" {
+				declare("tools", element.start)
 			}
-			declare("others", start)
+		case *ast.VariableDeclaration:
+			declare(variableSlot(statement, pending), element.start)
+		case *ast.FunctionDeclaration:
+			declare("others", element.start)
 		case *ast.SignalDeclaration:
-			consume(statement.Annotations)
-			declare("signals", statement.KeywordSpan.Start)
+			declare("signals", element.start)
 		case *ast.EnumDeclaration:
-			consume(statement.Annotations)
-			declare("enums", statement.KeywordSpan.Start)
-		case *ast.ClassDeclaration:
-			consume(statement.Annotations)
-			pending = nil
+			declare("enums", element.start)
 		case *ast.Directive:
 			slot := "extends"
 			if statement.Name == "class_name" && statement.Extends == nil {
 				slot = "classnames"
 			}
-			declare(slot, statement.KeywordSpan.Start)
+			declare(slot, element.start)
 		case *ast.ExpressionStatement:
 			if literal, ok := statement.Expression.(*ast.Literal); ok && literal.Kind == ast.StringLiteral {
-				declare("docstrings", statement.Span().Start)
-			} else {
-				pending = nil
+				declare("docstrings", element.start)
 			}
-		default:
-			pending = nil
 		}
+		pending = nil
 	}
 	return members
 }
 
-func variableStart(variable *ast.VariableDeclaration) token.Position {
-	if variable.Static {
-		return variable.StaticSpan.Start
+// sourceElement is an annotation or a statement of a class body, with the
+// position gdlint reports for it.
+type sourceElement struct {
+	node  ast.Node
+	start token.Position
+}
+
+// sourceOrder lists the annotations and statements of a class body in the
+// order they are written. gdparser attaches an annotation to the declaration
+// it applies to, even across a standalone annotation written between the two,
+// and lists that standalone annotation ahead of the declaration, so the body
+// alone does not give the order gdlint pairs annotations in.
+func sourceOrder(body []ast.Statement) []sourceElement {
+	var elements []sourceElement
+	for _, statement := range body {
+		if _, isComment := statement.(*ast.Comment); isComment {
+			continue
+		}
+		for _, annotation := range ast.Annotations(statement) {
+			elements = append(elements, sourceElement{node: annotation, start: annotation.Span().Start})
+		}
+		elements = append(elements, sourceElement{node: statement, start: statementStart(statement)})
 	}
-	return variable.KeywordSpan.Start
+	sort.SliceStable(elements, func(i, j int) bool {
+		return elements[i].start.Offset < elements[j].start.Offset
+	})
+	return elements
+}
+
+// statementStart is where a statement begins once the annotations attached to
+// it are set aside.
+func statementStart(statement ast.Statement) token.Position {
+	switch statement := statement.(type) {
+	case *ast.VariableDeclaration:
+		if statement.Static {
+			return statement.StaticSpan.Start
+		}
+		return statement.KeywordSpan.Start
+	case *ast.FunctionDeclaration:
+		if statement.Static {
+			return statement.StaticSpan.Start
+		}
+		return statement.KeywordSpan.Start
+	case *ast.SignalDeclaration:
+		return statement.KeywordSpan.Start
+	case *ast.EnumDeclaration:
+		return statement.KeywordSpan.Start
+	case *ast.ClassDeclaration:
+		return statement.KeywordSpan.Start
+	case *ast.Directive:
+		return statement.KeywordSpan.Start
+	}
+	return statement.Span().Start
 }
 
 func variableSlot(variable *ast.VariableDeclaration, annotations []*ast.Annotation) string {

@@ -1,0 +1,114 @@
+package format
+
+import (
+	"bytes"
+	"runtime"
+	"sync"
+	"sync/atomic"
+
+	"github.com/cafecito-games/gdkit/project"
+	"github.com/cafecito-games/gdparser/ast"
+	gdformat "github.com/cafecito-games/gdparser/format"
+)
+
+// Formatter computes the canonical form of every script in a project.
+type Formatter struct {
+	options gdformat.Options
+	// emit renders a tree as source. It is a field so a test can stand in a
+	// formatter that damages its input and prove the damage is refused.
+	emit func(*ast.File, gdformat.Options) string
+}
+
+// New builds a Formatter, rejecting an invalid config.
+func New(config Config) (*Formatter, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	options, err := config.options()
+	if err != nil {
+		return nil, err
+	}
+	return &Formatter{options: options, emit: gdformat.FileWithOptions}, nil
+}
+
+// Format computes the canonical form of every script in the snapshot. It
+// performs no I/O and leaves the snapshot untouched; Apply writes the results.
+// A file that does not parse, that holds a one-line class body the parser
+// reads differently from Godot, or whose formatted output does not keep its
+// syntax tree and its tokens or would change the code a lint suppression
+// comment applies to, gets a diagnostic instead of a result.
+func (f *Formatter) Format(snapshot *project.Snapshot) Report {
+	report := Report{Results: []Result{}, Diagnostics: []Diagnostic{}}
+	for _, outcome := range f.formatAll(snapshot) {
+		if outcome.diagnostic != nil {
+			report.Diagnostics = append(report.Diagnostics, *outcome.diagnostic)
+			continue
+		}
+		report.Results = append(report.Results, outcome.result)
+	}
+	report.sort()
+	return report
+}
+
+// outcome is what formatting one script produced: a result, or the diagnostic
+// that replaces it.
+type outcome struct {
+	result     Result
+	diagnostic *Diagnostic
+}
+
+// formatAll formats every script of the snapshot on a bounded pool of workers
+// and returns the outcomes in snapshot.Paths order. Each worker writes only the
+// slot of the path it took, so the order does not depend on scheduling.
+func (f *Formatter) formatAll(snapshot *project.Snapshot) []outcome {
+	outcomes := make([]outcome, len(snapshot.Paths))
+	var next atomic.Int64
+	var workers sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), len(snapshot.Paths)) {
+		workers.Go(func() {
+			for {
+				index := int(next.Add(1)) - 1
+				if index >= len(snapshot.Paths) {
+					return
+				}
+				result, diagnostic := f.formatScript(snapshot.Scripts[snapshot.Paths[index]])
+				outcomes[index] = outcome{result: result, diagnostic: diagnostic}
+			}
+		})
+	}
+	workers.Wait()
+	return outcomes
+}
+
+// formatScript computes the canonical form of one script, or the diagnostic
+// that explains why it has none.
+func (f *Formatter) formatScript(script *project.Script) (Result, *Diagnostic) {
+	if script.ParseError != nil {
+		diagnostic := parseDiagnostic(script)
+		return Result{}, &diagnostic
+	}
+	if line, column, found := ambiguousClass(script.File, script.Source); found {
+		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: ambiguousClassBody, Path: script.Path, Line: line, Column: column}
+	}
+	formatted := []byte(f.emit(script.File, f.options))
+	if bytes.Equal(formatted, script.Source) {
+		return Result{Path: script.Path}, nil
+	}
+	if err := verifyTree(script.Path, script.File, formatted, f.options); err != nil {
+		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: err.Error(), Path: script.Path, Line: 1, Column: 1}
+	}
+	if line, column, changed := changedToken(script.Source, formatted, f.options); changed {
+		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: tokensChanged, Path: script.Path, Line: line, Column: column}
+	}
+	if line, column, moved := movedSuppression(script.Source, formatted, f.options); moved {
+		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: suppressionMoved, Path: script.Path, Line: line, Column: column}
+	}
+	return Result{Path: script.Path, Changed: true, Formatted: formatted}, nil
+}
+
+// parseDiagnostic reports a parse failure at the position the parser or lexer
+// gave, or at the start of the file when the error carries none.
+func parseDiagnostic(script *project.Script) Diagnostic {
+	line, column, message := script.ParseFailure()
+	return Diagnostic{Rule: ruleSourceParse, Message: message, Path: script.Path, Line: line, Column: column}
+}

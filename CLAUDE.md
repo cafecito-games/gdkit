@@ -19,6 +19,9 @@ GDKIT_CORPUS=/path/to/project go test -race ./lint -run TestCorpus
 go run ./cmd/gdkit arch check /path/to/godot-project
 go run ./cmd/gdkit arch check --format json --show-edges .
 go run ./cmd/gdkit lint check /path/to/godot-project
+go run ./cmd/gdkit format check /path/to/godot-project
+go run ./cmd/gdkit format check --diff /path/to/godot-project
+go run ./cmd/gdkit format write /path/to/godot-project
 
 # Release packaging (same commands CI runs)
 goreleaser check
@@ -33,19 +36,39 @@ the default branch.
 
 ## Architecture
 
-`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Six packages:
+`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Ten packages:
 
 - `architecture/` — the dependency analyzer: layer and feature boundaries, cycles,
   and engine purity (the substance of `gdkit arch`).
 - `lint/` — the linter: a registry of single-file rules over a `project.Snapshot`.
   Rule names are a public contract; they appear in JSON output, in config, and in
   inline ignore comments, so renaming one breaks user projects.
+- `format/` — the formatter: drives gdparser's formatter over a `project.Snapshot`
+  and verifies every rewrite before offering it. Verification covers the syntax
+  tree (the reparsed output must keep it), the token stream (no token other than
+  layout, parentheses, commas, and semicolons may appear, vanish, or change),
+  and suppression placement (the code a lint suppression comment applies to
+  must not change). It is pure except for `LoadConfig` and `Apply`; `Format`
+  performs no I/O.
+  `format.unsafe` and `source-parse` are its public diagnostic names and appear in
+  JSON output.
 - `project/` — discovery and parsing. The only package that reads a project from
-  disk, so both tools agree on scope and parse once.
+  disk, so every tool agrees on scope and parses once. `Config.HonorIgnoreFile`
+  is how lint and format share the root `.gdkitignore`; `architecture` leaves it
+  off, because hiding a file would drop its `class_name` from the index.
 - `internal/glob/` — the shared glob engine.
+- `internal/ignore/` — the gitignore-style matcher behind `.gdkitignore`. It
+  differs from git in four documented ways: a negated pattern can re-include a
+  path inside an ignored directory; matching is case-sensitive whatever the
+  filesystem; `?` and character classes match one character, not one byte; and
+  a malformed pattern is an error naming its line where git accepts it silently.
+- `internal/suppression/` — the lint suppression directive grammar, shared by
+  `lint`, which obeys the comments, and `format`, which must not change what
+  they cover.
+- `internal/textdiff/` — the unified diff behind `gdkit format check --diff`.
 - `cmd/gdkit/` — flag parsing, output formatting, and exit codes only. It holds no
-  analysis logic; it loads a `Config`, builds an `Analyzer` or `Linter`, and prints
-  a `Report`.
+  analysis logic; it loads a `Config`, builds an `Analyzer`, `Linter`, or `Formatter`,
+  and prints a `Report`.
 - `internal/buildinfo/` — version metadata, injected by GoReleaser `-ldflags` and
   falling back to the Go toolchain's embedded VCS settings for local builds.
 

@@ -98,8 +98,8 @@ func TestClassDefinitionsOrderCombinedClassNameExtendsIsExtends(t *testing.T) {
 }
 
 func TestClassDefinitionsOrderToolAnnotationIsASlot(t *testing.T) {
-	source := "extends Node\nstatic func f():\n\tpass\n@abstract\nfunc g()\nclass I:\n\tpass\n@tool\nvar t\n"
-	assertRule(t, "class-definitions-order", source, 8, 9)
+	source := "\"\"\"Docs.\"\"\"\n@tool\nextends Node\nstatic func f():\n\tpass\n@abstract\nfunc g()\nclass I:\n\tpass\nvar t\n"
+	assertRule(t, "class-definitions-order", source, 2, 3, 10)
 }
 
 func TestClassDefinitionsOrderAnnotationPairing(t *testing.T) {
@@ -118,7 +118,7 @@ var e = 1
 @warning_ignore("unused_variable") @export var f = 1
 @warning_ignore("unused_variable")
 @export var g = 1
-@icon("x")
+@export_category("x")
 var h
 `
 	assertRule(t, "class-definitions-order", source, 4, 5, 7, 12, 13, 15, 17)
@@ -129,6 +129,17 @@ var h
 			t.Errorf("line %d column %d, want %d", diagnostic.Line, diagnostic.Column, wantColumns[index])
 		}
 	}
+}
+
+// gdparser attaches an annotation to its declaration across a standalone
+// annotation and lists the standalone one first. gdlint reads them in source
+// order, where the standalone annotation discards the one written before it.
+func TestClassDefinitionsOrderStandaloneAnnotationDiscardsTheAnnotationBeforeIt(t *testing.T) {
+	assertNoRule(t, "class-definitions-order", "extends Node\nvar z\n@export\n@export_group(\"g\")\nvar a = 1\n")
+	assertNoRule(t, "class-definitions-order", "extends Node\nvar z\n@export\n@warning_ignore_start(\"unused_signal\")\nvar a = 1\n")
+	assertRule(t, "class-definitions-order", "extends Node\nvar z\n@onready\n@export_subgroup(\"g\")\nvar _a = 1\nvar b\n", 6)
+	assertNoRule(t, "class-definitions-order", "extends Node\n@onready\n@export_subgroup(\"g\")\nvar a = 1\nvar _b\n")
+	assertRule(t, "class-definitions-order", "extends Node\nvar z\n@export_group(\"g\")\n@export\nvar a = 1\n", 5)
 }
 
 func TestClassDefinitionsOrderWarningIgnoreAttachesOnlyForDeclarationWarnings(t *testing.T) {

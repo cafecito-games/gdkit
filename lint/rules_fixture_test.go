@@ -51,6 +51,37 @@ var fixtureExpectations = map[string][]fixtureFinding{
 	"long_line.gd": {
 		{5, "max-line-length"},
 	},
+	// Neither a setter parameter nor a match bind has a naming rule, so the
+	// badly named ones in this fixture stay silent.
+	"modern_syntax.gd": {
+		// "else" after "return" inside a property getter.
+		{31, "no-else-return"},
+		// "ignored" is not mentioned by the lambda that is the whole body.
+		{45, "unused-argument"},
+		// A lambda parameter is named like a function argument, and the
+		// variable holding the lambda like any local.
+		{51, "function-argument-name"},
+		{51, "function-variable-name"},
+		// "else" after "return" inside a multi-line lambda.
+		{60, "no-else-return"},
+		// Inside a one-line lambda body.
+		{62, "comparison-with-itself"},
+		// pass beside another statement in a lambda body.
+		{65, "unnecessary-pass"},
+		// A lone match bind evaluated for nothing.
+		{89, "expression-not-assigned"},
+		// A pattern guard leads its own expression.
+		{90, "comparison-with-itself"},
+		// A Lua-style dictionary as a statement. On the line above, the key
+		// "height" counts as a use of the argument, so that one is silent.
+		{96, "expression-not-assigned"},
+		// The rest parameter is never referenced.
+		{100, "unused-argument"},
+		// A member access through a keyword-shaped name is still unused.
+		{110, "expression-not-assigned"},
+		// A typed-array local is named like any other local.
+		{116, "function-variable-name"},
+	},
 	"names.gd": {
 		{1, "class-name"},
 		{4, "signal-name"},
@@ -84,8 +115,8 @@ var fixtureExpectations = map[string][]fixtureFinding{
 		{4, "trailing-whitespace"},
 		{5, "trailing-whitespace"},
 		// Fires per offending line, not once per file.
-		{9, "mixed-tabs-and-spaces"},
 		{10, "mixed-tabs-and-spaces"},
+		{11, "mixed-tabs-and-spaces"},
 	},
 }
 

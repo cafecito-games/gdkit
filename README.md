@@ -2,7 +2,8 @@
 
 `gdkit` is a Go 1.26 toolkit for static analysis and source processing of
 Godot 4 GDScript. `gdkit arch` enforces architectural boundaries across a
-project, and `gdkit lint` checks GDScript style and correctness.
+project, `gdkit lint` checks GDScript style and correctness, and `gdkit format`
+rewrites GDScript into one canonical style.
 
 The analyzer uses [`gdparser`](https://github.com/cafecito-games/gdparser) and
 does not search source text with regular expressions. It parses GDScript,
@@ -151,7 +152,8 @@ default:
 
 `disable` lists rules to turn off, and `--disable` takes the same names as a
 comma-separated list in addition to the file. `exclude` uses the same glob
-syntax as the architecture configuration.
+syntax as the architecture configuration. `gdkit lint check` also skips the
+paths listed in [`.gdkitignore`](#ignoring-files-with-gdkitignore).
 
 `tab-characters` is a setting and not a rule. `max-line-length` expands each
 tab to that many spaces before measuring a line.
@@ -223,6 +225,251 @@ a project is working toward rather than enforcing.
 `gdkit lint check` exits `0` when clean or when the only diagnostics are
 warnings, `1` when any error-severity diagnostic is reported, and `2` for
 configuration, usage, or I/O failures.
+
+## Formatting
+
+`gdkit format` rewrites GDScript into one canonical style, which defaults to the
+Godot GDScript style guide. It shares project discovery with the other tools and
+prints each file from its parsed syntax tree.
+
+```sh
+gdkit format check .
+gdkit format check --diff .
+gdkit format check --format json .
+gdkit format write .
+gdkit format init .
+```
+
+- `gdkit format check [--config path] [--format text|json] [--diff] [project-root]`
+  reports the files that are not formatted and never writes to the project.
+  `--diff` prints a unified diff after each file that would change; it cannot be
+  combined with `--format json`.
+- `gdkit format write [--config path] [--format text|json] [project-root]`
+  rewrites those files in place.
+- `gdkit format init [--force] [project-root]` writes `.gdkit/format.json` with
+  the default style.
+
+Running `gdkit format` without a subcommand runs `check`.
+
+Text output names each file, then each diagnostic, then a summary:
+
+```text
+would reformat player.gd
+broken.gd:3: Error: expected expression (source-parse)
+format check failed (1 to reformat, 1 diagnostics)
+```
+
+`write` prints `reformatted player.gd` for each file it rewrote and ends with a
+line such as `format write: 1 reformatted, 12 unchanged, 1 skipped`. JSON output
+has the same shape for both commands: a `results` array with the `path` and
+`changed` flag of every file that could be formatted, and a `diagnostics` array.
+Both are sorted by path, so the output is stable between runs. `write` adds a
+`written` array of the paths it replaced on disk, which lists the files written
+before the failure when a run stops part-way.
+
+`gdkit format check` exits `0` when every file is already formatted, `1` when a
+file would change or has a diagnostic, and `2` for configuration, usage, or I/O
+failures. `gdkit format write` exits `0` when every file is formatted once it
+finishes, `1` when a file was skipped because of a diagnostic, and `2` for
+configuration, usage, or I/O failures.
+
+### Format diagnostics
+
+A file with a diagnostic is left exactly as it is:
+
+- `source-parse` reports a file that does not parse, so it cannot be formatted.
+- `format.unsafe` reports a file whose formatted output would not keep the
+  syntax tree or the tokens of its source, or would change the code a lint
+  suppression comment applies to, and a file with a one-line class body that
+  holds several members.
+
+### Write safety
+
+Before a file is reported as changed, its formatted output is parsed again and
+compared structurally with the source. Only layout and the spellings the
+configuration asks to normalize may differ. A file whose tree would change is
+reported as `format.unsafe` and is never written. Writes are atomic and keep the
+file mode: the new contents are written beside the file and renamed over it, so
+an interrupted run leaves either the old file or the new one.
+
+String literals, numbers, and comment text are compared without consulting the
+formatter, so the check does not depend on the code it is checking. A string
+may change only its quote character and the escaping of the quotes inside it;
+every other escape must stay as written, as must every character of a string
+that spans lines, including the spaces or tabs that end one of its lines.
+
+The tokens of the output are then compared with the tokens of the source,
+because the tree records only what the parser chose to keep. Line breaks,
+indentation, parentheses, commas, and semicolons are left out, since the
+formatter adds and removes them, and the same normalized spellings are allowed;
+every other token must appear exactly as often after formatting as before. A
+file whose tokens would change is reported as `format.unsafe`.
+
+A file is refused as `format.unsafe` before it is formatted when it holds a
+one-line class body with more than one member, such as
+`class A: var v = 1; var u = 2`. Godot ends that body at its first member, so
+`u` belongs to the enclosing script, while the parser reads both into `A`
+([gdparser#75](https://github.com/cafecito-games/gdparser/issues/75)) and a
+rewrite would move `u` into the class. Writing the class as a block, or the
+second member on its own line, makes the file acceptable.
+
+Two layouts are currently refused as `format.unsafe` because the formatted
+output parses back to a different tree
+([gdparser#77](https://github.com/cafecito-games/gdparser/issues/77)): a lambda
+whose one-line body is a compound statement, such as
+`func(): if a: return 1`, and an annotation on the same line as `class_name`,
+such as `@abstract class_name X extends Node`. Writing the lambda body as a
+block, or the annotation on its own line, avoids both.
+
+A rewrite is also refused as `format.unsafe` when it would change the code a
+lint suppression comment applies to. A directive reaches lines rather than
+syntax, so each one must stay the same directive, still trailing code or still
+on a line of its own, with the same tokens on its line and on the line below it
+before and after formatting. A comment that trails a block header, such as
+`func f():  # gdlint:ignore = function-name`, stays on the header's line and is
+accepted. The syntax tree is unchanged in every case below, but lint could
+report something it did not report before, so the file is left alone:
+
+- A comment that trails a line the formatter wraps or splits, such as a long
+  call, `var a = 1; var b = 2  # gdlint:ignore = ...`, or a one-line
+  `if x: pass  # gdlint:ignore = ...`, which leaves the comment on only one of
+  the new lines.
+- A comment whose line below is wrapped, joined, or separated from it by blank
+  lines the formatter adds.
+
+The rule is deliberately stricter than lint needs: wrapping the line below a
+`disable` comment is refused although the directive would still cover it.
+Formatting the affected lines by hand makes the file acceptable. A directive is
+recognized the way lint recognizes it, by searching each raw line, so one
+written inside a string literal counts; requoting that literal is allowed.
+
+What `write` does and does not touch:
+
+- CRLF line endings are rewritten as LF, and a UTF-8 byte order mark is dropped.
+  A line break inside a string literal is kept as written.
+- Symlinked files and directories are not discovered, so they are never
+  rewritten.
+- A rewrite replaces the file rather than editing it in place, so other hard
+  links to it keep the old contents.
+- A read-only file in a writable directory is replaced, and stays read-only.
+- A file that changed on disk after it was read is not overwritten. The run
+  stops there and exits `2`, with the files already written left in place.
+
+### Format configuration
+
+`gdkit format init` writes `.gdkit/format.json` with the default style, and an
+existing file is preserved unless `--force` is supplied. Pass an alternate file
+with `--config`, relative to the project root. Both commands run with the
+defaults when no configuration file exists. Unknown keys, unknown values, and
+exclude patterns that do not compile are configuration errors.
+
+Values are applied on top of the defaults, so an omitted field keeps its
+default:
+
+| Field | Allowed values | Default |
+| --- | --- | --- |
+| `version` | `1` | `1` |
+| `source_roots` | project-relative paths, at least one | `["."]` |
+| `exclude` | glob patterns | `[".git/**", ".godot/**", ".gdkit/**", "addons/**"]` |
+| `line_width` | `1` or more | `100` |
+| `tab_width` | `1` or more | `4` |
+| `indent` | `"tabs"`, `"spaces"` | `"tabs"` |
+| `quote_style` | `"double"`, `"single"`, `"preserve"` | `"double"` |
+| `comment_spacing` | `"normalize"`, `"preserve"` | `"normalize"` |
+| `operators` | `"words"`, `"preserve"` | `"words"` |
+| `numbers` | `"normalize"`, `"preserve"` | `"normalize"` |
+| `trailing_commas` | `"when-broken"`, `"never"` | `"when-broken"` |
+| `blank_lines.top_level` | `1` or more | `2` |
+| `blank_lines.nested` | `1` or more | `1` |
+
+- `line_width` is the column budget a line is kept within where possible. A
+  line that has no place to break, such as a long name or string, stays long.
+- `tab_width` is the columns a tab occupies when a line is measured, and the
+  number of spaces per level when `indent` is `"spaces"`.
+- `operators` set to `"words"` writes `and`, `or`, and `not` in place of `&&`,
+  `||`, and `!`.
+- `numbers` set to `"normalize"` rewrites literals such as `.5` and `0XFF` as
+  `0.5` and `0xff`.
+- `trailing_commas` set to `"when-broken"` adds a trailing comma to a list that
+  spans several lines.
+- `blank_lines.top_level` is the exact number of blank lines around top-level
+  function and class declarations, and `blank_lines.nested` is the most
+  consecutive blank lines kept anywhere else.
+- `exclude` uses the same glob syntax as the architecture configuration.
+  `gdkit format check` and `gdkit format write` also skip the paths listed in
+  [`.gdkitignore`](#ignoring-files-with-gdkitignore).
+
+## Ignoring files with .gdkitignore
+
+A file named `.gdkitignore` at the project root lists paths that `gdkit lint`
+and `gdkit format` skip, so third-party and generated code is named once for
+both tools:
+
+```gitignore
+# Vendored plugins, wherever they sit in the tree
+addons/
+# Generated protocol code
+*.pb.gd
+```
+
+`gdkit arch` does not read it. Hiding a file from the architecture analyzer
+would remove its `class_name` from the index, and every reference to that class
+would then be misreported. Use the architecture configuration's `exclude` to
+change what `gdkit arch` analyzes.
+
+A project without the file ignores nothing. Only the file at the project root is
+read; a `.gdkitignore` in a subdirectory has no effect. A pattern that cannot be
+parsed is a configuration error that names its line, and the command exits `2`.
+
+The syntax is that of `.gitignore`:
+
+- One pattern per line. Blank lines are skipped, and a line that starts with `#`
+  is a comment. There are no trailing comments; write `\#` for a pattern that
+  starts with a hash. Trailing spaces are dropped unless escaped with a
+  backslash. CRLF line endings and a leading UTF-8 byte order mark are accepted.
+- A leading `!` negates the pattern and re-includes what it matches. Write `\!`
+  for a pattern that starts with an exclamation mark.
+- A trailing `/` makes the pattern match directories only.
+- A pattern with no other slash matches a name at any depth: `addons/` matches
+  `addons` and `apps/editor/addons`, and `*.pb.gd` matches in every directory.
+- A pattern with a leading or interior slash is anchored to the project root:
+  `/client/protocol/`, `client/protocol/*.gd`.
+- `*` and `?` do not cross `/`. `[abc]`, `[a-z]`, and `[!a]` are character
+  classes, and a class never matches `/`. A leading `**/` matches in any
+  directory, a trailing `/**` matches everything inside, and `/**/` matches
+  zero or more directories. A backslash escapes the next character.
+- Matching is case-sensitive, whatever the filesystem.
+- Patterns are evaluated in order and the last one that matches decides.
+
+The matcher differs from git in four ways:
+
+- Matching is case-sensitive whatever the filesystem; git follows
+  `core.ignoreCase`.
+- `?` and a character class match one character. Git matches one byte, so the
+  two disagree on names outside ASCII: `?.gd` matches `é.gd` here and not in
+  git.
+- A malformed pattern is an error with its line number, where git accepts it
+  silently: an unterminated character class, a range that runs backwards
+  (`[z-a]`), an unknown class name (`[[:word:]]`), a class that could only match
+  `/` (`[/]`), a lone `!`, and a trailing lone backslash.
+- A negated pattern can re-include something inside an ignored directory. A path
+  is tested as itself and through each of its ancestor directories, and the last
+  pattern that matches the path or any ancestor decides.
+
+```gitignore
+addons/
+!addons/our_plugin/
+```
+
+This ignores every `addons` directory at any depth except the root-level
+`addons/our_plugin/`, whose files are processed. The second pattern contains an
+interior slash, so it is anchored to the project root and does not re-include
+`apps/editor/addons/our_plugin/`.
+
+`.gdkitignore` combines with each tool's `exclude` setting: a path is skipped
+when `exclude` covers it or `.gdkitignore` ignores it. A negated pattern does
+not override `exclude`, so re-including a directory under the root `addons/`
+also requires removing `addons/**` from the default `exclude` of that tool.
 
 ## Version information
 

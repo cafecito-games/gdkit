@@ -93,7 +93,7 @@ func TestMaxPublicMethodsBoundary(t *testing.T) {
 
 func TestMaxPublicMethodsDefaultIsTwenty(t *testing.T) {
 	assertNoRule(t, "max-public-methods", repeatedFunctions("f", 20, ""))
-	source := "extends Node\n" + strings.Repeat("func a(): pass\n", 21)
+	source := "extends Node\n" + repeatedFunctions("f", 21, "")
 	assertRule(t, "max-public-methods", source, 1)
 }
 

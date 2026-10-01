@@ -58,6 +58,8 @@ func (a *Analyzer) Analyze() (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	// HonorIgnoreFile stays off: a file hidden by .gdkitignore would take its
+	// class_name out of the index and turn references to it into false results.
 	snapshot, err := project.Load(project.Config{
 		Root:        a.Root,
 		SourceRoots: a.Config.SourceRoots,

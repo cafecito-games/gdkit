@@ -304,19 +304,19 @@ func similar_name(x, x2):
 func get_builtin_is_not_a_use(get):
     return get(1)
 
-func duplicated(a, a):
-    pass
-
 static func in_static(x):
     pass
 
 func one_line(x): pass
 
+func rest_parameter(...arguments: Array):
+    pass
+
 class Inner:
     func method(q):
         pass
 `)
-	assertRule(t, "unused-argument", source, 3, 6, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42)
+	assertRule(t, "unused-argument", source, 3, 6, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 38, 42)
 	assertMessages(t, "unused-argument", "func f(x):\n\tpass\n", "unused function argument 'x'")
 }
 
@@ -341,20 +341,8 @@ func member_access_with_the_same_name(x):
 func member_of_another_object(x):
     return other.x
 
-func shadowing_local(x):
-    var x = 1
-    return 2
-
-func loop_variable_with_the_same_name(x):
-    for x in 3:
-        pass
-
 func captured_by_lambda(x):
     var callback = func(): return x
-    return callback
-
-func lambda_parameter_with_the_same_name(x):
-    var callback = func(x): return 1
     return callback
 
 func lambda_parameter_is_never_reported(x):
@@ -366,6 +354,20 @@ func node_path(x, z):
 
 func own_name(own_name):
     pass
+
+func lua_style_dictionary_key(x):
+    return {x = 1}
+
+func rest_parameter(...arguments: Array):
+    return arguments
+
+func named_lambda_with_the_same_name(x):
+    var callback = func x(): return 1
+    return callback
+
+func named_lambda_called_get(get):
+    var callback = func get(): return 1
+    return callback
 
 func method_call_on_the_name(x):
     return x.call()
@@ -387,6 +389,19 @@ func abstract_function(x)
 var watched: int:
     set(value):
         pass
+`)
+	assertNoRule(t, "unused-argument", source)
+}
+
+// Godot accepts a lambda parameter that reuses a name from the enclosing
+// function, because parse_function_signature adds parameters to the lambda's
+// suite without consulting the enclosing blocks.
+func TestUnusedArgumentStaysSilentOnLambdaParameterWithTheSameName(t *testing.T) {
+	source := gd(`extends Node
+
+func lambda_parameter_with_the_same_name(x):
+    var callback = func(x): return 1
+    return callback
 `)
 	assertNoRule(t, "unused-argument", source)
 }
@@ -491,4 +506,58 @@ func TestComparisonWithItselfReportsTheLeftOperandStart(t *testing.T) {
         )
 `)
 	assertRule(t, "comparison-with-itself", source, 2, 8, 10)
+}
+
+// gdlint's grammar calls a comparison "comparison" only where it leads its
+// expression. After "and", "or", "not", or "in", and in the condition or
+// alternative of a ternary, the same syntax is an "asless_comparison", which
+// gdlint's check never visits.
+func TestComparisonWithItselfStaysSilentWhereGdlintNamesTheComparisonDifferently(t *testing.T) {
+	source := gd(`func f(a, b, foo):
+    var r1 = b and a == a
+    var r2 = b or a == a
+    var r3 = not a == a
+    var r4 = !a == a
+    var r5 = b if a == a else b
+    var r6 = b if b else a == a
+    var r7 = b in a == a
+    var r8 = b or a == a and b
+    var r9 = b and a == a or b
+    var r10 = (b and a == a)
+    var r11 = foo.call(b or a == a)
+    var r12 = b && a == a
+    var r13 = b || a == a
+    var r14 = b and b and a == a
+    var r15 = b if b else b if b else a == a
+    var r16 = b not in a == a
+    var r17 = not not a == a
+    var r18 = b and a == a as bool
+`)
+	assertNoRule(t, "comparison-with-itself", source)
+}
+
+func TestComparisonWithItselfReportsALeadingOrBracketedComparison(t *testing.T) {
+	source := gd(`func f(a, b, foo):
+    var r1 = a == a or b
+    var r2 = a == a and b or b
+    var r3 = b and (a == a)
+    var r4 = not (a == a)
+    var r5 = a == a if b else b
+    var r6 = b and foo.call(a == a)
+    var r7 = b or [a == a]
+    var r8 = a == a in b
+    var r9 = b if (a == a) else b
+    var r10 = b and (a == a or b)
+    var r11 = (a == a and b) or b
+    var r12 = a == a and b if b else b
+    var r13 = b or ((a == a))
+    var r14 = b and a[a == a]
+    var r15 = b or {a: a == a}
+    var r16 = b and (func(): return a == a)
+    var r17 = a == a as bool
+    var r18 = b and ((a) == (a))
+    var r19 = b and (a == a) == (a == a)
+`)
+	assertRule(t, "comparison-with-itself", source,
+		2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 20)
 }

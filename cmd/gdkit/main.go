@@ -20,18 +20,24 @@ import (
 const usageText = `gdkit — static source tooling for GDScript
 
 Usage:
-  gdkit arch check [flags] [project-root]
-  gdkit arch init  [flags] [project-root]
-  gdkit lint check [flags] [project-root]
-  gdkit lint init  [flags] [project-root]
-  gdkit version    [flags]
+  gdkit arch check   [flags] [project-root]
+  gdkit arch init    [flags] [project-root]
+  gdkit lint check   [flags] [project-root]
+  gdkit lint init    [flags] [project-root]
+  gdkit format check [flags] [project-root]
+  gdkit format write [flags] [project-root]
+  gdkit format init  [flags] [project-root]
+  gdkit version      [flags]
 
 Commands:
-  arch check   enforce architectural dependency rules
-  arch init    write starter .gdkit configuration files
-  lint check   report style and correctness problems in GDScript
-  lint init    write the default .gdkit/lint.json configuration
-  version      print version and source revision information
+  arch check     enforce architectural dependency rules
+  arch init      write starter .gdkit configuration files
+  lint check     report style and correctness problems in GDScript
+  lint init      write the default .gdkit/lint.json configuration
+  format check   report GDScript files that are not formatted
+  format write   rewrite GDScript files in the configured style
+  format init    write the default .gdkit/format.json configuration
+  version        print version and source revision information
 `
 
 func main() {
@@ -52,6 +58,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runArch(args[1:], stdout, stderr)
 	case "lint":
 		return runLint(args[1:], stdout, stderr)
+	case "format":
+		return runFormat(args[1:], stdout, stderr)
 	case "version":
 		return runVersion(args[1:], stdout, stderr)
 	default:
@@ -288,7 +296,7 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "gdkit:", err)
 		return 2
 	}
-	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude})
+	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude, HonorIgnoreFile: true})
 	if err != nil {
 		fmt.Fprintln(stderr, "gdkit:", err)
 		return 2

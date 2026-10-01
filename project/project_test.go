@@ -1,9 +1,12 @@
 package project
 
 import (
+	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -159,5 +162,196 @@ func TestScriptLineOutOfRangeReturnsEmpty(t *testing.T) {
 	empty := loadSingleScript(t, "")
 	if got := empty.Line(1); got != "" {
 		t.Errorf("Line(1) on an empty file = %q, want empty", got)
+	}
+}
+
+func loadHonoringIgnoreFile(t *testing.T, root string, exclude ...string) *Snapshot {
+	t.Helper()
+	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"."}, Exclude: exclude, HonorIgnoreFile: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func TestLoadSkipsPathsFromTheIgnoreFile(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		".gdkitignore":                      "addons/\n*.pb.gd\n",
+		"player.gd":                         "var speed := 1\n",
+		"addons/plugin/no.gd":               "var ignored := 2\n",
+		"apps/editor/addons/tool/no.gd":     "var ignored := 3\n",
+		"apps/editor/main.gd":               "var kept := 4\n",
+		"client/protocol/messages.pb.gd":    "var ignored := 5\n",
+		"client/protocol/plain.gd":          "var kept := 6\n",
+		"apps/editor/addons/tool/README.md": "not gdscript\n",
+	})
+
+	snapshot := loadHonoringIgnoreFile(t, root)
+	want := []string{"apps/editor/main.gd", "client/protocol/plain.gd", "player.gd"}
+	if !slices.Equal(snapshot.Paths, want) {
+		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
+	}
+}
+
+func TestLoadReincludesInsideAnIgnoredDirectory(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		".gdkitignore":                        "addons/\n!addons/our_plugin/\n",
+		"player.gd":                           "var speed := 1\n",
+		"addons/third_party/no.gd":            "var ignored := 2\n",
+		"addons/our_plugin/plugin.gd":         "var kept := 3\n",
+		"addons/our_plugin/nested/helper.gd":  "var kept := 4\n",
+		"apps/editor/addons/our_plugin/no.gd": "var ignored := 5\n",
+	})
+
+	snapshot := loadHonoringIgnoreFile(t, root)
+	want := []string{"addons/our_plugin/nested/helper.gd", "addons/our_plugin/plugin.gd", "player.gd"}
+	if !slices.Equal(snapshot.Paths, want) {
+		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
+	}
+}
+
+func TestLoadConfigExcludeWinsOverIgnoreFileNegation(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		".gdkitignore":                "!addons/our_plugin/\n!vendor/keep.gd\n",
+		"player.gd":                   "var speed := 1\n",
+		"addons/our_plugin/plugin.gd": "var excluded := 2\n",
+		"vendor/keep.gd":              "var excluded := 3\n",
+	})
+
+	snapshot := loadHonoringIgnoreFile(t, root, "addons/**", "vendor/*.gd")
+	want := []string{"player.gd"}
+	if !slices.Equal(snapshot.Paths, want) {
+		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
+	}
+}
+
+func TestLoadDoesNotConsultTheIgnoreFileUnlessAsked(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		".gdkitignore":        "addons/\n",
+		"player.gd":           "var speed := 1\n",
+		"addons/plugin/in.gd": "var kept := 2\n",
+	})
+
+	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"addons/plugin/in.gd", "player.gd"}
+	if !slices.Equal(snapshot.Paths, want) {
+		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
+	}
+
+	writeFiles(t, root, map[string]string{".gdkitignore": "[unterminated\n"})
+	if _, err := Load(Config{Root: root, SourceRoots: []string{"."}}); err != nil {
+		t.Fatalf("a malformed ignore file must not matter when it is not honored: %v", err)
+	}
+}
+
+func TestLoadWithoutAnIgnoreFileIgnoresNothing(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"addons/plugin/in.gd": "var kept := 1\n"})
+
+	snapshot := loadHonoringIgnoreFile(t, root)
+	if want := []string{"addons/plugin/in.gd"}; !slices.Equal(snapshot.Paths, want) {
+		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
+	}
+}
+
+func TestLoadReadsOnlyTheRootIgnoreFile(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"nested/.gdkitignore": "*.gd\n",
+		"nested/enemy.gd":     "var health := 1\n",
+	})
+
+	snapshot := loadHonoringIgnoreFile(t, root)
+	if want := []string{"nested/enemy.gd"}; !slices.Equal(snapshot.Paths, want) {
+		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
+	}
+}
+
+func TestLoadRejectsMalformedIgnoreFile(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		".gdkitignore": "addons/\n[unterminated\n",
+		"player.gd":    "var speed := 1\n",
+	})
+
+	_, err := Load(Config{Root: root, SourceRoots: []string{"."}, HonorIgnoreFile: true})
+	if err == nil {
+		t.Fatal("a malformed ignore file must be an error")
+	}
+	if !strings.HasPrefix(err.Error(), "parse .gdkitignore: line 2: ") {
+		t.Errorf("error = %q", err)
+	}
+}
+
+func TestLoadRejectsUnreadableIgnoreFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, IgnoreFileName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(Config{Root: root, SourceRoots: []string{"."}, HonorIgnoreFile: true})
+	if err == nil {
+		t.Fatal("an unreadable ignore file must be an error")
+	}
+	if !strings.HasPrefix(err.Error(), "read .gdkitignore: ") {
+		t.Errorf("error = %q", err)
+	}
+}
+
+func TestLoadDoesNotRegisterUIDOfIgnoredScript(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		".gdkitignore":                       "addons/\n*.pb.gd\n!addons/our_plugin/\n",
+		"player.gd":                          "var speed := 1\n",
+		"player.gd.uid":                      "uid://player\n",
+		"addons/third_party/no.gd":           "var ignored := 2\n",
+		"addons/third_party/no.gd.uid":       "uid://thirdparty\n",
+		"addons/our_plugin/plugin.gd":        "var kept := 3\n",
+		"addons/our_plugin/plugin.gd.uid":    "uid://ourplugin\n",
+		"client/protocol/messages.pb.gd":     "var ignored := 4\n",
+		"client/protocol/messages.pb.gd.uid": "uid://protocol\n",
+	})
+
+	snapshot := loadHonoringIgnoreFile(t, root)
+	want := map[string]string{"uid://player": "player.gd", "uid://ourplugin": "addons/our_plugin/plugin.gd"}
+	if !maps.Equal(snapshot.UIDs, want) {
+		t.Fatalf("UIDs = %v, want %v", snapshot.UIDs, want)
+	}
+}
+
+func TestParseFailureLocatesParserAndLexerErrors(t *testing.T) {
+	cases := map[string]struct {
+		source       string
+		line, column int
+		message      string
+	}{
+		"parser": {"var a = 1\nvar b = 2\nfunc (:\n", 3, 6, "expected function name"},
+		"lexer":  {"var a = 1\nvar s = \"\\x\"\n", 2, 11, `invalid escape "\x" in string`},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			script := loadSingleScript(t, testCase.source)
+			if script.ParseError == nil {
+				t.Fatal("fixture parsed")
+			}
+			line, column, message := script.ParseFailure()
+			if line != testCase.line || column != testCase.column || message != testCase.message {
+				t.Fatalf("ParseFailure() = %d, %d, %q; want %d, %d, %q", line, column, message, testCase.line, testCase.column, testCase.message)
+			}
+		})
+	}
+}
+
+func TestParseFailureFallsBackToTheStartOfTheFile(t *testing.T) {
+	script := &Script{Path: "a.gd", ParseError: errors.New("opaque failure")}
+	if line, column, message := script.ParseFailure(); line != 1 || column != 1 || message != "opaque failure" {
+		t.Fatalf("ParseFailure() = %d, %d, %q", line, column, message)
 	}
 }

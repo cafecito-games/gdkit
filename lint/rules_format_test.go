@@ -10,7 +10,7 @@ func TestFormatMaxLineLengthCountsRunesNotBytes(t *testing.T) {
 	assertRule(t, "max-line-length", longAscii, 1)
 
 	// 100 accented runes is 200 bytes but exactly at the limit.
-	atLimit := strings.Repeat("é", 100) + "\n"
+	atLimit := "#" + strings.Repeat("é", 99) + "\n"
 	if found := lintSource(t, "max-line-length", atLimit); len(found) != 0 {
 		t.Errorf("a 100-rune line must not fire: %v", found)
 	}
@@ -35,13 +35,13 @@ func TestFormatMaxFileLinesFiresOnceOnTheLastLine(t *testing.T) {
 }
 
 func TestFormatMixedTabsAndSpacesAllowsAFilePerStyle(t *testing.T) {
-	source := "func a():\n\tvar x := 1\nfunc b():\n    var y := 2\n"
+	source := "func a():\n\tvar x := [\n    1,\n\t]\n"
 	assertRule(t, "mixed-tabs-and-spaces", source)
 }
 
 func TestFormatMixedTabsAndSpacesFiresPerMixedLine(t *testing.T) {
-	assertRule(t, "mixed-tabs-and-spaces", "func a():\n\t var x := 1\n\t var y := 2\n", 2, 3)
-	assertRule(t, "mixed-tabs-and-spaces", "func a():\n \tvar x := 1\n", 2)
+	assertRule(t, "mixed-tabs-and-spaces", "func a():\n\tvar x := [\n\t 1,\n\t 2,\n\t]\n", 3, 4)
+	assertRule(t, "mixed-tabs-and-spaces", "func a():\n\tvar x := [\n \t1,\n\t]\n", 3)
 }
 
 func TestFormatMaxLineLengthExpandsTabsToTheConfiguredWidth(t *testing.T) {
