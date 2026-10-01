@@ -294,38 +294,29 @@ an interrupted run leaves either the old file or the new one.
 String literals, numbers, and comment text are compared without consulting the
 formatter, so the check does not depend on the code it is checking. A string
 may change only its quote character and the escaping of the quotes inside it;
-every other escape must stay as written. One case it
-catches today: the formatter trims trailing whitespace from every line, which
-would change a string literal that spans lines and has a line ending in spaces
-or tabs. Such a file is reported as `format.unsafe`.
+every other escape must stay as written, as must every character of a string
+that spans lines, including the spaces or tabs that end one of its lines.
 
 The tokens of the output are then compared with the tokens of the source,
 because the tree records only what the parser chose to keep. Line breaks,
 indentation, parentheses, commas, and semicolons are left out, since the
 formatter adds and removes them, and the same normalized spellings are allowed;
-every other token must appear exactly as often after formatting as before. One
-case this catches today: the formatter rewrites an inferred parameter default,
-`func f(a := 1)`, as the untyped `func f(a = 1)`
-([gdparser#70](https://github.com/cafecito-games/gdparser/issues/70)), which
-changes what the function accepts and returns. Such a file is reported as
-`format.unsafe`.
+every other token must appear exactly as often after formatting as before. A
+file whose tokens would change is reported as `format.unsafe`.
 
 A rewrite is also refused as `format.unsafe` when it would change the code a
 lint suppression comment applies to. A directive reaches lines rather than
 syntax, so each one must stay the same directive, still trailing code or still
 on a line of its own, with the same tokens on its line and on the line below it
-before and after formatting. The syntax tree is unchanged in every case below,
-but lint would report something it did not report before, so the file is left
-alone:
+before and after formatting. A comment that trails a block header, such as
+`func f():  # gdlint:ignore = function-name`, stays on the header's line and is
+accepted. The syntax tree is unchanged in every case below, but lint could
+report something it did not report before, so the file is left alone:
 
-- A comment that trails a block header, such as
-  `func f():  # gdlint:ignore = function-name`, which the formatter moves onto
-  its own line in the body
-  ([gdparser#67](https://github.com/cafecito-games/gdparser/issues/67)). Put
-  the comment on the line above the header instead.
 - A comment that trails a line the formatter wraps or splits, such as a long
-  call or `var a = 1; var b = 2  # gdlint:ignore = ...`, which leaves the
-  comment on the last of the new lines.
+  call, `var a = 1; var b = 2  # gdlint:ignore = ...`, or a one-line
+  `if x: pass  # gdlint:ignore = ...`, which leaves the comment on only one of
+  the new lines.
 - A comment whose line below is wrapped, joined, or separated from it by blank
   lines the formatter adds.
 
