@@ -23,6 +23,9 @@ profile.cov
 # GoReleaser artifacts
 dist/
 
+# Git worktrees
+.worktrees/
+
 # Go workspace file
 go.work
 go.work.sum
