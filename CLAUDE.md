@@ -12,10 +12,15 @@ go build ./...
 
 # One test or one package
 go test -race ./architecture -run TestAnalyzerRejectsDirectionCyclesAndEngineAccess
+go test -race ./lint -run TestName
+go test -race ./lint -run TestDifferential              # needs gdlint on PATH
+GDKIT_CORPUS=/path/to/project go test -race ./lint -run TestCorpus
+GDKIT_PARITY_CORPUS=/path/to/project go test -race ./lint -run TestDifferentialCorpus
 
 # Run the CLI from the checkout
 go run ./cmd/gdkit arch check /path/to/godot-project
 go run ./cmd/gdkit arch check --format json --show-edges .
+go run ./cmd/gdkit lint check /path/to/godot-project
 
 # Release packaging (same commands CI runs)
 goreleaser check
@@ -29,13 +34,27 @@ next version from the latest published GitHub Release and tags the default branc
 
 ## Architecture
 
-`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Three packages:
+`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Six packages:
 
-- `architecture/` — the reusable analyzer library (the substance of the project).
+- `architecture/` — the dependency analyzer: layer and feature boundaries, cycles,
+  and engine purity (the substance of `gdkit arch`).
+- `lint/` — the linter: a registry of single-file rules over a `project.Snapshot`.
+  Rule names are a public contract; they appear in JSON output, in config, and in
+  inline ignore comments, so renaming one breaks user projects.
+- `project/` — discovery and parsing. The only package that reads a project from
+  disk, so both tools agree on scope and parse once.
+- `internal/glob/` — the shared glob engine.
 - `cmd/gdkit/` — flag parsing, output formatting, and exit codes only. It holds no
-  analysis logic; it loads a `Config`, builds an `Analyzer`, and prints a `Report`.
+  analysis logic; it loads a `Config`, builds an `Analyzer` or `Linter`, and prints
+  a `Report`.
 - `internal/buildinfo/` — version metadata, injected by GoReleaser `-ldflags` and
   falling back to the Go toolchain's embedded VCS settings for local builds.
+
+`gdkit lint` is meant to match `gdlint` from godot-gdscript-toolkit. Parity is
+verified by the differential test (`TestDifferential`), and gdlint's own source is
+the reference whenever a rule's behavior is in question. `tab-characters` is a
+configuration value used by `max-line-length`, not a rule; `source-parse` and
+`unknown-ignore` are reported by the driver rather than by a registered rule.
 
 ### Analysis pipeline
 
