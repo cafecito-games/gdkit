@@ -161,21 +161,15 @@ func compile(line string) (compiled pattern, matchable bool, err error) {
 				end++
 			}
 			atSegmentStart := index == 0 || characters[index-1] == '/'
-			// Git compares the literal text that opens an anchored pattern
-			// on its own and hands only the rest to its wildcard matcher,
-			// so a run of stars straight after that text is read as if it
-			// opened the pattern: "a**/b" matches "a/x/b", though "?a**/b"
-			// does not match "xa/y/b".
-			afterLiteralPrefix := anchored && !strings.ContainsAny(string(characters[:index]), `*?[\`)
-			crossesDirectories := end-index >= 2 && (atSegmentStart || afterLiteralPrefix)
+			// Stars that do not fill a whole segment are ordinary stars,
+			// however many there are: "a**/b" is "a*/b".
+			crossesDirectories := end-index >= 2 && atSegmentStart
 			switch {
 			case crossesDirectories && end < len(characters) && characters[end] == '/':
 				expression.WriteString("(?:.*/)?")
 				end++
-			case crossesDirectories && end == len(characters) && atSegmentStart:
-				expression.WriteString(".+")
 			case crossesDirectories && end == len(characters):
-				expression.WriteString(".*")
+				expression.WriteString(".+")
 			default:
 				expression.WriteString("[^/]*")
 			}
