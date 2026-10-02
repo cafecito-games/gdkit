@@ -22,6 +22,8 @@ go run ./cmd/gdkit lint check /path/to/godot-project
 go run ./cmd/gdkit format check /path/to/godot-project
 go run ./cmd/gdkit format check --diff /path/to/godot-project
 go run ./cmd/gdkit format write /path/to/godot-project
+go run ./cmd/gdkit uid check /path/to/godot-project
+go run ./cmd/gdkit uid write --repair /path/to/godot-project
 
 # Release packaging (same commands CI runs)
 goreleaser check
@@ -36,7 +38,7 @@ the default branch.
 
 ## Architecture
 
-`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Ten packages:
+`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Eleven packages:
 
 - `architecture/` — the dependency analyzer: layer and feature boundaries, cycles,
   and engine purity (the substance of `gdkit arch`).
@@ -52,10 +54,20 @@ the default branch.
   performs no I/O.
   `format.unsafe` and `source-parse` are its public diagnostic names and appear in
   JSON output.
+- `uid/` — the `uid://` identifier codec and generator behind `gdkit uid`. It
+  reproduces Godot's `ResourceUID` exactly, including the base-34 alphabet that
+  omits `z` and `9` because Godot's own encoder is off by one and cannot be
+  fixed; see the comment on `alphabet`. Ids are random, not derived from the
+  path, so `Generator` takes an `io.Reader` and tests seed it. `Check` is pure
+  and `Apply` is the only writer. `uid.missing`, `uid.malformed`, and
+  `uid.duplicate` are its public diagnostic names.
 - `project/` — discovery and parsing. The only package that reads a project from
   disk, so every tool agrees on scope and parses once. `Config.HonorIgnoreFile`
-  is how lint and format share the root `.gdkitignore`; `architecture` leaves it
-  off, because hiding a file would drop its `class_name` from the index.
+  is how lint, format, and uid share the root `.gdkitignore`; `architecture`
+  leaves it off, because hiding a file would drop its `class_name` from the
+  index. `Snapshot.UIDs` resolves an identifier to one path, so it loses
+  malformed and duplicated sidecars; `Snapshot.Sidecars` keeps every `.uid` file
+  as read, which is what `uid` reports on.
 - `internal/glob/` — the shared glob engine.
 - `internal/ignore/` — the gitignore-style matcher behind `.gdkitignore`. It
   differs from git in four documented ways: a negated pattern can re-include a

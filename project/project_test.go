@@ -355,3 +355,55 @@ func TestParseFailureFallsBackToTheStartOfTheFile(t *testing.T) {
 		t.Fatalf("ParseFailure() = %d, %d, %q", line, column, message)
 	}
 }
+
+func TestLoadRecordsSidecarsItCannotResolve(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"player.gd":           "var speed := 1\n",
+		"player.gd.uid":       "uid://abc123\n",
+		"broken.gd":           "var health := 2\n",
+		"broken.gd.uid":       "nonsense\n",
+		"water.gdshader.uid":  "uid://shader\n",
+		"nested/enemy.gd":     "var health := 3\n",
+		"nested/enemy.gd.uid": "uid://abc123\n",
+	})
+
+	snapshot, err := Load(Config{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Sidecar{
+		{Path: "broken.gd.uid", Owner: "broken.gd", Text: "nonsense"},
+		{Path: "nested/enemy.gd.uid", Owner: "nested/enemy.gd", Text: "uid://abc123"},
+		{Path: "player.gd.uid", Owner: "player.gd", Text: "uid://abc123"},
+		{Path: "water.gdshader.uid", Owner: "water.gdshader", Text: "uid://shader"},
+	}
+	if !slices.Equal(snapshot.Sidecars, want) {
+		t.Fatalf("Sidecars = %+v, want %+v", snapshot.Sidecars, want)
+	}
+	// UIDs resolves an identifier to one path, so the duplicate above leaves
+	// a single entry. Sidecars is where both claimants survive.
+	if len(snapshot.UIDs) != 2 {
+		t.Errorf("UIDs = %v, want two entries", snapshot.UIDs)
+	}
+}
+
+func TestLoadSkipsSidecarsOfIgnoredFiles(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		".gdkitignore":            "addons/\n",
+		"player.gd":               "var speed := 1\n",
+		"player.gd.uid":           "uid://abc123\n",
+		"addons/plugin/no.gd":     "var ignored := 2\n",
+		"addons/plugin/no.gd.uid": "uid://ignored\n",
+	})
+
+	snapshot, err := Load(Config{Root: root, HonorIgnoreFile: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Sidecar{{Path: "player.gd.uid", Owner: "player.gd", Text: "uid://abc123"}}
+	if !slices.Equal(snapshot.Sidecars, want) {
+		t.Fatalf("Sidecars = %+v, want %+v", snapshot.Sidecars, want)
+	}
+}
