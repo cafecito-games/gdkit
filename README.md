@@ -2,8 +2,9 @@
 
 `gdkit` is a Go 1.26 toolkit for static analysis and source processing of
 Godot 4 GDScript. `gdkit arch` enforces architectural boundaries across a
-project, `gdkit lint` checks GDScript style and correctness, and `gdkit format`
-rewrites GDScript into one canonical style.
+project, `gdkit lint` checks GDScript style and correctness, `gdkit format`
+rewrites GDScript into one canonical style, and `gdkit uid` gives a script the
+`uid://` identity Godot would have given it.
 
 The analyzer uses [`gdparser`](https://github.com/cafecito-games/gdparser) and
 does not search source text with regular expressions. It parses GDScript,
@@ -399,11 +400,73 @@ default:
   `gdkit format check` and `gdkit format write` also skip the paths listed in
   [`.gdkitignore`](#ignoring-files-with-gdkitignore).
 
+## UID sidecars
+
+Godot 4 gives every script a `uid://` identity and keeps it in a `.uid` file
+beside the source, so a scene can reference the script by identity rather than
+by path. The editor creates those sidecars while it scans the filesystem, which
+means a script added without the editor open — by a generator, a merge, or a
+`git mv` — has none until someone next opens the project. Until then, anything
+that references it by `uid://` cannot resolve it, and `gdkit arch check`
+reports a `resource.missing` error for the dangling reference.
+
+`gdkit uid` creates the missing sidecars itself:
+
+```sh
+# Report scripts whose identity is missing or unusable, writing nothing
+gdkit uid check /path/to/godot-project
+
+# Create the sidecars Godot would have created
+gdkit uid write /path/to/godot-project
+```
+
+`check` exits 1 when it finds a problem, so it works as a CI gate. `write`
+creates every missing sidecar and exits 1 if it had to leave a problem behind.
+
+Identifiers are generated exactly as Godot generates them: 63 random bits,
+rendered in base 34 over the alphabet `abcdefghijklmnopqrstuvwxy012345678`.
+That alphabet is missing `z` and `9` because Godot's own encoder is off by one,
+a bug it
+[cannot fix](https://github.com/godotengine/godot/issues/83843) without
+invalidating every identifier ever written. A sidecar `gdkit` writes is
+byte-identical in form to one the editor writes, down to the trailing newline.
+An identifier is random rather than derived from the path, so two runs produce
+different ones, and a generated identifier never collides with one already
+present in the project.
+
+### UID diagnostics
+
+| Rule            | Meaning                                                          |
+| --------------- | ---------------------------------------------------------------- |
+| `uid.missing`   | The script has no `.uid` sidecar, so it has no stable identity.   |
+| `uid.malformed` | The sidecar does not hold an identifier Godot could have written. |
+| `uid.duplicate` | Two scripts' sidecars claim the same identifier.                  |
+
+A malformed or duplicated sidecar is reported but not rewritten, because a new
+identifier changes what every existing `uid://` reference to that script
+resolves to and `gdkit` does not rewrite references. Pass `--repair` to reissue
+them anyway:
+
+```sh
+gdkit uid write --repair /path/to/godot-project
+```
+
+With `--repair`, a malformed sidecar is replaced, and for a duplicated
+identifier the first claimant in path order keeps it while the rest are
+reissued. Check the result before committing it, and grep for the old
+identifiers if anything else in the project might still point at them.
+
+`gdkit uid` has no configuration file. It covers `.gd` files only — Godot also
+writes sidecars for shaders, which `gdkit` does not parse and so does not speak
+for — and it skips the paths listed in
+[`.gdkitignore`](#ignoring-files-with-gdkitignore), so a vendored script is
+left without an identity just as it is left unlinted.
+
 ## Ignoring files with .gdkitignore
 
-A file named `.gdkitignore` at the project root lists paths that `gdkit lint`
-and `gdkit format` skip, so third-party and generated code is named once for
-both tools:
+A file named `.gdkitignore` at the project root lists paths that `gdkit lint`,
+`gdkit format`, and `gdkit uid` skip, so third-party and generated code is
+named once for every tool:
 
 ```gitignore
 # Vendored plugins, wherever they sit in the tree

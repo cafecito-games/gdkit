@@ -27,6 +27,8 @@ Usage:
   gdkit format check [flags] [project-root]
   gdkit format write [flags] [project-root]
   gdkit format init  [flags] [project-root]
+  gdkit uid check    [flags] [project-root]
+  gdkit uid write    [flags] [project-root]
   gdkit version      [flags]
 
 Commands:
@@ -37,6 +39,8 @@ Commands:
   format check   report GDScript files that are not formatted
   format write   rewrite GDScript files in the configured style
   format init    write the default .gdkit/format.json configuration
+  uid check      report scripts whose Godot uid:// sidecar is missing or unusable
+  uid write      create the missing .uid sidecars Godot would have written
   version        print version and source revision information
 `
 
@@ -60,6 +64,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runLint(args[1:], stdout, stderr)
 	case "format":
 		return runFormat(args[1:], stdout, stderr)
+	case "uid":
+		return runUID(args[1:], stdout, stderr)
 	case "version":
 		return runVersion(args[1:], stdout, stderr)
 	default:

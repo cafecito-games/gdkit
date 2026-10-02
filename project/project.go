@@ -90,6 +90,21 @@ func (s *Script) ParseFailure() (line, column int, message string) {
 // LineCount is the number of lines in the file.
 func (s *Script) LineCount() int { return len(s.Lines) }
 
+// Sidecar is one .uid file discovered beside a source file, recorded exactly
+// as it was read. Unlike Snapshot.UIDs it keeps malformed contents and every
+// member of a duplicated identifier, so a tool can report on the sidecars
+// themselves rather than only resolve them.
+type Sidecar struct {
+	// Path is the .uid file, project-relative and slash-separated.
+	Path string
+	// Owner is the path the sidecar sits beside: Path without the .uid
+	// suffix. The file itself need not exist.
+	Owner string
+	// Text is the trimmed contents, whatever they are. It is not a uid://
+	// identifier unless the file holds a well-formed one.
+	Text string
+}
+
 // Snapshot is an immutable view of one project.
 type Snapshot struct {
 	Root string
@@ -99,6 +114,9 @@ type Snapshot struct {
 	Scripts map[string]*Script
 	// UIDs maps uid:// identifiers from .uid sidecars to their source path.
 	UIDs map[string]string
+	// Sidecars is every discovered .uid file, sorted by path. It covers
+	// sidecars beside files this package does not parse, such as shaders.
+	Sidecars []Sidecar
 }
 
 // Load walks the configured source roots and parses every .gd file it finds.
@@ -123,6 +141,7 @@ func Load(config Config) (*Snapshot, error) {
 
 	seen := make(map[string]struct{})
 	uids := make(map[string]string)
+	var sidecars []Sidecar
 	for _, sourceRoot := range sourceRoots {
 		absolute := filepath.Join(root, filepath.FromSlash(sourceRoot))
 		relativeRoot, relErr := filepath.Rel(root, absolute)
@@ -180,8 +199,10 @@ func Load(config Config) (*Snapshot, error) {
 					return nil
 				}
 				uid := strings.TrimSpace(string(data))
+				owner := strings.TrimSuffix(relative, ".uid")
+				sidecars = append(sidecars, Sidecar{Path: relative, Owner: owner, Text: uid})
 				if strings.HasPrefix(uid, "uid://") {
-					uids[uid] = strings.TrimSuffix(relative, ".uid")
+					uids[uid] = owner
 				}
 			}
 			return nil
@@ -190,6 +211,8 @@ func Load(config Config) (*Snapshot, error) {
 			return nil, fmt.Errorf("discover GDScript in %q: %w", sourceRoot, walkErr)
 		}
 	}
+
+	sort.Slice(sidecars, func(i, j int) bool { return sidecars[i].Path < sidecars[j].Path })
 
 	paths := make([]string, 0, len(seen))
 	for name := range seen {
@@ -212,7 +235,7 @@ func Load(config Config) (*Snapshot, error) {
 		}
 		scripts[name] = script
 	}
-	return &Snapshot{Root: root, Paths: paths, Scripts: scripts, UIDs: uids}, nil
+	return &Snapshot{Root: root, Paths: paths, Scripts: scripts, UIDs: uids, Sidecars: sidecars}, nil
 }
 
 // loadIgnoreFile reads the ignore file at the project root. A project without
