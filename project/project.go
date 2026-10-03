@@ -4,6 +4,7 @@
 package project
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -24,6 +25,10 @@ import (
 // IgnoreFileName is the gitignore-style file at the project root that lists
 // paths a tool skips when it sets Config.HonorIgnoreFile.
 const IgnoreFileName = ".gdkitignore"
+
+// maxResourceLine caps a line read from a .tscn, .tres, or .import file. A
+// header or uid= line is short; a longer line holds something else.
+const maxResourceLine = 64 * 1024
 
 // Config selects the files that belong to a project.
 type Config struct {
@@ -112,7 +117,10 @@ type Snapshot struct {
 	Paths []string
 	// Scripts is keyed by the same paths.
 	Scripts map[string]*Script
-	// UIDs maps uid:// identifiers from .uid sidecars to their source path.
+	// UIDs maps every discovered uid:// identifier to the path it names: a
+	// .uid sidecar's owner, a .tscn or .tres file that declares its own
+	// identifier in its header, or the asset beside a .import file. A sidecar
+	// wins if two sources claim one identifier.
 	UIDs map[string]string
 	// Sidecars is every discovered .uid file, sorted by path. It covers
 	// sidecars beside files this package does not parse, such as shaders.
@@ -141,6 +149,10 @@ func Load(config Config) (*Snapshot, error) {
 
 	seen := make(map[string]struct{})
 	uids := make(map[string]string)
+	// Identifiers declared inside a resource are merged after the walk so a
+	// .uid sidecar always wins a collision; the sidecars are what gdkit uid
+	// reports on.
+	declared := make(map[string]string)
 	var sidecars []Sidecar
 	for _, sourceRoot := range sourceRoots {
 		absolute := filepath.Join(root, filepath.FromSlash(sourceRoot))
@@ -190,6 +202,26 @@ func Load(config Config) (*Snapshot, error) {
 					return nil
 				}
 				seen[relative] = struct{}{}
+			case strings.HasSuffix(relative, ".tscn"), strings.HasSuffix(relative, ".tres"):
+				// A scene or text resource carries its own identifier in its
+				// header line rather than in a sidecar, so the header is the
+				// only place these can be indexed from.
+				if ignored.Ignored(relative, false) {
+					return nil
+				}
+				if uid := resourceHeaderUID(name); uid != "" {
+					declared[uid] = relative
+				}
+			case strings.HasSuffix(relative, ".import"):
+				// An imported asset keeps its identifier in the .import file
+				// beside it; the asset itself is binary and unparsed.
+				owner := strings.TrimSuffix(relative, ".import")
+				if ignored.Ignored(relative, false) || ignored.Ignored(owner, false) {
+					return nil
+				}
+				if uid := importUID(name); uid != "" {
+					declared[uid] = owner
+				}
 			case strings.HasSuffix(relative, ".uid"):
 				if ignored.Ignored(relative, false) || ignored.Ignored(strings.TrimSuffix(relative, ".uid"), false) {
 					return nil
@@ -209,6 +241,12 @@ func Load(config Config) (*Snapshot, error) {
 		})
 		if walkErr != nil {
 			return nil, fmt.Errorf("discover GDScript in %q: %w", sourceRoot, walkErr)
+		}
+	}
+
+	for uid, owner := range declared {
+		if _, exists := uids[uid]; !exists {
+			uids[uid] = owner
 		}
 	}
 
@@ -268,4 +306,68 @@ func lineStarts(source []byte) []int {
 		}
 	}
 	return starts
+}
+
+// resourceHeaderUID returns the uid:// identifier a .tscn or .tres file
+// declares in its header line, or "" when it has none. Only the first line is
+// read: later [ext_resource] lines carry the identifiers of *other* files.
+func resourceHeaderUID(name string) string {
+	file, err := os.Open(name)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 4096), maxResourceLine)
+	if !scanner.Scan() {
+		return ""
+	}
+	header := strings.TrimSpace(scanner.Text())
+	if !strings.HasPrefix(header, "[gd_scene") && !strings.HasPrefix(header, "[gd_resource") {
+		return ""
+	}
+	return quotedUID(header)
+}
+
+// importUID returns the uid:// identifier a .import file declares for the asset
+// it describes. Only the [remap] section is read, because a later section
+// describes the import's own dependencies.
+func importUID(name string) string {
+	file, err := os.Open(name)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 4096), maxResourceLine)
+	remap := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "[") {
+			if remap {
+				return ""
+			}
+			remap = line == "[remap]"
+			continue
+		}
+		if !remap || !strings.HasPrefix(line, "uid=") {
+			continue
+		}
+		return quotedUID(line)
+	}
+	return ""
+}
+
+// quotedUID returns the first double-quoted uid:// identifier in the line.
+func quotedUID(line string) string {
+	start := strings.Index(line, `"uid://`)
+	if start < 0 {
+		return ""
+	}
+	rest := line[start+1:]
+	end := strings.IndexByte(rest, '"')
+	if end <= len("uid://") {
+		return ""
+	}
+	return rest[:end]
 }

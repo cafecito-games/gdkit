@@ -407,3 +407,48 @@ func TestLoadSkipsSidecarsOfIgnoredFiles(t *testing.T) {
 		t.Fatalf("Sidecars = %+v, want %+v", snapshot.Sidecars, want)
 	}
 }
+
+func TestLoadIndexesIdentifiersDeclaredInsideResources(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"ui/panel.tscn":       "[gd_scene load_steps=2 format=3 uid=\"uid://dscene\"]\n\n[ext_resource type=\"Script\" uid=\"uid://bother\" path=\"res://ui/panel.gd\" id=\"1\"]\n",
+		"ui/theme.tres":       "[gd_resource type=\"Theme\" format=3 uid=\"uid://ctheme\"]\n",
+		"art/icon.svg.import": "[remap]\n\nimporter=\"texture\"\nuid=\"uid://bicon\"\npath=\"res://.godot/imported/icon.svg-abc.ctex\"\n\n[deps]\n\nuid=\"uid://bnotthis\"\n",
+		"ui/panel.gd.uid":     "uid://bpanel\n",
+		"ui/panel.gd":         "extends Control\n",
+	})
+
+	snapshot, err := Load(Config{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"uid://dscene": "ui/panel.tscn",
+		"uid://ctheme": "ui/theme.tres",
+		"uid://bicon":  "art/icon.svg",
+		"uid://bpanel": "ui/panel.gd",
+	}
+	if !maps.Equal(snapshot.UIDs, want) {
+		t.Fatalf("UIDs = %v, want %v", snapshot.UIDs, want)
+	}
+	if len(snapshot.Sidecars) != 1 {
+		t.Errorf("Sidecars = %#v, want only the .uid file", snapshot.Sidecars)
+	}
+}
+
+func TestLoadPrefersSidecarOverResourceHeaderForTheSameIdentifier(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"ui/panel.tscn":   "[gd_scene format=3 uid=\"uid://bshared\"]\n",
+		"ui/panel.gd.uid": "uid://bshared\n",
+		"ui/panel.gd":     "extends Control\n",
+	})
+
+	snapshot, err := Load(Config{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.UIDs["uid://bshared"] != "ui/panel.gd" {
+		t.Fatalf("UIDs = %v, want the sidecar owner to win", snapshot.UIDs)
+	}
+}

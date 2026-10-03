@@ -65,9 +65,11 @@ the default branch.
   disk, so every tool agrees on scope and parses once. `Config.HonorIgnoreFile`
   is how lint, format, and uid share the root `.gdkitignore`; `architecture`
   leaves it off, because hiding a file would drop its `class_name` from the
-  index. `Snapshot.UIDs` resolves an identifier to one path, so it loses
-  malformed and duplicated sidecars; `Snapshot.Sidecars` keeps every `.uid` file
-  as read, which is what `uid` reports on.
+  index. `Snapshot.UIDs` resolves an identifier to one path and covers every
+  place Godot declares one — a `.uid` sidecar, a `.tscn` or `.tres` header, or a
+  `.import` file — so a sidecar is not the only way a `uid://` load resolves; it
+  loses malformed and duplicated sidecars, while `Snapshot.Sidecars` keeps every
+  `.uid` file as read, which is what `uid` reports on.
 - `internal/glob/` — the shared glob engine.
 - `internal/ignore/` — the gitignore-style matcher behind `.gdkitignore`. It
   differs from git in four documented ways: a negated pattern can re-include a
@@ -100,7 +102,8 @@ everything downstream depends on the ordering:
 1. **Load allowlist** — invalid exceptions become `allowlist.adr` diagnostics and are
    dropped, so a broken allowlist never suppresses the violation it was meant to cover.
 2. **Discover** — walk `SourceRoots`, skipping `Exclude` matches, collecting `.gd`
-   files and building a `uid://` → path map from `.uid` sidecars.
+   files and building a `uid://` → path map from `.uid` sidecars, `.tscn` and
+   `.tres` headers, and `.import` files.
 3. **Parse and index** — one `gdparser.ParseFile` per file; record `class_name`
    declarations into a global map and flag duplicates. Parse failures and unclassified
    files become diagnostics here.
