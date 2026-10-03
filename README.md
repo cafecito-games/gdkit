@@ -631,8 +631,37 @@ accepted when one complete rule matches it.
 ```
 
 `"same"` means the source file's feature and `"*"` means any value. Optional
-`from_features`, `to_paths`, and `except_to_paths` fields can narrow a rule.
+`from_features`, `from_paths`, `to_paths`, and `except_to_paths` fields can
+narrow a rule. `from_paths` scopes the rule's *source* the way `to_paths`
+scopes its target, using the same glob syntax; omitting it means any file in
+`from_layers`, so adding the key can only make a rule match fewer
+dependencies. That is what lets a hexagonal port be granted a narrow
+permission without widening its whole layer:
+
+```json
+{
+  "from_layers": ["application"],
+  "from_paths": ["**/ports/**"],
+  "to_layers": ["application"],
+  "to_features": ["same", "shared"],
+  "to_paths": ["**/read_models/**", "**/intents/**"]
+}
+```
+
 Set `unclassified` to `"ignore"` only when incremental adoption is intentional.
+
+The configuration is read strictly, because a rule you believe you wrote but
+that is not in effect is worse than no rule at all:
+
+- An unknown key anywhere in the file — at the top level, inside a
+  `dependencies` rule, or inside a `classifications` entry — is a
+  configuration error naming the key's full JSON path, such as
+  `unknown key "classifications[11].layre" in architecture config`.
+- A `classifications` entry must declare `pattern`, `layer`, and `feature`.
+  There is no default layer; a missing one is a configuration error rather
+  than a silent reclassification of the directory tree it matches.
+
+Both fail with exit code `2` before any file is analyzed.
 
 Runtime boundaries and test discovery are path patterns:
 

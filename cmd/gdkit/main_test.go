@@ -42,6 +42,43 @@ func TestRunCheckViolationExit(t *testing.T) {
 	}
 }
 
+// A config a user cannot trust is worse than no config, so a typo'd key or a
+// classification with no layer fails as a configuration error rather than
+// silently changing what the analyzer enforces.
+func TestRunArchCheckExitsTwoOnConfigErrors(t *testing.T) {
+	cases := map[string]struct {
+		config string
+		want   string
+	}{
+		"unknown key in a classification": {
+			config: `{"version": 1, "classifications": [{"pattern": "aaa/**", "layre": "presentation", "feature": "f"}]}`,
+			want:   `unknown key "classifications[0].layre"`,
+		},
+		"unknown top-level key": {
+			config: `{"version": 1, "dependancies": []}`,
+			want:   `unknown key "dependancies"`,
+		},
+		"classification with no layer": {
+			config: `{"version": 1, "classifications": [{"pattern": "aaa/**", "feature": "f"}]}`,
+			want:   "requires a layer",
+		},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writeCLIFile(t, root, ".gdkit/architecture.json", testCase.config)
+			writeCLIFile(t, root, "aaa/thing.gd", "class_name AThing\n")
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{"arch", "check", root}, &stdout, &stderr); code != 2 {
+				t.Fatalf("check exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+			if !strings.Contains(stderr.String(), testCase.want) {
+				t.Fatalf("stderr %q does not mention %q", stderr.String(), testCase.want)
+			}
+		})
+	}
+}
+
 func TestRunVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"version", "--format", "json"}, &stdout, &stderr); code != 0 {
