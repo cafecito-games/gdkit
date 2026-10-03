@@ -435,8 +435,16 @@ func TestRunFormatWriteJSONListsWrittenPathsAfterAFailure(t *testing.T) {
 	if written, _ := decodeWritten(t, stdout.Bytes()); strings.Join(written, ",") != "a.gd" {
 		t.Fatalf("written = %v, want only a.gd: %s", written, stdout.String())
 	}
-	if !strings.HasPrefix(stderr.String(), "gdkit: write locked/b.gd: ") {
-		t.Errorf("stderr = %q", stderr.String())
+	// --format json was asked for, so the failure is an envelope on stderr
+	// rather than prose. stdout still carries the report of what was written
+	// before the failure, which is why this run is not covered by the
+	// empty-stdout rule the other enveloped failures follow.
+	body := decodeFailure(t, stderr.Bytes())
+	if body.Kind != "file.write" {
+		t.Errorf("kind = %q, want file.write", body.Kind)
+	}
+	if !strings.HasPrefix(body.Message, "write locked/b.gd: ") {
+		t.Errorf("message = %q", body.Message)
 	}
 }
 

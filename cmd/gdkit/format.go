@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/cafecito-games/gdkit/format"
+	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/internal/textdiff"
 	"github.com/cafecito-games/gdkit/project"
 )
@@ -43,20 +44,18 @@ func runFormatCheck(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
+	resolvedFormat, ok := checkOutputFormat(*outputFormat, stderr)
+	if !ok {
+		return exitUsage
+	}
 	if flags.NArg() > 1 {
-		fmt.Fprintln(stderr, "format check accepts at most one project root")
-		return 2
+		return reportUsage(stderr, resolvedFormat, failure.UsageArguments, "format check accepts at most one project root")
 	}
-	if !checkMinimumVersion(*minimumVersion, stderr) {
-		return 2
+	if !checkMinimumVersion(*minimumVersion, resolvedFormat, stderr) {
+		return exitUsage
 	}
-	if *outputFormat != "text" && *outputFormat != "json" {
-		fmt.Fprintf(stderr, "unknown output format %q (want text or json)\n", *outputFormat)
-		return 2
-	}
-	if *showDiff && *outputFormat == "json" {
-		fmt.Fprintln(stderr, "--diff cannot be combined with --format json")
-		return 2
+	if *showDiff && resolvedFormat == formatJSON {
+		return reportUsage(stderr, resolvedFormat, failure.UsageArguments, "--diff cannot be combined with --format json")
 	}
 	root := "."
 	if flags.NArg() == 1 {
@@ -64,13 +63,11 @@ func runFormatCheck(args []string, stdout, stderr io.Writer) int {
 	}
 	snapshot, report, err := formatProject(root, *configName)
 	if err != nil {
-		fmt.Fprintln(stderr, "gdkit:", err)
-		return 2
+		return reportFailure(stderr, resolvedFormat, failure.ConfigInvalid, err)
 	}
-	if *outputFormat == "json" {
+	if resolvedFormat == formatJSON {
 		if err := writeFormatReport(stdout, report); err != nil {
-			fmt.Fprintln(stderr, "gdkit: write report:", err)
-			return 2
+			return reportFailure(stderr, resolvedFormat, failure.OutputWrite, fmt.Errorf("write report: %w", err))
 		}
 	} else {
 		writer := bufio.NewWriter(stdout)
@@ -90,8 +87,7 @@ func runFormatCheck(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(writer, "format check passed (%d files)\n", len(report.Results))
 		}
 		if err := writer.Flush(); err != nil {
-			fmt.Fprintln(stderr, "gdkit: write report:", err)
-			return 2
+			return reportFailure(stderr, resolvedFormat, failure.OutputWrite, fmt.Errorf("write report: %w", err))
 		}
 	}
 	if report.HasChanges() || report.HasDiagnostics() {
@@ -109,16 +105,15 @@ func runFormatWrite(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
+	resolvedFormat, ok := checkOutputFormat(*outputFormat, stderr)
+	if !ok {
+		return exitUsage
+	}
 	if flags.NArg() > 1 {
-		fmt.Fprintln(stderr, "format write accepts at most one project root")
-		return 2
+		return reportUsage(stderr, resolvedFormat, failure.UsageArguments, "format write accepts at most one project root")
 	}
-	if !checkMinimumVersion(*minimumVersion, stderr) {
-		return 2
-	}
-	if *outputFormat != "text" && *outputFormat != "json" {
-		fmt.Fprintf(stderr, "unknown output format %q (want text or json)\n", *outputFormat)
-		return 2
+	if !checkMinimumVersion(*minimumVersion, resolvedFormat, stderr) {
+		return exitUsage
 	}
 	root := "."
 	if flags.NArg() == 1 {
@@ -126,14 +121,12 @@ func runFormatWrite(args []string, stdout, stderr io.Writer) int {
 	}
 	snapshot, report, err := formatProject(root, *configName)
 	if err != nil {
-		fmt.Fprintln(stderr, "gdkit:", err)
-		return 2
+		return reportFailure(stderr, resolvedFormat, failure.ConfigInvalid, err)
 	}
 	written, applyError := format.Apply(snapshot, report)
-	if *outputFormat == "json" {
+	if resolvedFormat == formatJSON {
 		if err := writeFormatReport(stdout, writeReport{Report: report, Written: written}); err != nil {
-			fmt.Fprintln(stderr, "gdkit: write report:", err)
-			return 2
+			return reportFailure(stderr, resolvedFormat, failure.OutputWrite, fmt.Errorf("write report: %w", err))
 		}
 	} else {
 		writer := bufio.NewWriter(stdout)
@@ -153,13 +146,11 @@ func runFormatWrite(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(writer)
 		}
 		if err := writer.Flush(); err != nil {
-			fmt.Fprintln(stderr, "gdkit: write report:", err)
-			return 2
+			return reportFailure(stderr, resolvedFormat, failure.OutputWrite, fmt.Errorf("write report: %w", err))
 		}
 	}
 	if applyError != nil {
-		fmt.Fprintln(stderr, "gdkit:", applyError)
-		return 2
+		return reportFailure(stderr, resolvedFormat, failure.FileWrite, applyError)
 	}
 	if report.HasDiagnostics() {
 		return 1

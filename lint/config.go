@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/internal/glob"
 )
 
@@ -41,6 +42,14 @@ type Config struct {
 
 	// Disable turns rules off by name.
 	Disable []string `json:"disable,omitempty"`
+	// Enable turns on rules that ship inert. Naming a rule that is not pending
+	// is accepted and does nothing, so a config keeps working unchanged after a
+	// rule graduates to running by default. Disable wins over Enable.
+	Enable []string `json:"enable,omitempty"`
+	// EnableNewRules opts in to every pending rule at once, including ones a
+	// later release adds. It trades reproducibility across upgrades for always
+	// running the strictest policy gdkit knows.
+	EnableNewRules bool `json:"enable_new_rules,omitempty"`
 	// Severity overrides a rule's severity. Unlisted rules are errors.
 	Severity map[string]Severity `json:"severity,omitempty"`
 
@@ -169,16 +178,16 @@ func LoadConfig(root, name string) (Config, error) {
 		return DefaultConfig(), nil
 	}
 	if err != nil {
-		return Config{}, fmt.Errorf("read lint config: %w", err)
+		return Config{}, failure.WrapPath(failure.ConfigRead, name, fmt.Errorf("read lint config: %w", err))
 	}
 	config := DefaultConfig()
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&config); err != nil {
-		return Config{}, fmt.Errorf("parse lint config: %w", err)
+		return Config{}, failure.WrapPath(failure.ConfigParse, name, fmt.Errorf("parse lint config: %w", err))
 	}
 	if err := config.Validate(); err != nil {
-		return Config{}, err
+		return Config{}, failure.WrapPath(failure.ConfigInvalid, name, err)
 	}
 	return config, nil
 }
@@ -213,6 +222,14 @@ func (c Config) validate() (map[string]*regexp.Regexp, error) {
 	for _, name := range c.Disable {
 		if !IsRule(name) {
 			return nil, fmt.Errorf("disable names unknown rule %q", name)
+		}
+	}
+	// Enable is not required to name a *pending* rule. A rule that graduates to
+	// running by default would otherwise turn every config that opted in to it
+	// into a configuration error on upgrade.
+	for _, name := range c.Enable {
+		if !IsRule(name) {
+			return nil, fmt.Errorf("enable names unknown rule %q", name)
 		}
 	}
 	for name, severity := range c.Severity {

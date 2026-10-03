@@ -89,8 +89,27 @@ the default branch.
 - `cmd/gdkit/` — flag parsing, output formatting, and exit codes only. It holds no
   analysis logic; it loads a `Config`, builds an `Analyzer`, `Linter`, or `Formatter`,
   and prints a `Report`.
+- `internal/failure/` — the machine-readable `kind` of a failure, carried from
+  the package that detected it to the command that reports it. Only the
+  detecting package knows whether a config failed to be read, to parse, to name
+  known keys, to satisfy the floor, or to validate, and `--format json`
+  consumers branch on the difference. `Kind` values are a public contract like
+  rule names. `cmd/gdkit` passes a fallback kind at each call site, so a failure
+  from a package that does not label one yet still reports something stable.
 - `internal/buildinfo/` — version metadata, injected by GoReleaser `-ldflags` and
   falling back to the Go toolchain's embedded VCS settings for local builds.
+
+A rule may **ship inert**: if it implements `lint.PendingRule` it does not run
+until a project names it in `enable` or sets `enable_new_rules`. This exists so
+an upgrade cannot change what an existing project reports on unchanged
+configuration, which is also what makes the README's "a release may become
+stricter" promise safe. `disable` wins over `enable`, and `enable` deliberately
+accepts any known rule name rather than only an inert one, so a config that
+opted in keeps working after the rule graduates to running by default.
+Pending-ness is an optional interface rather than a parallel registry map so a
+test can inject one through `newLinter`. No rule is inert today;
+`missing-docstring` predates the mechanism and is inert through its own empty
+list, which only worked because that rule is configured by a list.
 
 `tab-characters` is a configuration value used by `max-line-length`, not a rule.
 `source-parse` and `unknown-ignore` are reported by the driver rather than by a
@@ -207,6 +226,17 @@ allowlist exceptions match on. Renaming one breaks existing project allowlists.
 
 Exit codes: `0` clean, `1` architecture violations, `2` configuration/usage/IO
 failure. `cmd/gdkit` returns `2` from every error path before analysis completes.
+
+Under `--format json` an exit-`2` failure is a JSON envelope on **stderr**, not
+prose, and stdout stays empty so a consumer can tell "no report" from "an empty
+report". `--format` is therefore validated before anything else in the command
+can fail, because its value decides how every later failure is reported; an
+unknown value is itself reported as text, since a caller who misspelled the
+format cannot be assumed to parse an envelope. Unknown commands and flag parse
+errors precede `--format` entirely and stay prose, as do the `init` commands,
+which have no `--format`. `format write` and `uid write` still print the list of
+files they changed on stdout when a write fails part-way, because that list is
+what tells the caller the state the project is in.
 
 ## Conventions
 

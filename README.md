@@ -157,6 +157,8 @@ default:
 | `source_roots` | `["."]` |
 | `exclude` | `[".git/**", ".godot/**", ".gdkit/**", "addons/**"]` |
 | `disable` | none |
+| `enable` | none |
+| `enable_new_rules` | `false` |
 | `severity` | none; every rule is an `error` |
 | `max-returns` | `6` |
 | `max-public-methods` | `20` |
@@ -170,6 +172,9 @@ default:
 comma-separated list in addition to the file. `exclude` uses the same glob
 syntax as the architecture configuration. `gdkit lint check` also skips the
 paths listed in [`.gdkitignore`](#ignoring-files-with-gdkitignore).
+
+`enable` and `enable_new_rules` turn on rules that ship inert; see
+[Rules that ship inert](#rules-that-ship-inert).
 
 `tab-characters` is a setting and not a rule. `max-line-length` expands each
 tab to that many spaces before measuring a line.
@@ -220,6 +225,47 @@ make the run fail:
   "disable": ["max-file-lines"]
 }
 ```
+
+### Rules that ship inert
+
+A gdkit upgrade must not change what an existing project's `lint check` reports
+on unchanged configuration. So a new rule arrives **inert**: it is registered,
+documented, and listed by `gdkit lint check --format json`, but it does not run
+until the project asks for it.
+
+```jsonc
+{
+  "version": 1,
+  "enable": ["some-new-rule"],   // opt in to one
+  "enable_new_rules": true       // or to every inert rule, now and later
+}
+```
+
+`--enable` takes the same names as a comma-separated list, mirroring
+`--disable`.
+
+Three properties are worth knowing:
+
+- **`disable` wins over `enable`.** An explicit "off" is the stronger
+  statement, and a project listing a rule in both is most likely turning off
+  something it opted in to earlier.
+- **`enable` accepts any known rule name**, not only an inert one. Naming a
+  rule that already runs does nothing. This is deliberate: when an inert rule
+  graduates to running by default, every configuration that opted in keeps
+  working instead of becoming a configuration error on upgrade.
+- **`enable_new_rules` opts in to rules that do not exist yet.** It trades
+  reproducibility across upgrades for always running the strictest policy gdkit
+  knows, which is the right trade for some projects and the wrong one for a
+  repository auditing a release.
+
+Widening what an existing rule reports is the same event as adding a rule, from
+a project's point of view, so it arrives the same way: as a new inert rule name
+rather than as a quiet change to the rule already running.
+
+`missing-docstring` predates this mechanism and is inert through its own empty
+`missing-docstring` list instead. That worked because the rule happens to be
+configured by a list; most rules have no value to leave empty, which is why the
+general mechanism exists.
 
 ### Suppressing diagnostics
 
@@ -592,6 +638,59 @@ GoReleaser injects authoritative release metadata through linker flags. Normal
 `go build` installations fall back to the VCS metadata embedded by the Go
 toolchain, so development binaries remain identifiable too.
 
+## Machine-readable failures
+
+With `--format json`, a run that fails before it can produce a report writes a
+single error object to **stderr** and exits `2`. stdout stays empty, so a
+consumer can tell "no report" from "an empty report".
+
+```json
+{
+  "error": {
+    "kind": "config.unknown_key",
+    "message": "unknown key \"classifications[0].layre\" in architecture config",
+    "path": ".gdkit/architecture.json",
+    "key": "classifications[0].layre"
+  }
+}
+```
+
+`kind` is a public contract, like a rule name: it appears in output and a
+consumer branches on it, so it is not renamed. `message` is the same text the
+command writes in text mode, so the two modes never describe a failure
+differently. `path` and `key` appear when the failure locates to a file or a
+configuration key.
+
+| Kind | Meaning |
+| --- | --- |
+| `config.read` | the configuration file could not be read |
+| `config.parse` | the file is not well-formed JSON, or holds more than one JSON value |
+| `config.unknown_key` | a key the schema does not define; `key` names it |
+| `config.invalid` | the values do not validate |
+| `config.version_floor` | `minimum_gdkit_version` is newer than this binary |
+| `usage.arguments` | wrong arguments, or a flag combination that cannot be honored |
+| `usage.format` | an unknown `--format` value |
+| `usage.version_floor` | `--minimum-version` is not satisfied |
+| `project.load` | the project could not be walked or read |
+| `analysis.failed` | analysis itself failed |
+| `output.write` | the report could not be written |
+| `file.write` | a file the command was asked to create could not be written |
+
+Three cases are deliberately **not** enveloped, because the envelope cannot be
+promised for every exit-`2` path:
+
+- **An unknown `--format` value**, which is reported as text. A consumer that
+  misspelled the format cannot be assumed to parse the envelope it asked for by
+  mistake.
+- **An unknown command or subcommand, and a flag parse error**, which happen
+  before `--format` has been read at all.
+- **The `init` commands**, which have no `--format`.
+
+`format write` and `uid write` are one further exception in the other
+direction: a write that fails part-way still reports on stdout which files it
+changed before failing, alongside the envelope on stderr, because that list is
+what tells you the state the project is now in.
+
 ## Pinning the gdkit version
 
 A project's configuration can depend on behavior a particular release
@@ -664,8 +763,10 @@ semantics than the configuration expects.
 
 A floor is only meaningful if gdkit says what a release is allowed to do:
 
-- Within a minor line, enforcement may become **stricter** — a new diagnostic,
-  or a fix that widens what an existing rule catches.
+- A release may **add** checks, but a new lint rule ships inert and does not
+  change what a project reports until it opts in; see
+  [Rules that ship inert](#rules-that-ship-inert). A fix that widens what an
+  existing rule catches arrives the same way, as a new inert rule name.
 - Enforcement may **not** become more permissive within a minor line. Removing
   a diagnostic, widening what a dependency rule allows, or changing what
   existing configuration syntax means requires a minor bump before 1.0.
@@ -674,7 +775,13 @@ A floor is only meaningful if gdkit says what a release is allowed to do:
   comments.
 
 So a floor guarantees the binary is no more permissive than the release the
-project audited, which is the property a repository gate needs.
+project audited, which is the property a repository gate needs. The inert-by-
+default rule above is what makes the stricter direction safe too: a project
+that pins nothing still keeps its verdict across an upgrade.
+
+Architecture checks do not yet have the inert-by-default mechanism, because no
+release has needed to change one's semantics. Until they do, the floor is the
+only guard there.
 
 ## Configuration
 
@@ -760,10 +867,12 @@ that is not in effect is worse than no rule at all:
   `gdkit arch init` does not write the key, because a generated configuration
   must not pin itself to whichever binary generated it.
 
-These all fail with exit code `2` before any file is analyzed. The version
-floor is reported ahead of the others: a configuration written for a newer
-gdkit normally carries both the floor and the syntax that needed it, and naming
-the unknown key would describe a typo instead of a binary that is too old.
+These all fail with exit code `2` before any file is analyzed, and with
+`--format json` each reports a `kind` a consumer can branch on; see
+[Machine-readable failures](#machine-readable-failures). The version floor is
+reported ahead of the others: a configuration written for a newer gdkit
+normally carries both the floor and the syntax that needed it, and naming the
+unknown key would describe a typo instead of a binary that is too old.
 
 Runtime boundaries and test discovery are path patterns:
 
