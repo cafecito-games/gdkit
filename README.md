@@ -68,9 +68,10 @@ configuration, usage, or I/O failures.
 
 ## Linting
 
-`gdkit lint` reports 29 naming, structural, design, and formatting problems in
-GDScript. Like the architecture analyzer, it works from the parsed AST and shares
-its project discovery, so both tools agree on which files are in scope.
+`gdkit lint` reports 30 naming, structural, design, documentation, and
+formatting problems in GDScript. Like the architecture analyzer, it works from
+the parsed AST and shares its project discovery, so both tools agree on which
+files are in scope.
 
 ```sh
 gdkit lint check .
@@ -118,6 +119,12 @@ Design limits:
 
 - `max-returns`, `max-public-methods`, and `function-arguments-number`.
 
+Documentation:
+
+- `missing-docstring` requires a `##` documentation comment on public members.
+  It reports nothing until `missing-docstring` in the configuration lists the
+  member kinds to check.
+
 Format rules:
 
 - `max-file-lines`, `max-line-length`, `trailing-whitespace`, and
@@ -152,6 +159,7 @@ default:
 | `max-file-lines` | `1000` |
 | `max-line-length` | `100` |
 | `tab-characters` | `1` |
+| `missing-docstring` | `[]`; the rule is off |
 
 `disable` lists rules to turn off, and `--disable` takes the same names as a
 comma-separated list in addition to the file. `exclude` uses the same glob
@@ -171,6 +179,24 @@ match the whole identifier, for example:
   "enum-element-name": "[A-Z][A-Z0-9]*(_[A-Z0-9]+)*"
 }
 ```
+
+`missing-docstring` is a list of the member kinds that must carry a `##`
+documentation comment, drawn from `class`, `func`, `signal`, `var`, `const`, and
+`enum`. The list is empty by default, so the rule is opt-in and can be widened
+one kind at a time:
+
+```json
+{ "missing-docstring": ["class", "signal", "func"] }
+```
+
+A member is public unless its name begins with an underscore, so Godot's
+lifecycle callbacks and anything named `_like_this` are exempt, as is everything
+inside a private inner class. `class` covers each inner `class`, and the script
+itself when it declares a `class_name`; Godot reads the script's class comment
+from the top of the file, ahead of every member. A static function is checked,
+even though `max-public-methods` does not count one. A `#` comment does not
+satisfy the rule, because Godot's generated class reference shows only `##`, and
+neither does a `##` block separated from the member by a blank line.
 
 `class-definitions-order` is a list of slot names that defaults to `tools`,
 `classnames`, `extends`, `docstrings`, `signals`, `enums`, `consts`,
