@@ -207,3 +207,22 @@ func TestClassDefinitionsOrderSlotMissingFromOrder(t *testing.T) {
 		}
 	}
 }
+
+// A one-line class body holds one member, so what a semicolon separates from
+// it is a member of the enclosing scope and is slotted there. gdlint reads
+// both into the class and reports the signal below as out of order in A;
+// Godot does not, and neither does gdkit.
+func TestClassDefinitionsOrderOneLineClassMembersBelongToTheEnclosingScope(t *testing.T) {
+	assertNoRule(t, "class-definitions-order", "class A: var v = 1; signal changed\n")
+	assertNoRule(t, "class-definitions-order", "class A:\n\tvar v = 1\nsignal changed\n")
+	assertRule(t, "class-definitions-order", "class A:\n\tvar v = 1\n\tsignal changed\n", 3)
+}
+
+// An annotation may share its line with the extends or class_name it
+// decorates. The slot is the annotation's own, and the declaration after it
+// keeps the slot it would have on a line of its own.
+func TestClassDefinitionsOrderSameLineScriptAnnotations(t *testing.T) {
+	assertNoRule(t, "class-definitions-order", "@tool extends Node\nsignal a\nvar v = 1\n")
+	assertNoRule(t, "class-definitions-order", "@icon(\"res://icon.svg\") class_name X extends Node\nsignal a\n")
+	assertRule(t, "class-definitions-order", "@tool @icon(\"res://icon.svg\") extends Node\nvar v = 1\nsignal a\n", 3)
+}

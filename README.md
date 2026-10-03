@@ -361,8 +361,7 @@ A file with a diagnostic is left exactly as it is:
 - `source-parse` reports a file that does not parse, so it cannot be formatted.
 - `format.unsafe` reports a file whose formatted output would not keep the
   syntax tree or the tokens of its source, or would change the code a lint
-  suppression comment applies to, and a file with a one-line class body that
-  holds several members.
+  suppression comment applies to.
 
 ### Write safety
 
@@ -385,22 +384,6 @@ indentation, parentheses, commas, and semicolons are left out, since the
 formatter adds and removes them, and the same normalized spellings are allowed;
 every other token must appear exactly as often after formatting as before. A
 file whose tokens would change is reported as `format.unsafe`.
-
-A file is refused as `format.unsafe` before it is formatted when it holds a
-one-line class body with more than one member, such as
-`class A: var v = 1; var u = 2`. Godot ends that body at its first member, so
-`u` belongs to the enclosing script, while the parser reads both into `A`
-([gdparser#75](https://github.com/cafecito-games/gdparser/issues/75)) and a
-rewrite would move `u` into the class. Writing the class as a block, or the
-second member on its own line, makes the file acceptable.
-
-Two layouts are currently refused as `format.unsafe` because the formatted
-output parses back to a different tree
-([gdparser#77](https://github.com/cafecito-games/gdparser/issues/77)): a lambda
-whose one-line body is a compound statement, such as
-`func(): if a: return 1`, and an annotation on the same line as `class_name`,
-such as `@abstract class_name X extends Node`. Writing the lambda body as a
-block, or the annotation on its own line, avoids both.
 
 A rewrite is also refused as `format.unsafe` when it would change the code a
 lint suppression comment applies to. A directive reaches lines rather than

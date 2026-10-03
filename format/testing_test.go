@@ -88,3 +88,18 @@ func assertRefused(t *testing.T, report Report, want Diagnostic) {
 		t.Fatalf("diagnostics = %+v, want %+v", report.Diagnostics, want)
 	}
 }
+
+// formatForgedPastTheTreeCheck is formatForged with the tree comparison stood
+// down, so a later check is what decides the file. It stands in for a parser
+// that records nothing of the difference between source and output.
+func formatForgedPastTheTreeCheck(t *testing.T, source, forged string) Report {
+	t.Helper()
+	snapshot := loadProject(t, DefaultConfig(), map[string]string{"a.gd": source})
+	formatter, err := New(DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	formatter.emit = func(*ast.File, gdformat.Options) string { return forged }
+	formatter.verifyTree = func(string, *ast.File, []byte, gdformat.Options) error { return nil }
+	return formatter.Format(snapshot)
+}

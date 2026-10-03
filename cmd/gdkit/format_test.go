@@ -480,21 +480,18 @@ func TestRunFormatRefusesAnUnsafeRewrite(t *testing.T) {
 	}
 }
 
-func TestRunFormatLeavesOneLineClassWithSeveralMembersAlone(t *testing.T) {
+// A one-line class body holds one member, so writing the body as a block has
+// to leave what a semicolon separated from it outside the class.
+func TestRunFormatWritesOneLineClassMembersInTheirOwnScope(t *testing.T) {
 	const source = "class A: var v = 1; var u = 2\n"
-	for _, command := range []string{"check", "write"} {
-		root := t.TempDir()
-		writeCLIFile(t, root, "inner.gd", source)
-		var stdout, stderr bytes.Buffer
-		if code := run([]string{"format", command, root}, &stdout, &stderr); code != 1 {
-			t.Fatalf("%s: exit %d: stdout=%s stderr=%s", command, code, stdout.String(), stderr.String())
-		}
-		output := stdout.String()
-		if !strings.Contains(output, "inner.gd:1: Error: a one-line class body with several members is ambiguous") || !strings.Contains(output, "(format.unsafe)") {
-			t.Fatalf("%s: refusal missing from output: %s", command, output)
-		}
-		if got := readCLIFile(t, root, "inner.gd"); got != source {
-			t.Fatalf("%s rewrote the file: %q", command, got)
-		}
+	const want = "class A:\n\tvar v = 1\n\n\nvar u = 2\n"
+	root := t.TempDir()
+	writeCLIFile(t, root, "inner.gd", source)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"format", "write", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if got := readCLIFile(t, root, "inner.gd"); got != want {
+		t.Fatalf("written = %q, want %q", got, want)
 	}
 }

@@ -179,3 +179,20 @@ class Inner:
 `
 	assertRuleWithConfig(t, config, "function-arguments-number", source, 1, 11, 14)
 }
+
+// A one-line class holds one member, so a function a semicolon separates from
+// it counts towards the enclosing scope rather than the class. The three
+// sources below declare the same members in the same scopes and must all
+// report the script's three public methods.
+func TestMaxPublicMethodsCountsOneLineClassSiblingsInTheEnclosingScope(t *testing.T) {
+	config := designConfig(6, 2, 10)
+	oneLine := "class A: pass; func a(): pass\n" + repeatedFunctions("f", 2, "")
+	block := "class A:\n\tpass\nfunc a(): pass\n" + repeatedFunctions("f", 2, "")
+	assertRuleWithConfig(t, config, "max-public-methods", oneLine, 1)
+	assertRuleWithConfig(t, config, "max-public-methods", block, 1)
+	// The same members with a() inside the class leave the script below the
+	// limit, which is what the counts above would be if the parser read a
+	// one-line body as holding every member on its line.
+	inside := "class A:\n\tfunc a(): pass\n" + repeatedFunctions("f", 2, "")
+	assertRuleWithConfig(t, config, "max-public-methods", inside)
+}

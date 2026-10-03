@@ -17,6 +17,16 @@ type Formatter struct {
 	// emit renders a tree as source. It is a field so a test can stand in a
 	// formatter that damages its input and prove the damage is refused.
 	emit func(*ast.File, gdformat.Options) string
+	// verifyTree compares the reparsed output with the source tree. It is a
+	// field for the same reason as emit, and because no output gdparser
+	// produces today gets past it and is then caught by the token check: the
+	// tree comparison reads every field the parser records, so a token that
+	// changed what the source says has changed a field too. The token check
+	// guards the case the tree cannot see, a parser that drops a token
+	// altogether, which is what cafecito-games/gdparser#75 did with the
+	// semicolons of a one-line class body. Standing this in is the only way
+	// to reach that check from Format.
+	verifyTree func(path string, before *ast.File, formatted []byte, options gdformat.Options) error
 }
 
 // New builds a Formatter, rejecting an invalid config.
@@ -28,13 +38,12 @@ func New(config Config) (*Formatter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Formatter{options: options, emit: gdformat.FileWithOptions}, nil
+	return &Formatter{options: options, emit: gdformat.FileWithOptions, verifyTree: verifyTree}, nil
 }
 
 // Format computes the canonical form of every script in the snapshot. It
 // performs no I/O and leaves the snapshot untouched; Apply writes the results.
-// A file that does not parse, that holds a one-line class body the parser
-// reads differently from Godot, or whose formatted output does not keep its
+// A file that does not parse, or whose formatted output does not keep its
 // syntax tree and its tokens or would change the code a lint suppression
 // comment applies to, gets a diagnostic instead of a result.
 func (f *Formatter) Format(snapshot *project.Snapshot) Report {
@@ -87,14 +96,11 @@ func (f *Formatter) formatScript(script *project.Script) (Result, *Diagnostic) {
 		diagnostic := parseDiagnostic(script)
 		return Result{}, &diagnostic
 	}
-	if line, column, found := ambiguousClass(script.File, script.Source); found {
-		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: ambiguousClassBody, Path: script.Path, Line: line, Column: column}
-	}
 	formatted := []byte(f.emit(script.File, f.options))
 	if bytes.Equal(formatted, script.Source) {
 		return Result{Path: script.Path}, nil
 	}
-	if err := verifyTree(script.Path, script.File, formatted, f.options); err != nil {
+	if err := f.verifyTree(script.Path, script.File, formatted, f.options); err != nil {
 		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: err.Error(), Path: script.Path, Line: 1, Column: 1}
 	}
 	if line, column, changed := changedToken(script.Source, formatted, f.options); changed {
