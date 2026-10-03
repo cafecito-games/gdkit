@@ -92,6 +92,18 @@ the default branch.
 - `internal/buildinfo/` — version metadata, injected by GoReleaser `-ldflags` and
   falling back to the Go toolchain's embedded VCS settings for local builds.
 
+A rule may **ship inert**: if it implements `lint.PendingRule` it does not run
+until a project names it in `enable` or sets `enable_new_rules`. This exists so
+an upgrade cannot change what an existing project reports on unchanged
+configuration, which is also what makes the README's "a release may become
+stricter" promise safe. `disable` wins over `enable`, and `enable` deliberately
+accepts any known rule name rather than only an inert one, so a config that
+opted in keeps working after the rule graduates to running by default.
+Pending-ness is an optional interface rather than a parallel registry map so a
+test can inject one through `newLinter`. No rule is inert today;
+`missing-docstring` predates the mechanism and is inert through its own empty
+list, which only worked because that rule is configured by a list.
+
 `tab-characters` is a configuration value used by `max-line-length`, not a rule.
 `source-parse` and `unknown-ignore` are reported by the driver rather than by a
 registered rule. Several rules encode deliberately unusual behavior — token-based

@@ -17,6 +17,21 @@ type Rule interface {
 	Check(*Context, *project.Script) []Diagnostic
 }
 
+// PendingRule is a rule that ships inert: it does not run until a project opts
+// in by name through Config.Enable or wholesale through Config.EnableNewRules.
+//
+// A release adds a rule as pending so that upgrading gdkit cannot change an
+// existing project's verdict on unchanged configuration. Widening what an
+// existing rule reports is the same event from a project's perspective, so it
+// arrives the same way: as a new pending rule name rather than as a quiet
+// change to the rule already running.
+type PendingRule interface {
+	Rule
+	// PendingSince names the gdkit release that introduced the rule. It is
+	// documentation for the lifecycle policy, not a version comparison.
+	PendingSince() string
+}
+
 // Context gives a rule the project and its resolved configuration.
 type Context struct {
 	Config Config
@@ -63,6 +78,30 @@ func RuleNames() []string {
 	return names
 }
 
+// IsPendingRule reports whether a registered rule ships inert. The driver's own
+// "source-parse" and "unknown-ignore" are never pending: they report a file the
+// linter could not read as configured, which no project opts in to.
+func IsPendingRule(name string) bool {
+	rule, ok := registry[name]
+	if !ok {
+		return false
+	}
+	_, pending := rule.(PendingRule)
+	return pending
+}
+
+// PendingRuleNames lists every rule that ships inert, sorted.
+func PendingRuleNames() []string {
+	names := make([]string, 0, len(registry))
+	for name, rule := range registry {
+		if _, pending := rule.(PendingRule); pending {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 // Linter runs the enabled rules over a snapshot.
 type Linter struct {
 	context  Context
@@ -97,11 +136,23 @@ func newLinter(config Config, rules []Rule) (*Linter, error) {
 	for _, name := range config.Disable {
 		disabled[name] = true
 	}
+	// Disable wins over Enable. An explicit "off" is the stronger statement,
+	// and a project that lists a rule in both is most likely turning off
+	// something it opted in to earlier.
+	opted := make(map[string]bool, len(config.Enable))
+	for _, name := range config.Enable {
+		opted[name] = true
+	}
 	enabled := make([]Rule, 0, len(rules))
 	for _, rule := range rules {
-		if !disabled[rule.Name()] {
-			enabled = append(enabled, rule)
+		name := rule.Name()
+		if disabled[name] {
+			continue
 		}
+		if _, pending := rule.(PendingRule); pending && !config.EnableNewRules && !opted[name] {
+			continue
+		}
+		enabled = append(enabled, rule)
 	}
 	return &Linter{
 		context:  Context{Config: config, patterns: patterns},

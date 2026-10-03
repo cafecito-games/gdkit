@@ -181,6 +181,7 @@ func TestRunLintUsageErrors(t *testing.T) {
 		"unknown format":    {"lint", "check", "--format", "xml", root},
 		"too many roots":    {"lint", "check", root, root},
 		"unknown disable":   {"lint", "check", "--disable", "no-such-rule", root},
+		"unknown enable":    {"lint", "check", "--enable", "no-such-rule", root},
 		"missing config":    {"lint", "check", "--config", "missing.json", root},
 		"unknown lint verb": {"lint", "bogus"},
 		"init extra roots":  {"lint", "init", root, root},
@@ -208,6 +209,20 @@ func TestRunLintDisable(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "function-name") {
 		t.Fatalf("rule was not disabled: %s", stdout.String())
+	}
+}
+
+// --enable mirrors --disable. It names rules that ship inert, so enabling one
+// that already runs is accepted and changes nothing.
+func TestRunLintEnableAcceptsARunningRule(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "check", "--enable", "function-name", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d, want 1: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "function-name") {
+		t.Fatalf("enabling a running rule silenced it: %s", stdout.String())
 	}
 }
 

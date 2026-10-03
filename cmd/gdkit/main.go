@@ -270,6 +270,7 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 	configName := flags.String("config", "", "configuration path relative to the project root")
 	format := flags.String("format", "text", "output format: text or json")
 	disable := flags.String("disable", "", "comma-separated rule names to turn off")
+	enable := flags.String("enable", "", "comma-separated rule names to turn on, for rules that ship inert")
 	minimumVersion := flags.String("minimum-version", "", minimumVersionUsage)
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -304,6 +305,17 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		config.Disable = append(config.Disable, name)
+	}
+	for _, name := range strings.Split(*enable, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if !lint.IsRule(name) {
+			fmt.Fprintf(stderr, "gdkit: --enable names unknown rule %q\n", name)
+			return 2
+		}
+		config.Enable = append(config.Enable, name)
 	}
 	linter, err := lint.New(config)
 	if err != nil {

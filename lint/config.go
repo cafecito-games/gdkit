@@ -41,6 +41,14 @@ type Config struct {
 
 	// Disable turns rules off by name.
 	Disable []string `json:"disable,omitempty"`
+	// Enable turns on rules that ship inert. Naming a rule that is not pending
+	// is accepted and does nothing, so a config keeps working unchanged after a
+	// rule graduates to running by default. Disable wins over Enable.
+	Enable []string `json:"enable,omitempty"`
+	// EnableNewRules opts in to every pending rule at once, including ones a
+	// later release adds. It trades reproducibility across upgrades for always
+	// running the strictest policy gdkit knows.
+	EnableNewRules bool `json:"enable_new_rules,omitempty"`
 	// Severity overrides a rule's severity. Unlisted rules are errors.
 	Severity map[string]Severity `json:"severity,omitempty"`
 
@@ -213,6 +221,14 @@ func (c Config) validate() (map[string]*regexp.Regexp, error) {
 	for _, name := range c.Disable {
 		if !IsRule(name) {
 			return nil, fmt.Errorf("disable names unknown rule %q", name)
+		}
+	}
+	// Enable is not required to name a *pending* rule. A rule that graduates to
+	// running by default would otherwise turn every config that opted in to it
+	// into a configuration error on upgrade.
+	for _, name := range c.Enable {
+		if !IsRule(name) {
+			return nil, fmt.Errorf("enable names unknown rule %q", name)
 		}
 	}
 	for name, severity := range c.Severity {
