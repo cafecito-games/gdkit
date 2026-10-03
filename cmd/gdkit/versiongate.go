@@ -44,7 +44,7 @@ func checkMinimumVersion(minimum string, stderr io.Writer) bool {
 	}
 	current, err := versiongate.Parse(reported)
 	if err != nil {
-		fmt.Fprintf(stderr, "gdkit: --minimum-version %s requires gdkit %s or newer, but this binary reports %v\n", required, required, err)
+		fmt.Fprintf(stderr, "gdkit: --minimum-version %s is not satisfied: this binary reports an unrecognized version %q\n", required, reported)
 		return false
 	}
 	if current.Less(required) {

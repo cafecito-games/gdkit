@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,6 +134,7 @@ func TestMinimumVersionIsAcceptedByEveryCheckCommand(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pretendVersion(t, "0.2.0")
 			root := gateProject(t)
+			before := projectFingerprint(t, root)
 			var stdout, stderr bytes.Buffer
 			arguments := append(append([]string{}, command...), "--minimum-version", "0.3.0", root)
 			if code := run(arguments, &stdout, &stderr); code != 2 {
@@ -143,6 +145,10 @@ func TestMinimumVersionIsAcceptedByEveryCheckCommand(t *testing.T) {
 			}
 			if !strings.Contains(stderr.String(), "0.3.0") {
 				t.Fatalf("stderr %q does not report the required version", stderr.String())
+			}
+			// A write command must not have touched the project either.
+			if after := projectFingerprint(t, root); after != before {
+				t.Fatalf("a failed gate still changed the project:\n%s\n%s", before, after)
 			}
 
 			// A satisfied floor leaves the command running as before.
@@ -212,4 +218,33 @@ func TestArchInitWritesNoMinimumVersion(t *testing.T) {
 	if strings.Contains(string(contents), "minimum_gdkit_version") {
 		t.Fatalf("arch init pinned the generated config:\n%s", contents)
 	}
+}
+
+// projectFingerprint lists every file under root with its contents, so a test
+// can prove a write command left the project alone.
+func projectFingerprint(t *testing.T, root string) string {
+	t.Helper()
+	var builder strings.Builder
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		contents, readError := os.ReadFile(path)
+		if readError != nil {
+			return readError
+		}
+		relative, relativeError := filepath.Rel(root, path)
+		if relativeError != nil {
+			return relativeError
+		}
+		fmt.Fprintf(&builder, "%s\x00%s\n", filepath.ToSlash(relative), contents)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return builder.String()
 }

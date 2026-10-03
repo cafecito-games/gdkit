@@ -145,6 +145,14 @@ func LoadConfig(root, name string) (Config, error) {
 	if err := decoder.Decode(&config); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
+	// The decoder reads one value and stops, while checkMinimumVersion and
+	// checkUnknownKeys above require the file to be exactly one value and skip
+	// themselves when it is not. Without this a config followed by a second
+	// value would load with neither check applied, so a declared version floor
+	// would silently not apply.
+	if decoder.More() {
+		return Config{}, errors.New("parse config: unexpected content after the top-level object")
+	}
 	if config.SourceRoots == nil {
 		config.SourceRoots = defaults.SourceRoots
 	}
@@ -395,7 +403,7 @@ func checkMinimumVersion(data []byte, configPath string) error {
 	}
 	current, err := versiongate.Parse(reported)
 	if err != nil {
-		return fmt.Errorf("%s requires gdkit %s or newer, but this binary reports %w", configPath, minimum, err)
+		return fmt.Errorf("%s requires gdkit %s or newer, but this binary reports an unrecognized version %q", configPath, minimum, reported)
 	}
 	if current.Less(minimum) {
 		return fmt.Errorf("%s requires gdkit %s or newer, but this binary is %s", configPath, minimum, reported)

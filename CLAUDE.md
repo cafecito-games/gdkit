@@ -181,6 +181,14 @@ default rule sitting at the same position.
   the environment inside `LoadConfig` because the check has to live there to order
   correctly; `detectedVersion` is a package variable so tests can load a config as
   an arbitrary release would.
+- **`LoadConfig` rejects content after the top-level object, and that is what makes
+  the two whole-document checks sound.** `checkMinimumVersion` and
+  `checkUnknownKeys` both use `json.Unmarshal`, which requires the file to be
+  exactly one JSON value and which they skip when it is not; `json.Decoder.Decode`
+  reads only the first value and never looks for EOF. Without the `decoder.More()`
+  guard a config followed by a second value loads with neither check applied, so a
+  declared version floor silently does not apply.
+  `TestLoadConfigRejectsContentAfterTheTopLevelObject` guards it.
 - **Patterns** are a custom glob (`architecture/pattern.go`) compiled to regex and
   cached: `**/` crosses directories, `*` and `?` stay within a segment, `{feature}`
   captures a segment. It is not `path/filepath.Match`.

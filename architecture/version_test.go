@@ -184,3 +184,27 @@ func TestDefaultConfigDeclaresNoMinimumVersion(t *testing.T) {
 		t.Fatalf("DefaultConfig().MinimumGDKitVersion = %q, want empty", got)
 	}
 }
+
+// encoding/json's Decoder reads one value and stops, while the whole-document
+// checks ahead of it require the file to be exactly one value. Trailing
+// content would otherwise skip both of them and load as a valid config,
+// letting a binary below the floor analyze the project and emit a report.
+func TestLoadConfigRejectsContentAfterTheTopLevelObject(t *testing.T) {
+	cases := map[string]string{
+		"floor":       `{"version": 1, "minimum_gdkit_version": "0.3.0"} trailing`,
+		"unknown key": `{"version": 1, "zones": []} trailing`,
+		"second object": `{"version": 1}
+{"version": 1}`,
+		"bare token": `{"version": 1} null`,
+	}
+	for name, contents := range cases {
+		t.Run(name, func(t *testing.T) {
+			pretendVersion(t, "0.2.0")
+			root := t.TempDir()
+			writeProject(t, root, map[string]string{DefaultConfigPath: contents})
+			if _, err := LoadConfig(root, ""); err == nil {
+				t.Fatal("content after the top-level object was accepted")
+			}
+		})
+	}
+}
