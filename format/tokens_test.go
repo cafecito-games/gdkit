@@ -179,3 +179,30 @@ func TestFormatRefusesAFormatterThatUntypesAnInferredParameterDefault(t *testing
 		})
 	}
 }
+
+// Format consults the token check, not only the tree comparison. No output
+// gdparser produces today reaches it, since the tree comparison reads every
+// field the parser records; it is there for a parser that drops a token
+// instead of recording it, so the tree check is stood down here to reach it.
+func TestFormatRefusesAnOutputWhoseTokensChangeBehindTheTreeCheck(t *testing.T) {
+	cases := map[string]struct {
+		source, forged string
+		line, column   int
+	}{
+		"identifier changed": {"var a = b\n", "var a = c\n", 1, 9},
+		"token dropped":      {"func f():\n\treturn await g()\n", "func f():\n\treturn g()\n", 2, 9},
+		"token added":        {"var a = 1\n", "var a = -1\n", 1, 9},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			report := formatForgedPastTheTreeCheck(t, testCase.source, testCase.forged)
+			assertRefused(t, report, Diagnostic{
+				Rule:    ruleUnsafe,
+				Message: tokensChanged,
+				Path:    "a.gd",
+				Line:    testCase.line,
+				Column:  testCase.column,
+			})
+		})
+	}
+}
