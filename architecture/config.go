@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/cafecito-games/gdkit/internal/buildinfo"
+	"github.com/cafecito-games/gdkit/internal/versiongate"
 )
 
 const (
@@ -17,17 +21,22 @@ const (
 	DefaultAllowlistPath = ".gdkit/allowlist.json"
 )
 
+// detectedVersion reports the running binary's version. It is a variable so a
+// test can load a config as an arbitrary release would.
+var detectedVersion = func() string { return buildinfo.Current().Version }
+
 // Config controls discovery, classification, and dependency policy.
 type Config struct {
-	Version           int                  `json:"version"`
-	SourceRoots       []string             `json:"source_roots"`
-	Exclude           []string             `json:"exclude"`
-	Classifications   []ClassificationRule `json:"classifications"`
-	Dependencies      []DependencyRule     `json:"dependencies"`
-	RuntimeBoundaries []string             `json:"runtime_boundaries"`
-	TestPatterns      []string             `json:"test_patterns"`
-	Allowlist         string               `json:"allowlist"`
-	Unclassified      string               `json:"unclassified"`
+	Version             int                  `json:"version"`
+	MinimumGDKitVersion string               `json:"minimum_gdkit_version,omitempty"`
+	SourceRoots         []string             `json:"source_roots"`
+	Exclude             []string             `json:"exclude"`
+	Classifications     []ClassificationRule `json:"classifications"`
+	Dependencies        []DependencyRule     `json:"dependencies"`
+	RuntimeBoundaries   []string             `json:"runtime_boundaries"`
+	TestPatterns        []string             `json:"test_patterns"`
+	Allowlist           string               `json:"allowlist"`
+	Unclassified        string               `json:"unclassified"`
 }
 
 // ClassificationRule assigns a layer and feature. {feature} captures one path segment.
@@ -108,6 +117,19 @@ func LoadConfig(root, name string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
+	// checkMinimumVersion and checkUnknownKeys below decode the whole document
+	// and skip themselves when it is not exactly one JSON value, so the file
+	// has to be proven to be one value before either runs.
+	if err := checkSingleValue(data); err != nil {
+		return Config{}, err
+	}
+	// The floor is read before unknown-key reporting and before Validate.
+	// A config written for a newer gdkit normally carries both the floor and
+	// the syntax that needed it, and naming the unknown key or the validation
+	// failure would describe a typo instead of a binary that is too old.
+	if err := checkMinimumVersion(data, name); err != nil {
+		return Config{}, err
+	}
 	if err := checkUnknownKeys(data); err != nil {
 		return Config{}, err
 	}
@@ -152,6 +174,30 @@ func LoadConfig(root, name string) (Config, error) {
 		return Config{}, err
 	}
 	return config, nil
+}
+
+// checkSingleValue requires the file to hold exactly one JSON value.
+//
+// encoding/json's Decoder reads one value and stops without looking at what
+// follows, while checkMinimumVersion and checkUnknownKeys use json.Unmarshal,
+// which needs the whole input to be one value and which they skip when it is
+// not. A config followed by anything else would otherwise load with neither
+// check applied, so a declared version floor would silently not apply.
+//
+// Decoder.More cannot stand in for this: it reports whether another array or
+// object element follows, so it answers false for a trailing "}" or "]".
+func checkSingleValue(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var value json.RawMessage
+	// Malformed JSON keeps the decoder's own message, which carries the offset
+	// that locates the problem.
+	if err := decoder.Decode(&value); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	if err := decoder.Decode(&value); !errors.Is(err, io.EOF) {
+		return errors.New("parse config: unexpected content after the top-level object")
+	}
+	return nil
 }
 
 // checkUnknownKeys rejects any key the config schema does not define, naming
@@ -346,4 +392,44 @@ func featureMatches(allowed []string, actual, source string) bool {
 		}
 	}
 	return false
+}
+
+// checkMinimumVersion enforces the config's own minimum_gdkit_version against
+// the running binary. It reads the key with a non-strict decode of its own so
+// the floor is reported ahead of any other configuration problem; malformed
+// JSON is left to the decode in LoadConfig, which reports it with an offset.
+//
+// The development-build bypass is read from the environment here rather than
+// passed in by the caller because the check has to run at this point in
+// LoadConfig to order correctly, so the bypass has to as well.
+func checkMinimumVersion(data []byte, configPath string) error {
+	var document struct {
+		MinimumGDKitVersion string `json:"minimum_gdkit_version"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil
+	}
+	if document.MinimumGDKitVersion == "" {
+		return nil
+	}
+	minimum, err := versiongate.ParseRequirement(document.MinimumGDKitVersion)
+	if err != nil {
+		return fmt.Errorf("minimum_gdkit_version %w", err)
+	}
+	reported := detectedVersion()
+	if versiongate.IsDevelopment(reported) {
+		if os.Getenv(versiongate.AllowDevelopmentEnvironmentVariable) != "" {
+			return nil
+		}
+		return fmt.Errorf("%s requires gdkit %s or newer, which is not satisfied by a development build; set %s=1 to bypass",
+			configPath, minimum, versiongate.AllowDevelopmentEnvironmentVariable)
+	}
+	current, err := versiongate.Parse(reported)
+	if err != nil {
+		return fmt.Errorf("%s requires gdkit %s or newer, but this binary reports an unrecognized version %q", configPath, minimum, reported)
+	}
+	if current.Less(minimum) {
+		return fmt.Errorf("%s requires gdkit %s or newer, but this binary is %s", configPath, minimum, reported)
+	}
+	return nil
 }

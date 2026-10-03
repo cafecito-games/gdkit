@@ -61,10 +61,14 @@ Run without a configuration file to use the built-in conventions:
 gdkit arch check .
 gdkit arch check --format json .
 gdkit arch check --show-edges .
+gdkit arch check --minimum-version 0.3.0 .
 ```
 
 The command exits `0` when clean, `1` for architecture violations, and `2` for
 configuration, usage, or I/O failures.
+
+`--minimum-version` refuses to run unless the binary is at least the named
+release. See [Pinning the gdkit version](#pinning-the-gdkit-version).
 
 ## Linting
 
@@ -77,6 +81,7 @@ files are in scope.
 gdkit lint check .
 gdkit lint check --format json .
 gdkit lint check --disable max-line-length,max-file-lines .
+gdkit lint check --minimum-version 0.3.0 .
 gdkit lint init .
 ```
 
@@ -265,6 +270,7 @@ prints each file from its parsed syntax tree.
 gdkit format check .
 gdkit format check --diff .
 gdkit format check --format json .
+gdkit format check --minimum-version 0.3.0 .
 gdkit format write .
 gdkit format init .
 ```
@@ -446,6 +452,9 @@ gdkit uid check /path/to/godot-project
 
 # Create the sidecars Godot would have created
 gdkit uid write /path/to/godot-project
+
+# Refuse to run unless the binary is at least 0.3.0
+gdkit uid check --minimum-version 0.3.0 /path/to/godot-project
 ```
 
 `check` exits 1 when it finds a problem, so it works as a CI gate. `write`
@@ -583,6 +592,90 @@ GoReleaser injects authoritative release metadata through linker flags. Normal
 `go build` installations fall back to the VCS metadata embedded by the Go
 toolchain, so development binaries remain identifiable too.
 
+## Pinning the gdkit version
+
+A project's configuration can depend on behavior a particular release
+introduced. When CI runs one gdkit and a developer's machine has another, the
+two can reach different verdicts over the same source — most awkwardly when the
+older binary is the more permissive one.
+
+**Pin the binary to prevent this.** A version pin is the mechanism that keeps
+every machine on one gdkit; the gate described below only *detects* a mismatch
+after the fact, and cannot help if nobody added it to the command. Pin with the
+Go toolchain:
+
+```sh
+go run github.com/cafecito-games/gdkit/cmd/gdkit@v0.2.0 arch check .
+```
+
+A `Makefile` or `justfile` target that spells out the version keeps every
+machine, and CI, on the same binary. A toolchain manager such as `mise` or
+`asdf`, or a devcontainer image, pins it the same way for a team that installs
+gdkit from Homebrew rather than through the Go toolchain.
+
+**Gate on the version as defense in depth.** Where pinning is not in place — a
+stale `brew install`, a contributor's older binary — a floor makes the run fail
+closed rather than enforce weaker rules quietly. Every check and write command
+accepts the flag:
+
+```sh
+gdkit arch check --minimum-version 0.2.0 .
+```
+
+The architecture configuration can carry the same requirement, which keeps it
+beside the settings that needed it and applies to every invocation without each
+caller remembering a flag:
+
+```json
+{
+  "version": 1,
+  "minimum_gdkit_version": "0.2.0"
+}
+```
+
+Both forms are a **minimum**, not an exact match: a newer gdkit satisfies them,
+so a patch release does not break every developer at once. Both are checked
+before any configuration is read and before any source is parsed, so a binary
+below the floor exits `2` with a message naming the required and detected
+versions, and emits no report:
+
+```text
+gdkit: --minimum-version 0.3.0 requires gdkit 0.3.0 or newer, but this binary is 0.2.0
+gdkit: .gdkit/architecture.json requires gdkit 0.3.0 or newer, but this binary is 0.2.0
+```
+
+The value is a `major.minor.patch` triple. A leading `v`, a missing component,
+or a prerelease suffix is a configuration error rather than a silently accepted
+approximation. On the detected side, a prerelease or build metadata suffix is
+ignored, so a snapshot build of `0.2.1` satisfies a floor of `0.2.1`.
+
+A development build — a local `go build` or `go run` with no release version —
+satisfies no floor, because the point of the gate is to fail closed on a binary
+nobody audited. Contributors who need to work inside a project that pins a
+floor can set `GDKIT_ALLOW_DEV_VERSION=1`, which excuses development builds
+only; it never excuses a release below the floor.
+
+Both failure directions are covered. A gdkit older than `--minimum-version`
+rejects the unknown flag, and a gdkit that predates `minimum_gdkit_version`
+rejects it as an unknown configuration key, so neither can run with weaker
+semantics than the configuration expects.
+
+### What a release may change
+
+A floor is only meaningful if gdkit says what a release is allowed to do:
+
+- Within a minor line, enforcement may become **stricter** — a new diagnostic,
+  or a fix that widens what an existing rule catches.
+- Enforcement may **not** become more permissive within a minor line. Removing
+  a diagnostic, widening what a dependency rule allows, or changing what
+  existing configuration syntax means requires a minor bump before 1.0.
+- Rule names are a public contract and are not renamed; they appear in JSON
+  output, in configuration, in allowlist exceptions, and in `# gdkit:ignore`
+  comments.
+
+So a floor guarantees the binary is no more permissive than the release the
+project audited, which is the property a repository gate needs.
+
 ## Configuration
 
 Create editable starter files in a Godot project:
@@ -660,8 +753,17 @@ that is not in effect is worse than no rule at all:
 - A `classifications` entry must declare `pattern`, `layer`, and `feature`.
   There is no default layer; a missing one is a configuration error rather
   than a silent reclassification of the directory tree it matches.
+- An optional `minimum_gdkit_version` declares the oldest gdkit release whose
+  behavior this configuration was written against, as a `major.minor.patch`
+  triple. An older binary fails rather than enforcing the rules it happens to
+  understand; see [Pinning the gdkit version](#pinning-the-gdkit-version).
+  `gdkit arch init` does not write the key, because a generated configuration
+  must not pin itself to whichever binary generated it.
 
-Both fail with exit code `2` before any file is analyzed.
+These all fail with exit code `2` before any file is analyzed. The version
+floor is reported ahead of the others: a configuration written for a newer
+gdkit normally carries both the floor and the syntax that needed it, and naming
+the unknown key would describe a typo instead of a binary that is too old.
 
 Runtime boundaries and test discovery are path patterns:
 

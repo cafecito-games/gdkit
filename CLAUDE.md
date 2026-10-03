@@ -38,7 +38,7 @@ the default branch.
 
 ## Architecture
 
-`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Eleven packages:
+`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Twelve packages:
 
 - `architecture/` — the dependency analyzer: layer and feature boundaries, cycles,
   and engine purity (the substance of `gdkit arch`).
@@ -71,6 +71,12 @@ the default branch.
   loses malformed and duplicated sidecars, while `Snapshot.Sidecars` keeps every
   `.uid` file as read, which is what `uid` reports on.
 - `internal/glob/` — the shared glob engine.
+- `internal/versiongate/` — the `major.minor.patch` comparison behind
+  `--minimum-version` and `minimum_gdkit_version`. Comparison is on the numeric
+  triple only; prerelease and build metadata are ignored, so a GoReleaser snapshot
+  of `0.2.1` satisfies a floor of `0.2.1`. `ParseRequirement` is deliberately
+  stricter than `Parse`: a floor is hand-written, so a leading `v` or a prerelease
+  suffix is an error, while a version a binary reports about itself is tolerated.
 - `internal/ignore/` — the gitignore-style matcher behind `.gdkitignore`. It
   differs from git in four documented ways: a negated pattern can re-include a
   path inside an ignored directory; matching is case-sensitive whatever the
@@ -165,6 +171,26 @@ default rule sitting at the same position.
   document against `Config`'s own reflected shape and names the offending key's full
   JSON path (`classifications[11].layre`), because `DisallowUnknownFields` reports
   the key alone, which does not locate a typo in a large config.
+- **`minimum_gdkit_version` is checked before `checkUnknownKeys` and before
+  `Validate()`, and the ordering is load-bearing.** `checkMinimumVersion` decodes
+  the key with a non-strict `json.Unmarshal` of its own for exactly that reason: a
+  config written for a newer gdkit carries both the floor and the syntax that needed
+  it, so checking later would report `unknown key "..."` and point the reader at a
+  typo instead of a binary that is too old. `TestLoadConfigReportsTheMinimumVersionBeforeAnUnknownKey`
+  guards it. The development-build bypass (`GDKIT_ALLOW_DEV_VERSION`) is read from
+  the environment inside `LoadConfig` because the check has to live there to order
+  correctly; `detectedVersion` is a package variable so tests can load a config as
+  an arbitrary release would.
+- **`checkSingleValue` runs first, and it is what makes the two whole-document
+  checks sound.** `checkMinimumVersion` and `checkUnknownKeys` both use
+  `json.Unmarshal`, which requires the file to be exactly one JSON value and which
+  they skip when it is not; `json.Decoder.Decode` reads only the first value and
+  never looks at what follows. Without this a config followed by anything else
+  loads with neither check applied, so a declared version floor silently does not
+  apply and the run passes. `Decoder.More` cannot stand in for the check — it
+  reports whether another array or object element follows, so it answers false for
+  a trailing `}` or `]`; the test table covers those.
+  `TestLoadConfigRejectsContentAfterTheTopLevelObject` guards it.
 - **Patterns** are a custom glob (`architecture/pattern.go`) compiled to regex and
   cached: `**/` crosses directories, `*` and `?` stay within a segment, `{feature}`
   captures a segment. It is not `path/filepath.Match`.

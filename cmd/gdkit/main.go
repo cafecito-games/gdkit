@@ -145,11 +145,15 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	configName := flags.String("config", "", "configuration path relative to the project root")
 	format := flags.String("format", "text", "output format: text or json")
 	showEdges := flags.Bool("show-edges", false, "include resolved dependencies in text output")
+	minimumVersion := flags.String("minimum-version", "", minimumVersionUsage)
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 1 {
 		fmt.Fprintln(stderr, "arch check accepts at most one project root")
+		return 2
+	}
+	if !checkMinimumVersion(*minimumVersion, stderr) {
 		return 2
 	}
 	root := "."
@@ -266,11 +270,15 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 	configName := flags.String("config", "", "configuration path relative to the project root")
 	format := flags.String("format", "text", "output format: text or json")
 	disable := flags.String("disable", "", "comma-separated rule names to turn off")
+	minimumVersion := flags.String("minimum-version", "", minimumVersionUsage)
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 1 {
 		fmt.Fprintln(stderr, "lint check accepts at most one project root")
+		return 2
+	}
+	if !checkMinimumVersion(*minimumVersion, stderr) {
 		return 2
 	}
 	if *format != "text" && *format != "json" {
