@@ -196,6 +196,13 @@ func TestLoadConfigRejectsContentAfterTheTopLevelObject(t *testing.T) {
 		"second object": `{"version": 1}
 {"version": 1}`,
 		"bare token": `{"version": 1} null`,
+		// json.Decoder.More reports whether another array or object element
+		// follows, so it answers false for a closing delimiter and cannot
+		// stand in for an end-of-input check.
+		"closing brace":   `{"version": 1, "minimum_gdkit_version": "0.3.0"}}`,
+		"closing bracket": `{"version": 1, "minimum_gdkit_version": "0.3.0"}]`,
+		"two closing":     `{"version": 1, "minimum_gdkit_version": "0.3.0"}}}`,
+		"comma":           `{"version": 1, "minimum_gdkit_version": "0.3.0"},`,
 	}
 	for name, contents := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -206,5 +213,19 @@ func TestLoadConfigRejectsContentAfterTheTopLevelObject(t *testing.T) {
 				t.Fatal("content after the top-level object was accepted")
 			}
 		})
+	}
+}
+
+// Genuinely malformed JSON keeps the decoder's own message, which carries the
+// offset that locates the problem.
+func TestLoadConfigReportsMalformedJSONWithItsOffset(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, map[string]string{DefaultConfigPath: `{"version": 1,`})
+	_, err := LoadConfig(root, "")
+	if err == nil {
+		t.Fatal("malformed JSON was accepted")
+	}
+	if !strings.Contains(err.Error(), "parse config") {
+		t.Fatalf("error %q is not reported as a parse failure", err)
 	}
 }

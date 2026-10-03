@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -116,6 +117,12 @@ func LoadConfig(root, name string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
+	// checkMinimumVersion and checkUnknownKeys below decode the whole document
+	// and skip themselves when it is not exactly one JSON value, so the file
+	// has to be proven to be one value before either runs.
+	if err := checkSingleValue(data); err != nil {
+		return Config{}, err
+	}
 	// The floor is read before unknown-key reporting and before Validate.
 	// A config written for a newer gdkit normally carries both the floor and
 	// the syntax that needed it, and naming the unknown key or the validation
@@ -145,14 +152,6 @@ func LoadConfig(root, name string) (Config, error) {
 	if err := decoder.Decode(&config); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
-	// The decoder reads one value and stops, while checkMinimumVersion and
-	// checkUnknownKeys above require the file to be exactly one value and skip
-	// themselves when it is not. Without this a config followed by a second
-	// value would load with neither check applied, so a declared version floor
-	// would silently not apply.
-	if decoder.More() {
-		return Config{}, errors.New("parse config: unexpected content after the top-level object")
-	}
 	if config.SourceRoots == nil {
 		config.SourceRoots = defaults.SourceRoots
 	}
@@ -175,6 +174,30 @@ func LoadConfig(root, name string) (Config, error) {
 		return Config{}, err
 	}
 	return config, nil
+}
+
+// checkSingleValue requires the file to hold exactly one JSON value.
+//
+// encoding/json's Decoder reads one value and stops without looking at what
+// follows, while checkMinimumVersion and checkUnknownKeys use json.Unmarshal,
+// which needs the whole input to be one value and which they skip when it is
+// not. A config followed by anything else would otherwise load with neither
+// check applied, so a declared version floor would silently not apply.
+//
+// Decoder.More cannot stand in for this: it reports whether another array or
+// object element follows, so it answers false for a trailing "}" or "]".
+func checkSingleValue(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var value json.RawMessage
+	// Malformed JSON keeps the decoder's own message, which carries the offset
+	// that locates the problem.
+	if err := decoder.Decode(&value); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	if err := decoder.Decode(&value); !errors.Is(err, io.EOF) {
+		return errors.New("parse config: unexpected content after the top-level object")
+	}
+	return nil
 }
 
 // checkUnknownKeys rejects any key the config schema does not define, naming
