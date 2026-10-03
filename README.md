@@ -50,7 +50,9 @@ go run ./cmd/gdkit arch check /path/to/godot-project
 - scene loading and node inspection from domain or application tests.
 
 Static `res://` paths, paths relative to the current script, and `uid://` paths
-with discoverable `.uid` sidecars are resolved. Dynamic resource paths and
+are resolved. An identifier is discovered wherever Godot records it: a `.uid`
+sidecar beside a script, the header of a `.tscn` or `.tres` file, or the
+`.import` file beside an imported asset. Dynamic resource paths and
 `user://` resources do not create project dependency edges.
 
 Run without a configuration file to use the built-in conventions:

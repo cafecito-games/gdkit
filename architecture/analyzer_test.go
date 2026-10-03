@@ -218,3 +218,24 @@ func assertEdge(t *testing.T, report Report, from, to string) {
 	}
 	t.Errorf("missing edge %s -> %s in %#v", from, to, report.Edges)
 }
+
+func TestAnalyzerResolvesIdentifiersDeclaredInsideResources(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, map[string]string{
+		"features/combat/presentation/view.gd": `class_name View
+var panel = preload("uid://dpanel")
+var theme = load("uid://ctheme")
+`,
+		"features/combat/presentation/panel.tscn": `[gd_scene load_steps=2 format=3 uid="uid://dpanel"]
+`,
+		"features/combat/presentation/panel.theme.tres": `[gd_resource type="Theme" format=3 uid="uid://ctheme"]
+`,
+	})
+
+	report := analyzeDefault(t, root)
+	if report.HasErrors() {
+		t.Fatalf("unexpected diagnostics: %#v", report.Diagnostics)
+	}
+	assertEdge(t, report, "features/combat/presentation/view.gd", "features/combat/presentation/panel.tscn")
+	assertEdge(t, report, "features/combat/presentation/view.gd", "features/combat/presentation/panel.theme.tres")
+}
