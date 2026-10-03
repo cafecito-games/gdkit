@@ -68,6 +68,11 @@ type Config struct {
 	TabCharacters int `json:"tab-characters"`
 
 	ClassDefinitionsOrder []string `json:"class-definitions-order"`
+
+	// MissingDocstring lists the member kinds that require a "##"
+	// documentation comment. It is empty by default, which makes the
+	// missing-docstring rule inert, so a project opts in one kind at a time.
+	MissingDocstring []string `json:"missing-docstring"`
 }
 
 // DefaultConfig is gdlint's default policy, expressed in gdkit's config shape.
@@ -105,6 +110,8 @@ func DefaultConfig() Config {
 			"consts", "staticvars", "exports", "pubvars", "prvvars",
 			"onreadypubvars", "onreadyprvvars", "others",
 		},
+
+		MissingDocstring: []string{},
 	}
 }
 
@@ -219,6 +226,11 @@ func (c Config) validate() (map[string]*regexp.Regexp, error) {
 	for _, slot := range c.ClassDefinitionsOrder {
 		if !knownOrderSlots[slot] {
 			return nil, fmt.Errorf("class-definitions-order names unknown slot %q", slot)
+		}
+	}
+	for _, kind := range c.MissingDocstring {
+		if !knownDocKinds[kind] {
+			return nil, fmt.Errorf("missing-docstring names unknown member kind %q", kind)
 		}
 	}
 	limits := []struct {

@@ -91,8 +91,9 @@ the default branch.
 registered rule. Several rules encode deliberately unusual behavior — token-based
 rather than scope-based name counting in `unused-argument`, token-stream
 comparison in `comparison-with-itself`, annotation re-pairing in
-`class-definitions-order`. The comments in `lint/` record why; do not "simplify"
-them without reading those.
+`class-definitions-order`, and a static function that `missing-docstring`
+checks while `max-public-methods` does not count it. The comments in `lint/`
+record why; do not "simplify" them without reading those.
 
 ### Analysis pipeline
 

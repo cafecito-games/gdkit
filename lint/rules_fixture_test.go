@@ -120,15 +120,49 @@ var fixtureExpectations = map[string][]fixtureFinding{
 	},
 }
 
-// lintFixtures lints testdata/rules and groups the diagnostics by file.
-func lintFixtures(t *testing.T) map[string][]fixtureFinding {
-	t.Helper()
+// docstringFixtureExpectations is the complete set of diagnostics the files in
+// testdata/docstrings must produce with every missing-docstring member kind
+// enabled. The rule reports nothing under the default configuration, so it
+// needs a fixture group of its own.
+var docstringFixtureExpectations = map[string][]fixtureFinding{
+	"documented.gd": {},
+	"missing.gd": {
+		// Reported at the class_name directive, not at the top of the file.
+		{1, "missing-docstring"},
+		{4, "missing-docstring"},
+		{6, "missing-docstring"},
+		{8, "missing-docstring"},
+		// "count" only; a leading underscore makes a member private.
+		{10, "missing-docstring"},
+		{13, "missing-docstring"},
+		// A static function is public API even though no design limit counts it.
+		{19, "missing-docstring"},
+		// The inner class, then its own members.
+		{22, "missing-docstring"},
+		{23, "missing-docstring"},
+		{25, "missing-docstring"},
+	},
+}
+
+// docstringFixtureConfig enables every member kind, so one fixture covers the
+// whole rule.
+func docstringFixtureConfig() Config {
 	config := DefaultConfig()
+	config.MissingDocstring = []string{
+		docKindClass, docKindFunc, docKindSignal,
+		docKindVar, docKindConst, docKindEnum,
+	}
+	return config
+}
+
+// lintFixtures lints a fixture directory and groups the diagnostics by file.
+func lintFixtures(t *testing.T, directory string, config Config) map[string][]fixtureFinding {
+	t.Helper()
 	linter, err := New(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := loadCorpus(t, filepath.Join("testdata", "rules"), config)
+	snapshot := loadCorpus(t, filepath.Join("testdata", directory), config)
 	found := make(map[string][]fixtureFinding)
 	for _, diagnostic := range linter.Lint(snapshot).Diagnostics {
 		found[diagnostic.Path] = append(found[diagnostic.Path], fixtureFinding{diagnostic.Line, diagnostic.Rule})
@@ -168,9 +202,19 @@ func formatFindings(findings []fixtureFinding) string {
 // checks the rules together over whole files, so a rule that starts firing where
 // it should not is caught even when its own test still passes.
 func TestFixtureDiagnostics(t *testing.T) {
-	found := lintFixtures(t)
+	checkFixtures(t, lintFixtures(t, "rules", DefaultConfig()), fixtureExpectations)
+}
 
-	for path, want := range fixtureExpectations {
+// TestDocstringFixtureDiagnostics is TestFixtureDiagnostics for the fixtures
+// that only produce diagnostics once missing-docstring is configured.
+func TestDocstringFixtureDiagnostics(t *testing.T) {
+	checkFixtures(t, lintFixtures(t, "docstrings", docstringFixtureConfig()), docstringFixtureExpectations)
+}
+
+func checkFixtures(t *testing.T, found map[string][]fixtureFinding, expectations map[string][]fixtureFinding) {
+	t.Helper()
+
+	for path, want := range expectations {
 		sortFindings(want)
 		got := found[path]
 		if len(got) != len(want) {
@@ -188,7 +232,7 @@ func TestFixtureDiagnostics(t *testing.T) {
 	}
 
 	for path := range found {
-		if _, expected := fixtureExpectations[path]; !expected {
+		if _, expected := expectations[path]; !expected {
 			t.Errorf("%s produced diagnostics but has no expectations:%s", path, formatFindings(found[path]))
 		}
 	}
@@ -206,9 +250,11 @@ func TestFixturesExerciseEveryRule(t *testing.T) {
 	driverReported := map[string]bool{"source-parse": true, "unknown-ignore": true}
 
 	exercised := make(map[string]bool)
-	for _, findings := range fixtureExpectations {
-		for _, finding := range findings {
-			exercised[finding.rule] = true
+	for _, group := range []map[string][]fixtureFinding{fixtureExpectations, docstringFixtureExpectations} {
+		for _, findings := range group {
+			for _, finding := range findings {
+				exercised[finding.rule] = true
+			}
 		}
 	}
 
