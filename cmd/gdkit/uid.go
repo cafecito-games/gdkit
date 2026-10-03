@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdkit/uid"
 )
@@ -37,22 +38,20 @@ func runUIDCheck(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	root, code := uidRoot("uid check", flags, *outputFormat, stderr)
+	root, resolvedFormat, code := uidRoot("uid check", flags, *outputFormat, stderr)
 	if code != 0 {
 		return code
 	}
-	if !checkMinimumVersion(*minimumVersion, stderr) {
-		return 2
+	if !checkMinimumVersion(*minimumVersion, resolvedFormat, stderr) {
+		return exitUsage
 	}
 	_, report, err := checkUIDs(root)
 	if err != nil {
-		fmt.Fprintln(stderr, "gdkit:", err)
-		return 2
+		return reportFailure(stderr, resolvedFormat, failure.ProjectLoad, err)
 	}
-	if *outputFormat == "json" {
+	if resolvedFormat == formatJSON {
 		if err := writeUIDReport(stdout, report); err != nil {
-			fmt.Fprintln(stderr, "gdkit: write report:", err)
-			return 2
+			return reportFailure(stderr, resolvedFormat, failure.OutputWrite, fmt.Errorf("write report: %w", err))
 		}
 	} else {
 		writer := bufio.NewWriter(stdout)
@@ -65,8 +64,7 @@ func runUIDCheck(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(writer, "uid check passed (%d files)\n", report.Scripts)
 		}
 		if err := writer.Flush(); err != nil {
-			fmt.Fprintln(stderr, "gdkit: write report:", err)
-			return 2
+			return reportFailure(stderr, resolvedFormat, failure.OutputWrite, fmt.Errorf("write report: %w", err))
 		}
 	}
 	if report.HasDiagnostics() {
@@ -84,17 +82,16 @@ func runUIDWrite(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	root, code := uidRoot("uid write", flags, *outputFormat, stderr)
+	root, resolvedFormat, code := uidRoot("uid write", flags, *outputFormat, stderr)
 	if code != 0 {
 		return code
 	}
-	if !checkMinimumVersion(*minimumVersion, stderr) {
-		return 2
+	if !checkMinimumVersion(*minimumVersion, resolvedFormat, stderr) {
+		return exitUsage
 	}
 	snapshot, report, err := checkUIDs(root)
 	if err != nil {
-		fmt.Fprintln(stderr, "gdkit:", err)
-		return 2
+		return reportFailure(stderr, resolvedFormat, failure.ProjectLoad, err)
 	}
 	written, applyError := uid.Apply(snapshot, report, uid.NewGenerator(nil), *repair)
 	// Without --repair the malformed and duplicated sidecars are still on
@@ -103,10 +100,9 @@ func runUIDWrite(args []string, stdout, stderr io.Writer) int {
 	if !*repair {
 		remaining = len(report.Repairs())
 	}
-	if *outputFormat == "json" {
+	if resolvedFormat == formatJSON {
 		if err := writeUIDReport(stdout, uidWriteReport{Report: report, Written: written}); err != nil {
-			fmt.Fprintln(stderr, "gdkit: write report:", err)
-			return 2
+			return reportFailure(stderr, resolvedFormat, failure.OutputWrite, fmt.Errorf("write report: %w", err))
 		}
 	} else {
 		writer := bufio.NewWriter(stdout)
@@ -141,13 +137,11 @@ func runUIDWrite(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		if err := writer.Flush(); err != nil {
-			fmt.Fprintln(stderr, "gdkit: write report:", err)
-			return 2
+			return reportFailure(stderr, resolvedFormat, failure.OutputWrite, fmt.Errorf("write report: %w", err))
 		}
 	}
 	if applyError != nil {
-		fmt.Fprintln(stderr, "gdkit:", applyError)
-		return 2
+		return reportFailure(stderr, resolvedFormat, failure.FileWrite, applyError)
 	}
 	if remaining > 0 {
 		return 1
@@ -156,20 +150,22 @@ func runUIDWrite(args []string, stdout, stderr io.Writer) int {
 }
 
 // uidRoot validates the flags both uid commands share and returns the project
-// root to work on. A non-zero code is the exit code to return.
-func uidRoot(name string, flags *flag.FlagSet, outputFormat string, stderr io.Writer) (string, int) {
-	if flags.NArg() > 1 {
-		fmt.Fprintf(stderr, "%s accepts at most one project root\n", name)
-		return "", 2
+// root to work on, the resolved output format so later failures in the command
+// are reported the way the caller asked for, and a non-zero exit code when a
+// flag is wrong.
+func uidRoot(name string, flags *flag.FlagSet, outputFormat string, stderr io.Writer) (string, string, int) {
+	resolvedFormat, ok := checkOutputFormat(outputFormat, stderr)
+	if !ok {
+		return "", "", exitUsage
 	}
-	if outputFormat != "text" && outputFormat != "json" {
-		fmt.Fprintf(stderr, "unknown output format %q (want text or json)\n", outputFormat)
-		return "", 2
+	if flags.NArg() > 1 {
+		return "", "", reportUsage(stderr, resolvedFormat, failure.UsageArguments,
+			fmt.Sprintf("%s accepts at most one project root", name))
 	}
 	if flags.NArg() == 1 {
-		return flags.Arg(0), 0
+		return flags.Arg(0), resolvedFormat, 0
 	}
-	return ".", 0
+	return ".", resolvedFormat, 0
 }
 
 // checkUIDs loads the project under root and checks its identities. It writes

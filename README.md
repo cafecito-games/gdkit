@@ -638,6 +638,59 @@ GoReleaser injects authoritative release metadata through linker flags. Normal
 `go build` installations fall back to the VCS metadata embedded by the Go
 toolchain, so development binaries remain identifiable too.
 
+## Machine-readable failures
+
+With `--format json`, a run that fails before it can produce a report writes a
+single error object to **stderr** and exits `2`. stdout stays empty, so a
+consumer can tell "no report" from "an empty report".
+
+```json
+{
+  "error": {
+    "kind": "config.unknown_key",
+    "message": "unknown key \"classifications[0].layre\" in architecture config",
+    "path": ".gdkit/architecture.json",
+    "key": "classifications[0].layre"
+  }
+}
+```
+
+`kind` is a public contract, like a rule name: it appears in output and a
+consumer branches on it, so it is not renamed. `message` is the same text the
+command writes in text mode, so the two modes never describe a failure
+differently. `path` and `key` appear when the failure locates to a file or a
+configuration key.
+
+| Kind | Meaning |
+| --- | --- |
+| `config.read` | the configuration file could not be read |
+| `config.parse` | the file is not well-formed JSON, or holds more than one JSON value |
+| `config.unknown_key` | a key the schema does not define; `key` names it |
+| `config.invalid` | the values do not validate |
+| `config.version_floor` | `minimum_gdkit_version` is newer than this binary |
+| `usage.arguments` | wrong arguments, or a flag combination that cannot be honored |
+| `usage.format` | an unknown `--format` value |
+| `usage.version_floor` | `--minimum-version` is not satisfied |
+| `project.load` | the project could not be walked or read |
+| `analysis.failed` | analysis itself failed |
+| `output.write` | the report could not be written |
+| `file.write` | a file the command was asked to create could not be written |
+
+Three cases are deliberately **not** enveloped, because the envelope cannot be
+promised for every exit-`2` path:
+
+- **An unknown `--format` value**, which is reported as text. A consumer that
+  misspelled the format cannot be assumed to parse the envelope it asked for by
+  mistake.
+- **An unknown command or subcommand, and a flag parse error**, which happen
+  before `--format` has been read at all.
+- **The `init` commands**, which have no `--format`.
+
+`format write` and `uid write` are one further exception in the other
+direction: a write that fails part-way still reports on stdout which files it
+changed before failing, alongside the envelope on stderr, because that list is
+what tells you the state the project is now in.
+
 ## Pinning the gdkit version
 
 A project's configuration can depend on behavior a particular release
@@ -814,10 +867,12 @@ that is not in effect is worse than no rule at all:
   `gdkit arch init` does not write the key, because a generated configuration
   must not pin itself to whichever binary generated it.
 
-These all fail with exit code `2` before any file is analyzed. The version
-floor is reported ahead of the others: a configuration written for a newer
-gdkit normally carries both the floor and the syntax that needed it, and naming
-the unknown key would describe a typo instead of a binary that is too old.
+These all fail with exit code `2` before any file is analyzed, and with
+`--format json` each reports a `kind` a consumer can branch on; see
+[Machine-readable failures](#machine-readable-failures). The version floor is
+reported ahead of the others: a configuration written for a newer gdkit
+normally carries both the floor and the syntax that needed it, and naming the
+unknown key would describe a typo instead of a binary that is too old.
 
 Runtime boundaries and test discovery are path patterns:
 

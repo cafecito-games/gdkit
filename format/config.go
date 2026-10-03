@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/internal/glob"
 	gdformat "github.com/cafecito-games/gdparser/format"
 )
@@ -90,16 +91,16 @@ func LoadConfig(root, name string) (Config, error) {
 		return DefaultConfig(), nil
 	}
 	if err != nil {
-		return Config{}, fmt.Errorf("read format config: %w", err)
+		return Config{}, failure.WrapPath(failure.ConfigRead, name, fmt.Errorf("read format config: %w", err))
 	}
 	config := DefaultConfig()
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&config); err != nil {
-		return Config{}, fmt.Errorf("parse format config: %w", err)
+		return Config{}, failure.WrapPath(failure.ConfigParse, name, fmt.Errorf("parse format config: %w", err))
 	}
 	if err := config.Validate(); err != nil {
-		return Config{}, err
+		return Config{}, failure.WrapPath(failure.ConfigInvalid, name, err)
 	}
 	return config, nil
 }

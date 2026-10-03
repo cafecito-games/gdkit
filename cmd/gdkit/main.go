@@ -13,6 +13,7 @@ import (
 
 	"github.com/cafecito-games/gdkit/architecture"
 	"github.com/cafecito-games/gdkit/internal/buildinfo"
+	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/lint"
 	"github.com/cafecito-games/gdkit/project"
 )
@@ -117,24 +118,23 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
+	outputFormat, ok := checkOutputFormat(*format, stderr)
+	if !ok {
+		return exitUsage
+	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "version does not accept positional arguments")
-		return 2
+		return reportUsage(stderr, outputFormat, failure.UsageArguments, "version does not accept positional arguments")
 	}
 	info := buildinfo.Current()
-	switch *format {
-	case "text":
+	switch outputFormat {
+	case formatText:
 		fmt.Fprintln(stdout, info.String())
-	case "json":
+	case formatJSON:
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
 		if err := encoder.Encode(info); err != nil {
-			fmt.Fprintln(stderr, "gdkit: write version:", err)
-			return 2
+			return reportFailure(stderr, outputFormat, failure.OutputWrite, fmt.Errorf("write version: %w", err))
 		}
-	default:
-		fmt.Fprintf(stderr, "unknown output format %q (want text or json)\n", *format)
-		return 2
 	}
 	return 0
 }
@@ -149,12 +149,15 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if flags.NArg() > 1 {
-		fmt.Fprintln(stderr, "arch check accepts at most one project root")
-		return 2
+	outputFormat, ok := checkOutputFormat(*format, stderr)
+	if !ok {
+		return exitUsage
 	}
-	if !checkMinimumVersion(*minimumVersion, stderr) {
-		return 2
+	if flags.NArg() > 1 {
+		return reportUsage(stderr, outputFormat, failure.UsageArguments, "arch check accepts at most one project root")
+	}
+	if !checkMinimumVersion(*minimumVersion, outputFormat, stderr) {
+		return exitUsage
 	}
 	root := "."
 	if flags.NArg() == 1 {
@@ -162,28 +165,24 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	}
 	config, err := architecture.LoadConfig(root, *configName)
 	if err != nil {
-		fmt.Fprintln(stderr, "gdkit:", err)
-		return 2
+		return reportFailure(stderr, outputFormat, failure.ConfigInvalid, err)
 	}
 	analyzer, err := architecture.NewAnalyzer(root, config)
 	if err != nil {
-		fmt.Fprintln(stderr, "gdkit:", err)
-		return 2
+		return reportFailure(stderr, outputFormat, failure.ConfigInvalid, err)
 	}
 	report, err := analyzer.Analyze()
 	if err != nil {
-		fmt.Fprintln(stderr, "gdkit:", err)
-		return 2
+		return reportFailure(stderr, outputFormat, failure.AnalysisFailed, err)
 	}
-	switch *format {
-	case "json":
+	switch outputFormat {
+	case formatJSON:
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
 		if err := encoder.Encode(report); err != nil {
-			fmt.Fprintln(stderr, "gdkit: write report:", err)
-			return 2
+			return reportFailure(stderr, outputFormat, failure.OutputWrite, fmt.Errorf("write report: %w", err))
 		}
-	case "text":
+	case formatText:
 		for _, diagnostic := range report.Diagnostics {
 			fmt.Fprintln(stdout, diagnostic.String())
 		}
@@ -197,9 +196,6 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		} else {
 			fmt.Fprintf(stdout, "architecture check failed (%d diagnostics, %d files, %d dependencies)\n", len(report.Diagnostics), len(report.Files), len(report.Edges))
 		}
-	default:
-		fmt.Fprintf(stderr, "unknown output format %q (want text or json)\n", *format)
-		return 2
 	}
 	if report.HasErrors() {
 		return 1
@@ -275,16 +271,15 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
+	outputFormat, ok := checkOutputFormat(*format, stderr)
+	if !ok {
+		return exitUsage
+	}
 	if flags.NArg() > 1 {
-		fmt.Fprintln(stderr, "lint check accepts at most one project root")
-		return 2
+		return reportUsage(stderr, outputFormat, failure.UsageArguments, "lint check accepts at most one project root")
 	}
-	if !checkMinimumVersion(*minimumVersion, stderr) {
-		return 2
-	}
-	if *format != "text" && *format != "json" {
-		fmt.Fprintf(stderr, "unknown output format %q (want text or json)\n", *format)
-		return 2
+	if !checkMinimumVersion(*minimumVersion, outputFormat, stderr) {
+		return exitUsage
 	}
 	root := "."
 	if flags.NArg() == 1 {
@@ -292,8 +287,7 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 	}
 	config, err := lint.LoadConfig(root, *configName)
 	if err != nil {
-		fmt.Fprintln(stderr, "gdkit:", err)
-		return 2
+		return reportFailure(stderr, outputFormat, failure.ConfigInvalid, err)
 	}
 	for _, name := range strings.Split(*disable, ",") {
 		name = strings.TrimSpace(name)
@@ -301,8 +295,8 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		if !lint.IsRule(name) {
-			fmt.Fprintf(stderr, "gdkit: --disable names unknown rule %q\n", name)
-			return 2
+			return reportUsage(stderr, outputFormat, failure.UsageArguments,
+				fmt.Sprintf("--disable names unknown rule %q", name))
 		}
 		config.Disable = append(config.Disable, name)
 	}
@@ -312,31 +306,28 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		if !lint.IsRule(name) {
-			fmt.Fprintf(stderr, "gdkit: --enable names unknown rule %q\n", name)
-			return 2
+			return reportUsage(stderr, outputFormat, failure.UsageArguments,
+				fmt.Sprintf("--enable names unknown rule %q", name))
 		}
 		config.Enable = append(config.Enable, name)
 	}
 	linter, err := lint.New(config)
 	if err != nil {
-		fmt.Fprintln(stderr, "gdkit:", err)
-		return 2
+		return reportFailure(stderr, outputFormat, failure.ConfigInvalid, err)
 	}
 	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude, HonorIgnoreFile: true})
 	if err != nil {
-		fmt.Fprintln(stderr, "gdkit:", err)
-		return 2
+		return reportFailure(stderr, outputFormat, failure.ProjectLoad, err)
 	}
 	report := linter.Lint(snapshot)
 	if report.Diagnostics == nil {
 		report.Diagnostics = []lint.Diagnostic{}
 	}
-	if *format == "json" {
+	if outputFormat == formatJSON {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
 		if err := encoder.Encode(report); err != nil {
-			fmt.Fprintln(stderr, "gdkit: write report:", err)
-			return 2
+			return reportFailure(stderr, outputFormat, failure.OutputWrite, fmt.Errorf("write report: %w", err))
 		}
 	} else {
 		writer := bufio.NewWriter(stdout)
@@ -358,8 +349,7 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(writer, "lint check passed (no diagnostics)")
 		}
 		if err := writer.Flush(); err != nil {
-			fmt.Fprintln(stderr, "gdkit: write report:", err)
-			return 2
+			return reportFailure(stderr, outputFormat, failure.OutputWrite, fmt.Errorf("write report: %w", err))
 		}
 	}
 	if report.HasErrors() {

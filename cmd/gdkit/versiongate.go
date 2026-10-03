@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/cafecito-games/gdkit/internal/buildinfo"
+	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/internal/versiongate"
 )
 
@@ -24,13 +25,14 @@ var detectedVersion = func() string { return buildinfo.Current().Version }
 // Callers run this before resolving configuration or reading any source, so a
 // binary that is too old to be trusted never emits a report. Failures are a
 // configuration or usage error: exit 2, plain text on stderr.
-func checkMinimumVersion(minimum string, stderr io.Writer) bool {
+func checkMinimumVersion(minimum, outputFormat string, stderr io.Writer) bool {
 	if minimum == "" {
 		return true
 	}
 	required, err := versiongate.ParseRequirement(minimum)
 	if err != nil {
-		fmt.Fprintln(stderr, "gdkit: --minimum-version", err)
+		reportUsage(stderr, outputFormat, failure.UsageVersionFloor,
+			fmt.Sprintf("--minimum-version %s", err))
 		return false
 	}
 	reported := detectedVersion()
@@ -38,17 +40,20 @@ func checkMinimumVersion(minimum string, stderr io.Writer) bool {
 		if os.Getenv(versiongate.AllowDevelopmentEnvironmentVariable) != "" {
 			return true
 		}
-		fmt.Fprintf(stderr, "gdkit: --minimum-version %s is not satisfied by a development build; set %s=1 to bypass\n",
-			required, versiongate.AllowDevelopmentEnvironmentVariable)
+		reportUsage(stderr, outputFormat, failure.UsageVersionFloor,
+			fmt.Sprintf("--minimum-version %s is not satisfied by a development build; set %s=1 to bypass",
+				required, versiongate.AllowDevelopmentEnvironmentVariable))
 		return false
 	}
 	current, err := versiongate.Parse(reported)
 	if err != nil {
-		fmt.Fprintf(stderr, "gdkit: --minimum-version %s is not satisfied: this binary reports an unrecognized version %q\n", required, reported)
+		reportUsage(stderr, outputFormat, failure.UsageVersionFloor,
+			fmt.Sprintf("--minimum-version %s is not satisfied: this binary reports an unrecognized version %q", required, reported))
 		return false
 	}
 	if current.Less(required) {
-		fmt.Fprintf(stderr, "gdkit: --minimum-version %s requires gdkit %s or newer, but this binary is %s\n", required, required, reported)
+		reportUsage(stderr, outputFormat, failure.UsageVersionFloor,
+			fmt.Sprintf("--minimum-version %s requires gdkit %s or newer, but this binary is %s", required, required, reported))
 		return false
 	}
 	return true

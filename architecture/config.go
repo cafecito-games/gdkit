@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/cafecito-games/gdkit/internal/buildinfo"
+	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/internal/versiongate"
 )
 
@@ -115,23 +116,23 @@ func LoadConfig(root, name string) (Config, error) {
 		return DefaultConfig(), nil
 	}
 	if err != nil {
-		return Config{}, fmt.Errorf("read config: %w", err)
+		return Config{}, failure.WrapPath(failure.ConfigRead, name, fmt.Errorf("read config: %w", err))
 	}
 	// checkMinimumVersion and checkUnknownKeys below decode the whole document
 	// and skip themselves when it is not exactly one JSON value, so the file
 	// has to be proven to be one value before either runs.
 	if err := checkSingleValue(data); err != nil {
-		return Config{}, err
+		return Config{}, failure.WrapPath(failure.ConfigParse, name, err)
 	}
 	// The floor is read before unknown-key reporting and before Validate.
 	// A config written for a newer gdkit normally carries both the floor and
 	// the syntax that needed it, and naming the unknown key or the validation
 	// failure would describe a typo instead of a binary that is too old.
 	if err := checkMinimumVersion(data, name); err != nil {
-		return Config{}, err
+		return Config{}, failure.WrapKey(failure.ConfigVersionFloor, name, "minimum_gdkit_version", err)
 	}
 	if err := checkUnknownKeys(data); err != nil {
-		return Config{}, err
+		return Config{}, failure.WrapKey(failure.ConfigUnknownKey, name, unknownKeyOf(err), err)
 	}
 	config := DefaultConfig()
 	defaults := DefaultConfig()
@@ -150,7 +151,7 @@ func LoadConfig(root, name string) (Config, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&config); err != nil {
-		return Config{}, fmt.Errorf("parse config: %w", err)
+		return Config{}, failure.WrapPath(failure.ConfigParse, name, fmt.Errorf("parse config: %w", err))
 	}
 	if config.SourceRoots == nil {
 		config.SourceRoots = defaults.SourceRoots
@@ -171,7 +172,7 @@ func LoadConfig(root, name string) (Config, error) {
 		config.TestPatterns = defaults.TestPatterns
 	}
 	if err := config.Validate(); err != nil {
-		return Config{}, err
+		return Config{}, failure.WrapPath(failure.ConfigInvalid, name, err)
 	}
 	return config, nil
 }
@@ -198,6 +199,25 @@ func checkSingleValue(data []byte) error {
 		return errors.New("parse config: unexpected content after the top-level object")
 	}
 	return nil
+}
+
+// unknownKeyOf recovers the offending key's JSON path from a checkUnknownKeys
+// error so JSON output can carry it as its own field rather than only inside
+// prose. The message is this package's own, so reading it back is not the
+// fragile exercise that parsing another package's text would be.
+func unknownKeyOf(err error) string {
+	const marker = `unknown key "`
+	message := err.Error()
+	start := strings.Index(message, marker)
+	if start < 0 {
+		return ""
+	}
+	rest := message[start+len(marker):]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 // checkUnknownKeys rejects any key the config schema does not define, naming
