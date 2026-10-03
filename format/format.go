@@ -87,9 +87,6 @@ func (f *Formatter) formatScript(script *project.Script) (Result, *Diagnostic) {
 		diagnostic := parseDiagnostic(script)
 		return Result{}, &diagnostic
 	}
-	if line, column, found := ambiguousClass(script.File, script.Source); found {
-		return Result{}, &Diagnostic{Rule: ruleUnsafe, Message: ambiguousClassBody, Path: script.Path, Line: line, Column: column}
-	}
 	formatted := []byte(f.emit(script.File, f.options))
 	if bytes.Equal(formatted, script.Source) {
 		return Result{Path: script.Path}, nil

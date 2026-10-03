@@ -126,16 +126,21 @@ func TestDeeperIndentedCommentsStillParse(t *testing.T) {
 }
 
 // These forms were rejected by gdparser until cafecito-games/gdparser#12, #13,
-// #14, #15 and #34. Godot and gdlint accept all of them. A regression would make
-// gdkit lint report source-parse and silently skip every rule on the file, so
-// this guards the dependency rather than any one rule.
+// #14, #15, #34 and #76. Godot and gdlint accept all of them. A regression would
+// make gdkit lint report source-parse and silently skip every rule on the file,
+// so this guards the dependency rather than any one rule.
 func TestFormerlyUnparseableFormsStillParse(t *testing.T) {
 	sources := map[string]string{
-		"variadic.gd":       "func a(first, ...rest):\n\tpass\n",
-		"named_lambda.gd":   "func a():\n\tvar callback = func named(): pass\n",
-		"match_binding.gd":  "func a(value):\n\tmatch value:\n\t\tvar captured:\n\t\t\tprint(captured)\n",
-		"untyped_setter.gd": "var stored:\n\tset(value):\n\t\tstored = value\n",
-		"lua_dictionary.gd": "func a():\n\tvar entries = {first = 1, second = 2}\n\tprint(entries)\n",
+		"variadic.gd":        "func a(first, ...rest):\n\tpass\n",
+		"named_lambda.gd":    "func a():\n\tvar callback = func named(): pass\n",
+		"match_binding.gd":   "func a(value):\n\tmatch value:\n\t\tvar captured:\n\t\t\tprint(captured)\n",
+		"untyped_setter.gd":  "var stored:\n\tset(value):\n\t\tstored = value\n",
+		"lua_dictionary.gd":  "func a():\n\tvar entries = {first = 1, second = 2}\n\tprint(entries)\n",
+		"tool_extends.gd":    "@tool extends Node\n",
+		"icon_class_name.gd": "@icon(\"res://icon.svg\") class_name Icon extends Node\n",
+		"two_annotations.gd": "@tool @icon(\"res://icon.svg\") extends Node\n",
+		"static_unload.gd":   "@static_unload extends Node\n",
+		"lambda_block.gd":    "var handler = func(): if true: pass\n",
 	}
 	report := lintProject(t, DefaultConfig(), sources)
 	for _, diagnostic := range report.Diagnostics {

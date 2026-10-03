@@ -371,3 +371,39 @@ func analyzeWith(t *testing.T, root string, config Config) Report {
 	}
 	return report
 }
+
+// An annotation may share its line with the class_name or extends it
+// decorates. gdparser rejected those scripts until cafecito-games/gdparser#76,
+// and a file that does not parse contributes no class_name to the index, so
+// every reference to it elsewhere was reported as unresolved. This guards the
+// dependency: the name has to be indexed and the reference has to resolve.
+func TestAnalyzerIndexesClassNamesDeclaredBesideAnAnnotation(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, map[string]string{
+		"features/catalog/domain/item.gd":     "@tool class_name Item extends RefCounted\n",
+		"features/catalog/domain/crate.gd":    "@icon(\"res://icon.svg\") class_name Crate extends RefCounted\n",
+		"features/catalog/application/use.gd": "extends RefCounted\n\n\nfunc run():\n\tprint(Item.new(), Crate.new())\n",
+	})
+	report := analyzeDefault(t, root)
+	if rules := diagnosticRules(report); len(rules) != 0 {
+		t.Fatalf("diagnostics = %v, want none", rules)
+	}
+	assertEdge(t, report, "features/catalog/application/use.gd", "features/catalog/domain/item.gd")
+	assertEdge(t, report, "features/catalog/application/use.gd", "features/catalog/domain/crate.gd")
+}
+
+// A one-line class body holds one member; what a semicolon separates from it
+// belongs to the enclosing scope. The dependency is the file's either way, so
+// this guards that reading the member out of the class does not lose its edge.
+func TestAnalyzerIndexesReferencesBesideAOneLineClassBody(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, map[string]string{
+		"features/catalog/domain/item.gd":     "class_name Item\n",
+		"features/catalog/application/use.gd": "class Holder: var held = 1; var made = Item.new()\n",
+	})
+	report := analyzeDefault(t, root)
+	if rules := diagnosticRules(report); len(rules) != 0 {
+		t.Fatalf("diagnostics = %v, want none", rules)
+	}
+	assertEdge(t, report, "features/catalog/application/use.gd", "features/catalog/domain/item.gd")
+}
