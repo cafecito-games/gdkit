@@ -39,11 +39,15 @@ func runFormatCheck(args []string, stdout, stderr io.Writer) int {
 	configName := flags.String("config", "", "configuration path relative to the project root")
 	outputFormat := flags.String("format", "text", "output format: text or json")
 	showDiff := flags.Bool("diff", false, "print a unified diff for each file that would change")
+	minimumVersion := flags.String("minimum-version", "", minimumVersionUsage)
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 1 {
 		fmt.Fprintln(stderr, "format check accepts at most one project root")
+		return 2
+	}
+	if !checkMinimumVersion(*minimumVersion, stderr) {
 		return 2
 	}
 	if *outputFormat != "text" && *outputFormat != "json" {
@@ -101,11 +105,15 @@ func runFormatWrite(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	configName := flags.String("config", "", "configuration path relative to the project root")
 	outputFormat := flags.String("format", "text", "output format: text or json")
+	minimumVersion := flags.String("minimum-version", "", minimumVersionUsage)
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 1 {
 		fmt.Fprintln(stderr, "format write accepts at most one project root")
+		return 2
+	}
+	if !checkMinimumVersion(*minimumVersion, stderr) {
 		return 2
 	}
 	if *outputFormat != "text" && *outputFormat != "json" {

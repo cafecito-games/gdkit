@@ -10,6 +10,9 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/cafecito-games/gdkit/internal/buildinfo"
+	"github.com/cafecito-games/gdkit/internal/versiongate"
 )
 
 const (
@@ -17,17 +20,22 @@ const (
 	DefaultAllowlistPath = ".gdkit/allowlist.json"
 )
 
+// detectedVersion reports the running binary's version. It is a variable so a
+// test can load a config as an arbitrary release would.
+var detectedVersion = func() string { return buildinfo.Current().Version }
+
 // Config controls discovery, classification, and dependency policy.
 type Config struct {
-	Version           int                  `json:"version"`
-	SourceRoots       []string             `json:"source_roots"`
-	Exclude           []string             `json:"exclude"`
-	Classifications   []ClassificationRule `json:"classifications"`
-	Dependencies      []DependencyRule     `json:"dependencies"`
-	RuntimeBoundaries []string             `json:"runtime_boundaries"`
-	TestPatterns      []string             `json:"test_patterns"`
-	Allowlist         string               `json:"allowlist"`
-	Unclassified      string               `json:"unclassified"`
+	Version             int                  `json:"version"`
+	MinimumGDKitVersion string               `json:"minimum_gdkit_version,omitempty"`
+	SourceRoots         []string             `json:"source_roots"`
+	Exclude             []string             `json:"exclude"`
+	Classifications     []ClassificationRule `json:"classifications"`
+	Dependencies        []DependencyRule     `json:"dependencies"`
+	RuntimeBoundaries   []string             `json:"runtime_boundaries"`
+	TestPatterns        []string             `json:"test_patterns"`
+	Allowlist           string               `json:"allowlist"`
+	Unclassified        string               `json:"unclassified"`
 }
 
 // ClassificationRule assigns a layer and feature. {feature} captures one path segment.
@@ -107,6 +115,13 @@ func LoadConfig(root, name string) (Config, error) {
 	}
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
+	}
+	// The floor is read before unknown-key reporting and before Validate.
+	// A config written for a newer gdkit normally carries both the floor and
+	// the syntax that needed it, and naming the unknown key or the validation
+	// failure would describe a typo instead of a binary that is too old.
+	if err := checkMinimumVersion(data, name); err != nil {
+		return Config{}, err
 	}
 	if err := checkUnknownKeys(data); err != nil {
 		return Config{}, err
@@ -346,4 +361,44 @@ func featureMatches(allowed []string, actual, source string) bool {
 		}
 	}
 	return false
+}
+
+// checkMinimumVersion enforces the config's own minimum_gdkit_version against
+// the running binary. It reads the key with a non-strict decode of its own so
+// the floor is reported ahead of any other configuration problem; malformed
+// JSON is left to the decode in LoadConfig, which reports it with an offset.
+//
+// The development-build bypass is read from the environment here rather than
+// passed in by the caller because the check has to run at this point in
+// LoadConfig to order correctly, so the bypass has to as well.
+func checkMinimumVersion(data []byte, configPath string) error {
+	var document struct {
+		MinimumGDKitVersion string `json:"minimum_gdkit_version"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil
+	}
+	if document.MinimumGDKitVersion == "" {
+		return nil
+	}
+	minimum, err := versiongate.ParseRequirement(document.MinimumGDKitVersion)
+	if err != nil {
+		return fmt.Errorf("minimum_gdkit_version %w", err)
+	}
+	reported := detectedVersion()
+	if versiongate.IsDevelopment(reported) {
+		if os.Getenv(versiongate.AllowDevelopmentEnvironmentVariable) != "" {
+			return nil
+		}
+		return fmt.Errorf("%s requires gdkit %s or newer, which is not satisfied by a development build; set %s=1 to bypass",
+			configPath, minimum, versiongate.AllowDevelopmentEnvironmentVariable)
+	}
+	current, err := versiongate.Parse(reported)
+	if err != nil {
+		return fmt.Errorf("%s requires gdkit %s or newer, but this binary reports %w", configPath, minimum, err)
+	}
+	if current.Less(minimum) {
+		return fmt.Errorf("%s requires gdkit %s or newer, but this binary is %s", configPath, minimum, reported)
+	}
+	return nil
 }

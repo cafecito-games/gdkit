@@ -33,12 +33,16 @@ func runUIDCheck(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("uid check", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	outputFormat := flags.String("format", "text", "output format: text or json")
+	minimumVersion := flags.String("minimum-version", "", minimumVersionUsage)
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	root, code := uidRoot("uid check", flags, *outputFormat, stderr)
 	if code != 0 {
 		return code
+	}
+	if !checkMinimumVersion(*minimumVersion, stderr) {
+		return 2
 	}
 	_, report, err := checkUIDs(root)
 	if err != nil {
@@ -75,6 +79,7 @@ func runUIDWrite(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("uid write", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	outputFormat := flags.String("format", "text", "output format: text or json")
+	minimumVersion := flags.String("minimum-version", "", minimumVersionUsage)
 	repair := flags.Bool("repair", false, "also reissue malformed and duplicated sidecars")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -82,6 +87,9 @@ func runUIDWrite(args []string, stdout, stderr io.Writer) int {
 	root, code := uidRoot("uid write", flags, *outputFormat, stderr)
 	if code != 0 {
 		return code
+	}
+	if !checkMinimumVersion(*minimumVersion, stderr) {
+		return 2
 	}
 	snapshot, report, err := checkUIDs(root)
 	if err != nil {
