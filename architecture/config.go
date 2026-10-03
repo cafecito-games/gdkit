@@ -1,11 +1,14 @@
 package architecture
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -36,9 +39,12 @@ type ClassificationRule struct {
 
 // DependencyRule allows matching source files to depend on matching targets.
 // "same" in ToFeatures means the source feature; "*" means any feature.
+// FromPaths and ToPaths narrow the rule to source and target files matching
+// them; an omitted list means any file the layer and feature already allow.
 type DependencyRule struct {
 	FromLayers    []string `json:"from_layers"`
 	FromFeatures  []string `json:"from_features,omitempty"`
+	FromPaths     []string `json:"from_paths,omitempty"`
 	ToLayers      []string `json:"to_layers"`
 	ToFeatures    []string `json:"to_features,omitempty"`
 	ToPaths       []string `json:"to_paths,omitempty"`
@@ -102,14 +108,126 @@ func LoadConfig(root, name string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
+	if err := checkUnknownKeys(data); err != nil {
+		return Config{}, err
+	}
 	config := DefaultConfig()
-	if err := json.Unmarshal(data, &config); err != nil {
+	defaults := DefaultConfig()
+	// encoding/json decodes an array element onto whatever the slice already
+	// holds at that index, so leaving the defaults in place would merge a
+	// default entry into the one the file declares at the same position — a
+	// classification with no layer would inherit the default entry's layer
+	// instead of failing. Every list starts empty and the defaults are
+	// restored below for the keys the file omits.
+	config.SourceRoots = nil
+	config.Exclude = nil
+	config.Classifications = nil
+	config.Dependencies = nil
+	config.RuntimeBoundaries = nil
+	config.TestPatterns = nil
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&config); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
+	}
+	if config.SourceRoots == nil {
+		config.SourceRoots = defaults.SourceRoots
+	}
+	if config.Exclude == nil {
+		config.Exclude = defaults.Exclude
+	}
+	if config.Classifications == nil {
+		config.Classifications = defaults.Classifications
+	}
+	if config.Dependencies == nil {
+		config.Dependencies = defaults.Dependencies
+	}
+	if config.RuntimeBoundaries == nil {
+		config.RuntimeBoundaries = defaults.RuntimeBoundaries
+	}
+	if config.TestPatterns == nil {
+		config.TestPatterns = defaults.TestPatterns
 	}
 	if err := config.Validate(); err != nil {
 		return Config{}, err
 	}
 	return config, nil
+}
+
+// checkUnknownKeys rejects any key the config schema does not define, naming
+// the key's full JSON path. encoding/json's own strict decoding reports the
+// key alone, which does not locate a typo nested inside one of many rules.
+func checkUnknownKeys(data []byte) error {
+	var document any
+	if err := json.Unmarshal(data, &document); err != nil {
+		// Malformed JSON is reported, with its offset, by the decode that follows.
+		return nil
+	}
+	return unknownKeysIn(document, reflect.TypeOf(Config{}), "")
+}
+
+func unknownKeysIn(value any, target reflect.Type, path string) error {
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	switch target.Kind() {
+	case reflect.Struct:
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil
+		}
+		keys := make([]string, 0, len(object))
+		for key := range object {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			field, known := jsonField(target, key)
+			if !known {
+				return fmt.Errorf("unknown key %q in architecture config", joinKeyPath(path, key))
+			}
+			if err := unknownKeysIn(object[key], field.Type, joinKeyPath(path, key)); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		items, ok := value.([]any)
+		if !ok {
+			return nil
+		}
+		for index, item := range items {
+			if err := unknownKeysIn(item, target.Elem(), fmt.Sprintf("%s[%d]", path, index)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// jsonField finds the struct field a JSON key decodes into. The match is
+// case-insensitive because that is how encoding/json itself resolves keys.
+func jsonField(target reflect.Type, key string) (reflect.StructField, bool) {
+	for index := 0; index < target.NumField(); index++ {
+		field := target.Field(index)
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		if strings.EqualFold(name, key) {
+			return field, true
+		}
+	}
+	return reflect.StructField{}, false
+}
+
+func joinKeyPath(path, key string) string {
+	if path == "" {
+		return key
+	}
+	return path + "." + key
 }
 
 // Validate checks configuration values and patterns.
@@ -129,9 +247,17 @@ func (c Config) Validate() error {
 	if c.Unclassified != "error" && c.Unclassified != "ignore" {
 		return errors.New("unclassified must be \"error\" or \"ignore\"")
 	}
-	for _, rule := range c.Classifications {
-		if rule.Pattern == "" || rule.Layer == "" || rule.Feature == "" {
-			return errors.New("classification rules require pattern, layer, and feature")
+	for index, rule := range c.Classifications {
+		// A missing layer has no sensible default: silently picking one would
+		// reclassify a whole directory tree and describe a layering nobody
+		// configured, so it is a configuration error.
+		switch {
+		case rule.Pattern == "":
+			return fmt.Errorf("classifications[%d] requires a pattern", index)
+		case rule.Layer == "":
+			return fmt.Errorf("classifications[%d] (pattern %q) requires a layer", index, rule.Pattern)
+		case rule.Feature == "":
+			return fmt.Errorf("classifications[%d] (pattern %q) requires a feature", index, rule.Pattern)
 		}
 		if _, err := compilePattern(rule.Pattern); err != nil {
 			return fmt.Errorf("classification pattern %q: %w", rule.Pattern, err)
@@ -148,6 +274,7 @@ func (c Config) Validate() error {
 		if len(rule.FromLayers) == 0 || len(rule.ToLayers) == 0 {
 			return errors.New("dependency rules require from_layers and to_layers")
 		}
+		patterns = append(patterns, rule.FromPaths...)
 		patterns = append(patterns, rule.ToPaths...)
 		patterns = append(patterns, rule.ExceptToPaths...)
 	}
@@ -185,8 +312,14 @@ func (c Config) classify(name string) (Classification, bool) {
 }
 
 func (c Config) dependencyAllowed(from File, toPath string, to Classification) bool {
+	fromPath := filepath.ToSlash(from.Path)
 	for _, rule := range c.Dependencies {
 		if !contains(rule.FromLayers, from.Classification.Layer) || !featureMatches(rule.FromFeatures, from.Classification.Feature, from.Classification.Feature) {
+			continue
+		}
+		// An omitted from_paths means any file the layer and feature already
+		// allow, so the key can only narrow the rule it appears on.
+		if len(rule.FromPaths) > 0 && !matchesAny(rule.FromPaths, fromPath) {
 			continue
 		}
 		if !contains(rule.ToLayers, to.Layer) || !featureMatches(rule.ToFeatures, to.Feature, from.Classification.Feature) {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -238,4 +239,135 @@ var theme = load("uid://ctheme")
 	}
 	assertEdge(t, report, "features/combat/presentation/view.gd", "features/combat/presentation/panel.tscn")
 	assertEdge(t, report, "features/combat/presentation/view.gd", "features/combat/presentation/panel.theme.tres")
+}
+
+// A rule could scope its target with to_paths but not its source, so a port
+// permission had to be granted to the port's whole layer.
+func TestDependencyFromPathsNarrowsTheRuleSource(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, map[string]string{
+		"features/probe/application/read_models/probe_state.gd": "class_name ProbeState\n",
+		"features/probe/application/ports/probe_port.gd": `class_name ProbePort
+var state: ProbeState
+`,
+		"features/probe/application/probe_service.gd": `class_name ProbeService
+var state: ProbeState
+`,
+	})
+
+	widened := configAllowingReadModels(nil)
+	if report := analyzeWith(t, root, widened); report.HasErrors() {
+		t.Fatalf("widened to_paths should allow both references: %#v", report.Diagnostics)
+	}
+
+	narrowed := configAllowingReadModels([]string{"**/ports/**"})
+	report := analyzeWith(t, root, narrowed)
+	violations := 0
+	for _, diagnostic := range report.Diagnostics {
+		if diagnostic.Rule != "dependency.direction" {
+			t.Fatalf("unexpected diagnostic: %#v", diagnostic)
+		}
+		if diagnostic.Location.Path != "features/probe/application/probe_service.gd" {
+			t.Fatalf("from_paths did not scope the rule's source: %#v", diagnostic)
+		}
+		violations++
+	}
+	if violations != 1 {
+		t.Fatalf("want one violation outside ports/, got %#v", report.Diagnostics)
+	}
+	assertEdge(t, report, "features/probe/application/ports/probe_port.gd", "features/probe/application/read_models/probe_state.gd")
+}
+
+// configAllowingReadModels lets application files name same-feature read
+// models, optionally only from fromPaths.
+func configAllowingReadModels(fromPaths []string) Config {
+	config := DefaultConfig()
+	for index, rule := range config.Dependencies {
+		if rule.FromLayers[0] != "application" || rule.ToLayers[0] != "application" {
+			continue
+		}
+		config.Dependencies[index].ToPaths = append(slices.Clone(rule.ToPaths), "**/read_models/**")
+		config.Dependencies[index].FromPaths = fromPaths
+	}
+	return config
+}
+
+func TestLoadConfigRejectsUnknownKeys(t *testing.T) {
+	cases := map[string]struct {
+		contents string
+		wantKey  string
+	}{
+		"top level": {
+			contents: `{"version": 1, "dependancies": []}`,
+			wantKey:  `"dependancies"`,
+		},
+		"dependency rule": {
+			contents: `{"version": 1, "dependencies": [{"from_layers": ["domain"], "to_layers": ["domain"], "form_paths": ["**/ports/**"]}]}`,
+			wantKey:  `"dependencies[0].form_paths"`,
+		},
+		"classification entry": {
+			contents: `{"version": 1, "classifications": [{"pattern": "aaa/**", "layer": "domain", "feature": "f"}, {"pattern": "bbb/**", "layre": "presentation", "feature": "f"}]}`,
+			wantKey:  `"classifications[1].layre"`,
+		},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writeProject(t, root, map[string]string{DefaultConfigPath: testCase.contents})
+			_, err := LoadConfig(root, "")
+			if err == nil {
+				t.Fatal("unknown key was accepted")
+			}
+			if !strings.Contains(err.Error(), testCase.wantKey) {
+				t.Fatalf("error %q does not name %s", err, testCase.wantKey)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRequiresClassificationLayer(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, map[string]string{
+		DefaultConfigPath: `{"version": 1, "classifications": [{"pattern": "aaa/**", "feature": "f"}]}`,
+	})
+	_, err := LoadConfig(root, "")
+	if err == nil {
+		t.Fatal("a classification with no layer was accepted")
+	}
+	if !strings.Contains(err.Error(), "requires a layer") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// Omitted lists inherit the built-in policy, and a declared entry keeps
+// exactly the fields it declares rather than merging with the default entry
+// that happens to sit at the same index.
+func TestLoadConfigInheritsOmittedListsWithoutMergingEntries(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, map[string]string{
+		DefaultConfigPath: `{"version": 1, "dependencies": [{"from_layers": ["domain"], "to_layers": ["domain"]}]}`,
+	})
+	config, err := LoadConfig(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Dependencies) != 1 || len(config.Dependencies[0].ToFeatures) != 0 {
+		t.Fatalf("declared rule merged with a default rule: %#v", config.Dependencies)
+	}
+	if len(config.Classifications) != len(DefaultConfig().Classifications) {
+		t.Fatalf("omitted classifications did not inherit the defaults: %#v", config.Classifications)
+	}
+}
+
+func analyzeWith(t *testing.T, root string, config Config) Report {
+	t.Helper()
+	analyzer, err := NewAnalyzer(root, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := analyzer.Analyze()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return report
 }

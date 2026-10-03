@@ -143,14 +143,27 @@ path/line/column/rule so JSON output is diffable and usable for CI annotations.
 
 `DefaultConfig()` in `architecture/config.go` is both the zero-config policy and the
 content written by `gdkit arch init`. Config files are unmarshalled *onto* the
-defaults, so omitted fields inherit the built-in policy.
+defaults, so omitted fields inherit the built-in policy — but every list field is
+cleared before decoding and restored afterwards only when the file omits its key.
+`encoding/json` decodes an array element onto whatever the slice already holds at
+that index, so without that a declared rule would silently inherit fields from the
+default rule sitting at the same position.
 
 - **Classification** rules are evaluated in order; first match wins. `{feature}`
   captures exactly one path segment and must appear once in the pattern when the
-  rule's `feature` is `{feature}`.
+  rule's `feature` is `{feature}`. `pattern`, `layer`, and `feature` are all
+  required: there is no default layer, because defaulting one reclassifies a whole
+  directory tree and the diagnostics then describe a layering nobody configured.
 - **Dependencies** are alternative *allow* rules — a dependency is permitted when one
   complete rule matches it. Add capability by adding a rule, never by loosening an
   existing one. `"same"` means the source file's own feature; `"*"` means any.
+  `from_paths` and `to_paths` scope a rule's source and target; an omitted list means
+  any file the rule's layers and features already allow, so either key can only
+  narrow the rule it appears on.
+- **Unknown keys are rejected** at every level. `checkUnknownKeys` walks the raw
+  document against `Config`'s own reflected shape and names the offending key's full
+  JSON path (`classifications[11].layre`), because `DisallowUnknownFields` reports
+  the key alone, which does not locate a typo in a large config.
 - **Patterns** are a custom glob (`architecture/pattern.go`) compiled to regex and
   cached: `**/` crosses directories, `*` and `?` stay within a segment, `{feature}`
   captures a segment. It is not `path/filepath.Match`.
