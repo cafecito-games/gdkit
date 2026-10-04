@@ -55,7 +55,7 @@
     {
       "id": 6,
       "subject": "Task 7: Cross-rule version-gate test",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         5
       ],
