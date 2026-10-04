@@ -86,7 +86,7 @@ because
 a bare `Dictionary` only at 4.4. This is the only rule in gdkit whose
 applicability varies per finding, and it is pinned by a test for that reason.
 
-Everything the collector reads already exists in `gdparser` v0.1.5 —
+Everything the collector reads already exists in `gdparser` v0.1.6 —
 `FunctionDeclaration.ReturnType` and `ReturnTypeSpan`, `Parameter.Type`,
 `Parameter.Inferred` and `Parameter.Variadic`, and the variable declaration's
 `Type`, `TypeSpan`, and `Inferred`. The `Type` fields are raw strings, so a bare
@@ -242,14 +242,25 @@ sides:
 so a rule cannot start or stop shipping inert unnoticed, and six new inert rules
 are exactly the event it watches for.
 
-Plus `Validate()` tests for a malformed `godot_version` and a malformed exempt
-glob, both asserting a `failure.Kind` rather than a message.
+Plus one `Validate()` test, `TestValidateRejectsAMalformedGodotVersion`, which
+asserts the error names `godot_version`. It asserts the message rather than a
+`failure.Kind` because `Validate()` returns a plain error: `LoadConfig` is what
+attaches `failure.ConfigInvalid` to whatever `Validate()` rejects, so there is
+nothing rule-specific for a `Kind` assertion to pin here. There is no
+companion test for a malformed exempt glob, for the reason argued above: no
+configuration value can reach `glob.Compile`'s error return, so a test would
+have to pretend otherwise.
 
 ## Documentation
 
 - The README's lint rule reference gains all six, with their config keys, their
   satisfied-by cases, and their version floors.
-- The two counts of "30 … problems" in the README become 36.
+- The two counts of "30 … problems" in the README stay at 30, and each gains
+  "and 7 more a project can opt in to". The count was written as 30 when the
+  registry held 31 rules, one of them inert, so what it counts is what a default
+  run reports; six new inert rules do not move it. 36 would have described
+  neither the 37 rules that exist nor the 30 that run, so the convention is
+  recorded here rather than the number changed.
 - `godot_version` is documented in the lint configuration table with its
   default, and the reason the default is the newest version.
 - The `.gdkit/lint.json` written by `gdkit lint init` gains `godot_version`. It

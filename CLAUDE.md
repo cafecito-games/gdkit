@@ -44,7 +44,16 @@ the default branch.
   and engine purity (the substance of `gdkit arch`).
 - `lint/` — the linter: a registry of single-file rules over a `project.Snapshot`.
   Rule names are a public contract; they appear in JSON output, in config, and in
-  inline ignore comments, so renaming one breaks user projects.
+  inline ignore comments, so renaming one breaks user projects. `godot_version`
+  decides whether a typing rule's fix can be written at all, and a finding whose
+  annotation the configured engine cannot parse is **dropped silently**: there is
+  no "engine too old" diagnostic, because telling a project to write a type it
+  cannot parse is worse than saying nothing. So a bare `Dictionary` is not
+  reported below `4.4` and `require-typed-loop-variable` reports nothing below
+  `4.2`, and a maintainer asking why a bare `Dictionary` is quiet is asking about
+  this key. `Context` carries a `compiledConfig` — every name pattern, every
+  exempt glob, and the parsed engine version, compiled once by `validate` — so no
+  rule compiles or parses anything per file.
 - `format/` — the formatter: drives gdparser's formatter over a `project.Snapshot`
   and verifies every rewrite before offering it. Verification covers the syntax
   tree (the reparsed output must keep it), the token stream (no token other than
@@ -110,6 +119,9 @@ the default branch.
   of `0.2.1` satisfies a floor of `0.2.1`. `ParseRequirement` is deliberately
   stricter than `Parse`: a floor is hand-written, so a leading `v` or a prerelease
   suffix is an error, while a version a binary reports about itself is tolerated.
+  `ParseEngineVersion` is `ParseRequirement` with an optional patch, and it exists
+  because `lint.json`'s `godot_version` is hand-written too and wants that same
+  strictness — but nobody writes `4.7.0`, so `4.7` has to be accepted.
 - `internal/ignore/` — the gitignore-style matcher behind `.gdkitignore`. It
   differs from git in four documented ways: a negated pattern can re-include a
   path inside an ignored directory; matching is case-sensitive whatever the
@@ -140,9 +152,10 @@ stricter" promise safe. `disable` wins over `enable`, and `enable` deliberately
 accepts any known rule name rather than only an inert one, so a config that
 opted in keeps working after the rule graduates to running by default.
 Pending-ness is an optional interface rather than a parallel registry map so a
-test can inject one through `newLinter`. `no-engine-logging` is the only inert
-rule, and `TestPendingRulesAreExactlyTheInertOnes` pins that set so a rule
-cannot start or stop shipping inert unnoticed. `missing-docstring` predates the
+test can inject one through `newLinter`. Seven rules ship inert —
+`no-engine-logging` and the six `require-*` typing rules — and
+`TestPendingRulesAreExactlyTheInertOnes` pins that set so a rule cannot start or
+stop shipping inert unnoticed. `missing-docstring` predates the
 mechanism and is inert through its own empty list, which only worked because
 that rule is configured by a list.
 

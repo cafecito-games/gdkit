@@ -259,12 +259,15 @@ Three things satisfy every one of them, and all three are deliberate: an
 explicit annotation; `:=` inference, which *is* static typing; and an explicit
 `: Variant`, which is how a declaration opts out on purpose.
 
-Three declarations are never reported. A `const` carries no annotation because
+Four declarations are never reported. A `const` carries no annotation because
 GDScript types it from its value. A variadic `...args` parameter collects
 whatever is passed into an `Array`, so "untyped" is not a missing type. A
 lambda's return type is consumed where the lambda is written, where an
 annotation is noise — a lambda's *parameters* are still checked, because they
-are a contract its caller satisfies.
+are a contract its caller satisfies. And a property setter's parameter cannot be
+checked at all: the parser exposes its name but no type, and `set(value: int):`
+is itself a parse error, so there is nothing to report and nothing a project
+asked to fix one could write.
 
 Matching on the enclosing function is what makes `["_process"]` quiet a hot
 loop's locals without quieting the file. A bare collection written in a signal's
@@ -341,7 +344,7 @@ one key instead of hunting for the right rule names.
 ```json
 {
   "godot_version": "4.3",
-  "enable": ["require-return-type", "require-argument-type"],
+  "enable": ["require-return-type", "require-argument-type", "require-variable-type"],
   "require-variable-type": ["_process", "_physics_process"]
 }
 ```
