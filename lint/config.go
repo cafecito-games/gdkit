@@ -90,6 +90,28 @@ type Config struct {
 
 	ClassDefinitionsOrder []string `json:"class-definitions-order"`
 
+	// The six fields below hold function-name glob patterns the matching typing
+	// rule skips. An empty list means no exemptions: the rules are inert until
+	// a project enables them, which is PendingRule's job and never a list's.
+	// MissingDocstring below is the exception, not the pattern — its empty list
+	// turns that rule off, because it predates PendingRule.
+	//
+	// What the pattern matches depends on the rule. For require-return-type and
+	// require-argument-type it is the function being declared. For
+	// require-variable-type, require-typed-collection, and
+	// require-typed-loop-variable it is the enclosing function, so ["_process"]
+	// quiets a hot loop's locals without quieting the file; a class-scope
+	// declaration has no enclosing function, and a rule passes no name for one, so
+	// no list can exempt it — it is suppressed with a # gdkit:ignore comment
+	// instead.
+	// For require-signal-argument-type it is the signal's own name.
+	RequireReturnType         []string `json:"require-return-type,omitempty"`
+	RequireArgumentType       []string `json:"require-argument-type,omitempty"`
+	RequireVariableType       []string `json:"require-variable-type,omitempty"`
+	RequireTypedCollection    []string `json:"require-typed-collection,omitempty"`
+	RequireSignalArgumentType []string `json:"require-signal-argument-type,omitempty"`
+	RequireTypedLoopVariable  []string `json:"require-typed-loop-variable,omitempty"`
+
 	// MissingDocstring lists the member kinds that require a "##"
 	// documentation comment. It is empty by default, which makes the
 	// missing-docstring rule inert, so a project opts in one kind at a time.
@@ -177,6 +199,34 @@ func (c Config) namePatterns() map[string]string {
 	}
 }
 
+// exemptPatterns maps each typing rule to its configured exempt patterns.
+func (c Config) exemptPatterns() map[string][]string {
+	return map[string][]string{
+		"require-return-type":          c.RequireReturnType,
+		"require-argument-type":        c.RequireArgumentType,
+		"require-variable-type":        c.RequireVariableType,
+		"require-typed-collection":     c.RequireTypedCollection,
+		"require-signal-argument-type": c.RequireSignalArgumentType,
+		"require-typed-loop-variable":  c.RequireTypedLoopVariable,
+	}
+}
+
+// compileExemptPatterns compiles every exempt pattern once, so no rule compiles
+// one per file.
+func (c Config) compileExemptPatterns() (map[string][]glob.Pattern, error) {
+	compiled := make(map[string][]glob.Pattern)
+	for rule, patterns := range c.exemptPatterns() {
+		for _, pattern := range patterns {
+			parsed, err := glob.Compile(pattern)
+			if err != nil {
+				return nil, fmt.Errorf("%s exempt pattern %q: %w", rule, pattern, err)
+			}
+			compiled[rule] = append(compiled[rule], parsed)
+		}
+	}
+	return compiled, nil
+}
+
 // compileNamePatterns compiles every name rule's pattern, anchored to the whole
 // identifier. An empty or invalid pattern is a configuration error.
 func (c Config) compileNamePatterns() (map[string]*regexp.Regexp, error) {
@@ -239,6 +289,7 @@ func (c Config) Validate() error {
 type compiledConfig struct {
 	patterns     map[string]*regexp.Regexp
 	godotVersion versiongate.Version
+	exempt       map[string][]glob.Pattern
 }
 
 // validate is Validate, also returning the compiled configuration so a caller
@@ -317,9 +368,13 @@ func (c Config) validate() (*compiledConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("godot_version: %w", err)
 	}
+	exempt, err := c.compileExemptPatterns()
+	if err != nil {
+		return nil, err
+	}
 	patterns, err := c.compileNamePatterns()
 	if err != nil {
 		return nil, err
 	}
-	return &compiledConfig{patterns: patterns, godotVersion: godotVersion}, nil
+	return &compiledConfig{patterns: patterns, godotVersion: godotVersion, exempt: exempt}, nil
 }

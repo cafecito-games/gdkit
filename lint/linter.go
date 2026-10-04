@@ -58,6 +58,21 @@ func (c *Context) supports(floor versiongate.Version) bool {
 	return !c.compiled.godotVersion.Less(floor)
 }
 
+// exempt reports whether name matches one of the rule's exempt patterns. A site
+// with no such name — a class-scope declaration, which has no enclosing
+// function — is never exempt, and is suppressed with a comment instead.
+func (c *Context) exempt(rule, name string) bool {
+	if c.compiled == nil || name == "" {
+		return false
+	}
+	for _, pattern := range c.compiled.exempt[rule] {
+		if matched, _ := pattern.Match(name); matched {
+			return true
+		}
+	}
+	return false
+}
+
 var registry = map[string]Rule{}
 
 // register adds a rule. Called from each rule file's init.
