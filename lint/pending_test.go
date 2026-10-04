@@ -1,6 +1,7 @@
 package lint
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -107,11 +108,20 @@ func TestEnableRejectsAnUnknownRule(t *testing.T) {
 	}
 }
 
-// No rule ships inert yet; missing-docstring is inert through its own empty
-// configuration value instead. Adding the first pending rule should update this.
-func TestNoRegisteredRuleIsPendingYet(t *testing.T) {
-	if names := PendingRuleNames(); len(names) != 0 {
-		t.Fatalf("PendingRuleNames() = %v, want none", names)
+// The inert rules are pinned so that a rule cannot start or stop shipping inert
+// unnoticed: either direction changes what an upgrade reports on an unchanged
+// configuration. missing-docstring is absent because it is inert through its
+// own empty configuration value rather than through PendingRule.
+func TestPendingRulesAreExactlyTheInertOnes(t *testing.T) {
+	want := []string{"no-engine-logging"}
+	got := PendingRuleNames()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PendingRuleNames() = %v, want %v", got, want)
+	}
+	for _, name := range want {
+		if !IsPendingRule(name) {
+			t.Errorf("IsPendingRule(%q) = false", name)
+		}
 	}
 	if IsPendingRule("max-line-length") {
 		t.Error("max-line-length reports as pending")

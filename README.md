@@ -130,6 +130,13 @@ Documentation:
   It reports nothing until `missing-docstring` in the configuration lists the
   member kinds to check.
 
+Logging:
+
+- `no-engine-logging` reports a call that writes a diagnostic message straight
+  to Godot's output — `push_warning`, `push_error`, the `print` family,
+  `print_stack`, `OS.alert` — so a project can require its own logger instead.
+  It [ships inert](#rules-that-ship-inert).
+
 Format rules:
 
 - `max-file-lines`, `max-line-length`, `trailing-whitespace`, and
@@ -167,6 +174,7 @@ default:
 | `max-line-length` | `100` |
 | `tab-characters` | `1` |
 | `missing-docstring` | `[]`; the rule is off |
+| `no-engine-logging` | every engine output call; no logger named |
 
 `disable` lists rules to turn off, and `--disable` takes the same names as a
 comma-separated list in addition to the file. `exclude` uses the same glob
@@ -207,6 +215,30 @@ from the top of the file, ahead of every member. A static function is checked,
 even though `max-public-methods` does not count one. A `#` comment does not
 satisfy the rule, because Godot's generated class reference shows only `##`, and
 neither does a `##` block separated from the member by a blank line.
+
+`no-engine-logging` holds the calls to reject and, optionally, the name of the
+logger the diagnostic should point at:
+
+```json
+{
+  "enable": ["no-engine-logging"],
+  "no-engine-logging": {
+    "functions": ["push_warning", "push_error", "print", "OS.alert"],
+    "logger": "Log"
+  }
+}
+```
+
+`functions` defaults to every call Godot offers for writing a diagnostic
+message: `push_warning`, `push_error`, `print`, `prints`, `printt`, `printraw`,
+`printerr`, `print_rich`, `print_debug`, `print_stack`, and `OS.alert`. Setting
+it replaces that list, so a project can trim it to the calls it cares about or
+add one of its own; an empty list silences the rule. A name may carry one
+qualifier, as `OS.alert` does, and then only a call on that object is reported.
+An unqualified name matches a bare call only, so a logger with a method of its
+own named `push_error` or `print` is never reported — the rule matches the
+function a call reaches, not the word. `logger` only changes the wording of the
+diagnostic; with it unset the message says "use a logger abstraction instead".
 
 `class-definitions-order` is a list of slot names that defaults to `tools`,
 `classnames`, `extends`, `docstrings`, `signals`, `enums`, `consts`,
@@ -261,6 +293,8 @@ Three properties are worth knowing:
 Widening what an existing rule reports is the same event as adding a rule, from
 a project's point of view, so it arrives the same way: as a new inert rule name
 rather than as a quiet change to the rule already running.
+
+`no-engine-logging` is the one rule that ships inert today.
 
 `missing-docstring` predates this mechanism and is inert through its own empty
 `missing-docstring` list instead. That worked because the rule happens to be
