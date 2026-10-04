@@ -6,14 +6,73 @@ import (
 )
 
 func TestFormatMaxLineLengthCountsRunesNotBytes(t *testing.T) {
-	longAscii := "var a := \"" + strings.Repeat("x", 120) + "\"\n"
-	assertRule(t, "max-line-length", longAscii, 1)
+	// 61 accented words is 122 runes and 183 bytes, and every word is one
+	// rune wide, so the line is both over the limit and breakable.
+	longAccented := "# " + strings.Repeat("é ", 60) + "é\n"
+	assertRule(t, "max-line-length", longAccented, 1)
 
 	// 100 accented runes is 200 bytes but exactly at the limit.
 	atLimit := "#" + strings.Repeat("é", 99) + "\n"
 	if found := lintSource(t, "max-line-length", atLimit); len(found) != 0 {
 		t.Errorf("a 100-rune line must not fire: %v", found)
 	}
+}
+
+// TestFormatMaxLineLengthSparesIrreducibleLines pins the measurement that
+// decides whether a long line has a shorter form at all.
+func TestFormatMaxLineLengthSparesIrreducibleLines(t *testing.T) {
+	longName := strings.Repeat("Generated", 12)
+	longWord := strings.Repeat("word", 30)
+
+	// A name, a string literal, and one run of a comment cannot be broken.
+	assertRule(t, "max-line-length", "var a := "+longName+".new()\n")
+	assertRule(t, "max-line-length", "var a := \"res://"+longWord+".tscn\"\n")
+	assertRule(t, "max-line-length", "# see "+longWord+"\n")
+
+	// Prose wraps, so a comment of ordinary words is reducible.
+	assertRule(t, "max-line-length", "# "+strings.Repeat("word ", 30)+"\n", 1)
+
+	// So is a line that is long only because it packs short things together.
+	assertRule(t, "max-line-length", "var a := ["+strings.Repeat("1, ", 50)+"]\n", 1)
+
+	// Indentation counts towards the width a rewrite cannot avoid, but a line
+	// of nothing but whitespace is all width a rewrite can simply drop.
+	assertRule(t, "max-line-length", "func f():\n\tvar a := "+longName+"\n")
+	assertRule(t, "max-line-length", strings.Repeat(" ", 120)+"\n", 1)
+}
+
+// TestFormatMaxLineLengthAsksOnlyForBreakPointsTheCodeAlreadyHas pins which
+// long lines still have a shorter form. GDScript continues a line implicitly
+// inside an unclosed bracket, so a bracketed construct can be broken and a
+// line that brackets nothing cannot be without adding syntax. None of these
+// names is long enough to be irreducible on its own.
+func TestFormatMaxLineLengthAsksOnlyForBreakPointsTheCodeAlreadyHas(t *testing.T) {
+	longName := strings.Repeat("Generated", 6)
+
+	// An argument list is already bracketed, so the call can be broken.
+	assertRule(t, "max-line-length", "var a := "+longName+".new("+strings.Repeat("1, ", 15)+"2)\n", 1)
+
+	// Nothing here brackets anything, so breaking the line means introducing
+	// parentheses the code does not have.
+	assertRule(t, "max-line-length", "var a := "+longName+" + "+longName+"\n")
+
+	// The call's parentheses hold nothing, so breaking inside them leaves the
+	// first line exactly as long as it was.
+	assertRule(t, "max-line-length", "var a: "+longName+" = "+longName+"Factory.create()\n")
+}
+
+// TestFormatMaxLineLengthMeasuresEachLineOfAMultiLineString checks that a
+// token spanning several lines contributes to each line only the part of it
+// that lies on that line. Inside a multi-line string every line is the value,
+// so none of them has a shorter form and none is reported; without clipping
+// the literal to each line, the lines after the first would carry no atom at
+// all and would be.
+func TestFormatMaxLineLengthMeasuresEachLineOfAMultiLineString(t *testing.T) {
+	source := "var a := \"\"\"\n" +
+		strings.Repeat("word ", 30) + "\n" +
+		strings.Repeat("word", 30) + "\n" +
+		"\"\"\"\n"
+	assertRule(t, "max-line-length", source)
 }
 
 func TestFormatMaxFileLinesFiresOnceOnTheLastLine(t *testing.T) {

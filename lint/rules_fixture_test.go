@@ -51,6 +51,11 @@ var fixtureExpectations = map[string][]fixtureFinding{
 	"long_line.gd": {
 		{5, "max-line-length"},
 	},
+	// Four long lines, none of which has a break point to use: a documentation
+	// URL, a deep res:// path, a pair of generated class names whose call
+	// brackets nothing, and an expression that brackets nothing either. The
+	// fixture produces no diagnostics at all.
+	"irreducible_line.gd": {},
 	// Neither a setter parameter nor a match bind has a naming rule, so the
 	// badly named ones in this fixture stay silent.
 	"modern_syntax.gd": {
