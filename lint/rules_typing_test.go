@@ -1,6 +1,8 @@
 package lint
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -470,4 +472,93 @@ var setup = func():
 	if len(suppressed) != 0 {
 		t.Fatalf("got %v, want none after an ignore comment", suppressed)
 	}
+}
+
+// The version gate's job is to make a rule report nothing, which is exactly
+// what a rule whose traversal is broken does. Asserting both sides of the gate
+// on one source is what tells the two apart: every rule must report something
+// on the newest engine, and only the ungated ones on the oldest.
+//
+// require-typed-loop-variable is the only rule gated as a whole, so it is the
+// only rule missing from the older engine's findings. A typed signal parameter
+// is Godot 4.0 syntax like any other annotation, so require-signal-argument-type
+// fires on both. The bare Dictionary is the third difference: it is a site of a
+// rule that reports on both engines, which is why the findings are compared by
+// rule and line rather than by rule alone.
+//
+// The report is not filtered to the typing rules. DefaultConfig() reports
+// nothing on this source, so the whole report is the typing rules' findings,
+// and an unrelated rule that starts firing here is worth a failure rather than
+// being hidden.
+func TestTypingVersionGateSilencesOnlyTheGatedRules(t *testing.T) {
+	source := `
+signal damaged(amount)
+
+var items: Array = []
+var lookup: Dictionary = {}
+
+func reset():
+	items.clear()
+
+func tally(start) -> int:
+	var total = start
+	for value in items:
+		total += value
+	return total + lookup.size()
+`
+	tests := []struct {
+		version string
+		want    []string
+	}{
+		{
+			version: "4.0",
+			want: []string{
+				"require-signal-argument-type:2",
+				"require-typed-collection:4",
+				"require-return-type:7",
+				"require-argument-type:10",
+				"require-variable-type:11",
+			},
+		},
+		{
+			version: "4.7",
+			want: []string{
+				"require-signal-argument-type:2",
+				"require-typed-collection:4",
+				"require-typed-collection:5",
+				"require-return-type:7",
+				"require-argument-type:10",
+				"require-variable-type:11",
+				"require-typed-loop-variable:12",
+			},
+		},
+	}
+	for _, test := range tests {
+		config := typingConfig()
+		config.GodotVersion = test.version
+		report := lintProject(t, config, map[string]string{"a.gd": source})
+		// Report.sort() orders by path, line, column and rule, so the findings
+		// of a one-file project already arrive in the order the table lists.
+		var got []string
+		for _, diagnostic := range report.Diagnostics {
+			got = append(got, fmt.Sprintf("%s:%d", diagnostic.Rule, diagnostic.Line))
+		}
+		if !slices.Equal(got, test.want) {
+			t.Errorf("godot_version %q: unexpected %v, missing %v (got %v, want %v)",
+				test.version, absentFrom(got, test.want), absentFrom(test.want, got), got, test.want)
+		}
+	}
+}
+
+// absentFrom returns the entries of first that second does not hold, so a
+// failing gate names the finding it gained or lost instead of leaving the
+// reader to diff two lists.
+func absentFrom(first, second []string) []string {
+	var found []string
+	for _, entry := range first {
+		if !slices.Contains(second, entry) {
+			found = append(found, entry)
+		}
+	}
+	return found
 }
