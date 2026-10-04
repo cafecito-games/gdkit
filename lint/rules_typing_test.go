@@ -307,3 +307,167 @@ func gather(...rest: Array) -> void:
 		t.Fatalf("got %v, want the variadic annotation", found)
 	}
 }
+
+func TestRequireSignalArgumentTypeReportsAnUntypedPayload(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-signal-argument-type", `
+signal damaged(amount)
+signal healed(amount: int)
+`)
+	if len(found) != 1 {
+		t.Fatalf("got %v, want one diagnostic", found)
+	}
+	if found[0].Line != 2 || found[0].Column != 16 {
+		t.Errorf("reported at %d:%d, want 2:16 (the parameter's name)", found[0].Line, found[0].Column)
+	}
+	if found[0].Message != `Argument "amount" of signal "damaged" has no type` {
+		t.Errorf("message = %q", found[0].Message)
+	}
+}
+
+// A signal has no enclosing function, so its exempt list matches its own name.
+func TestRequireSignalArgumentTypeExemptsBySignalName(t *testing.T) {
+	config := typingConfig()
+	config.RequireSignalArgumentType = []string{"damaged"}
+	found := lintSourceWithConfig(t, config, "require-signal-argument-type", `
+signal damaged(amount)
+signal healed(amount)
+`)
+	if len(found) != 1 {
+		t.Fatalf("got %v, want only the unexempted signal", found)
+	}
+	if found[0].Line != 3 {
+		t.Errorf("reported line %d, want 3", found[0].Line)
+	}
+}
+
+// A bare collection in a signal's payload is named for the signal too, because
+// the payload shares the parameter walk with a function's arguments.
+func TestRequireTypedCollectionNamesTheSignalForAPayload(t *testing.T) {
+	config := typingConfig()
+	config.RequireTypedCollection = []string{"damaged"}
+	found := lintSourceWithConfig(t, config, "require-typed-collection", `
+signal damaged(amounts: Array)
+signal healed(amounts: Array)
+`)
+	if len(found) != 1 {
+		t.Fatalf("got %v, want only the unexempted signal", found)
+	}
+	if found[0].Line != 3 {
+		t.Errorf("reported line %d, want 3", found[0].Line)
+	}
+}
+
+func TestRequireTypedLoopVariableReportsAnUntypedHeader(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-loop-variable", `
+func tally(items: Array[int]) -> int:
+	var total := 0
+	for value in items:
+		total += value
+	for typed: int in items:
+		total += typed
+	return total
+`)
+	if len(found) != 1 {
+		t.Fatalf("got %v, want one diagnostic", found)
+	}
+	if found[0].Line != 4 || found[0].Column != 6 {
+		t.Errorf("reported at %d:%d, want 4:6 (the loop variable)", found[0].Line, found[0].Column)
+	}
+	if found[0].Message != `Loop variable "value" has no type` {
+		t.Errorf("message = %q", found[0].Message)
+	}
+}
+
+// A typed loop variable does not exist before Godot 4.2, so on an older engine
+// there is no fix to recommend and the rule says nothing.
+func TestRequireTypedLoopVariableIsGatedAt42(t *testing.T) {
+	source := `
+func tally(items: Array[int]) -> int:
+	var total := 0
+	for value in items:
+		total += value
+	return total
+`
+	for version, want := range map[string]int{"4.1": 0, "4.2": 1} {
+		config := typingConfig()
+		config.GodotVersion = version
+		found := lintSourceWithConfig(t, config, "require-typed-loop-variable", source)
+		if len(found) != want {
+			t.Errorf("godot_version %q: got %v, want %d diagnostics", version, found, want)
+		}
+	}
+}
+
+// The loop variable's own annotation is checked for a bare collection, like any
+// other annotation the walk reaches.
+func TestRequireTypedCollectionChecksALoopAnnotation(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+func tally(rows: Array[Array]) -> void:
+	for row: Array in rows:
+		print(row)
+`)
+	if len(found) != 1 {
+		t.Fatalf("got %v, want the loop annotation", found)
+	}
+	if found[0].Line != 3 {
+		t.Errorf("reported line %d, want 3", found[0].Line)
+	}
+}
+
+// A signal parameter's default is code like any other, and gdparser parses one,
+// so the collector walks it the way it walks a function's.
+func TestRequireArgumentTypeReachesALambdaInASignalDefault(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-argument-type", `
+signal damaged(handler: Callable = func(event): return event)
+`)
+	if len(found) != 1 || found[0].Message != `Argument "event" of lambda has no type` {
+		t.Fatalf("got %v, want one lambda diagnostic", found)
+	}
+}
+
+// A loop inside a function is named for that function, which is what makes
+// ["_process"] quiet a hot loop's locals without quieting the file.
+func TestRequireTypedLoopVariableHonorsAnExemptPattern(t *testing.T) {
+	config := typingConfig()
+	config.RequireTypedLoopVariable = []string{"_process"}
+	found := lintSourceWithConfig(t, config, "require-typed-loop-variable", `
+func _process(delta: float) -> void:
+	for value in [delta]:
+		print(value)
+
+func tally() -> void:
+	for value in [1]:
+		print(value)
+`)
+	if len(found) != 1 {
+		t.Fatalf("got %v, want only the loop in the unexempted function", found)
+	}
+	if found[0].Line != 7 {
+		t.Errorf("reported line %d, want 7", found[0].Line)
+	}
+}
+
+// A loop inside a class-scope initializer has no enclosing function, so no
+// pattern can exempt it and a "# gdkit:ignore" comment is the only way to
+// silence it.
+func TestRequireTypedLoopVariableInAClassInitializerIsNotExemptible(t *testing.T) {
+	source := `
+var setup = func():
+	for value in [1]:
+		print(value)
+`
+	config := typingConfig()
+	config.RequireTypedLoopVariable = []string{"*"}
+	if found := lintSourceWithConfig(t, config, "require-typed-loop-variable", source); len(found) != 1 {
+		t.Fatalf("got %v, want the loop no pattern can name", found)
+	}
+	suppressed := lintSourceWithConfig(t, typingConfig(), "require-typed-loop-variable", `
+var setup = func():
+	# gdkit:ignore = require-typed-loop-variable
+	for value in [1]:
+		print(value)
+`)
+	if len(suppressed) != 0 {
+		t.Fatalf("got %v, want none after an ignore comment", suppressed)
+	}
+}

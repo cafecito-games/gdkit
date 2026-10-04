@@ -107,7 +107,10 @@ type Config struct {
 	// instead. Code inside a property accessor is named for the property, which
 	// is the only name a reader could write a pattern for.
 	//
-	// For require-signal-argument-type it is the signal's own name.
+	// For require-signal-argument-type it is the signal's own name, as it is for
+	// a bare collection written in a signal's payload: a signal is not inside a
+	// function, so its own name is the only name a reader could write a pattern
+	// for.
 	RequireReturnType         []string `json:"require-return-type,omitempty"`
 	RequireArgumentType       []string `json:"require-argument-type,omitempty"`
 	RequireVariableType       []string `json:"require-variable-type,omitempty"`

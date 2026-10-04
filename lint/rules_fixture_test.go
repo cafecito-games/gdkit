@@ -268,8 +268,16 @@ var typingFixtureExpectations = map[string][]fixtureFinding{
 	},
 	"variables.gd": {
 		{5, "require-variable-type"},
+		// "items" is annotated, so only its bare Array is reported.
 		{7, "require-typed-collection"},
 		{12, "require-variable-type"},
+		{13, "require-typed-loop-variable"},
+	},
+	"signals.gd": {
+		{3, "require-signal-argument-type"},
+		// A bare collection in a payload, named for the signal rather than for
+		// any function.
+		{5, "require-typed-collection"},
 	},
 }
 

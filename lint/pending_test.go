@@ -115,7 +115,8 @@ func TestEnableRejectsAnUnknownRule(t *testing.T) {
 func TestPendingRulesAreExactlyTheInertOnes(t *testing.T) {
 	want := []string{
 		"no-engine-logging", "require-argument-type", "require-return-type",
-		"require-typed-collection", "require-variable-type",
+		"require-signal-argument-type", "require-typed-collection",
+		"require-typed-loop-variable", "require-variable-type",
 	}
 	got := PendingRuleNames()
 	if !reflect.DeepEqual(got, want) {

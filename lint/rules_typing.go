@@ -18,6 +18,9 @@ const (
 
 	ruleRequireVariableType    = "require-variable-type"
 	ruleRequireTypedCollection = "require-typed-collection"
+
+	ruleRequireSignalArgumentType = "require-signal-argument-type"
+	ruleRequireTypedLoopVariable  = "require-typed-loop-variable"
 )
 
 // typingRuleNames is every rule backed by the typing collector. Registering
@@ -28,6 +31,8 @@ var typingRuleNames = []string{
 	ruleRequireArgumentType,
 	ruleRequireVariableType,
 	ruleRequireTypedCollection,
+	ruleRequireSignalArgumentType,
+	ruleRequireTypedLoopVariable,
 }
 
 func init() {
@@ -38,11 +43,15 @@ func init() {
 
 // The Godot version that first accepts each typed form. They are values rather
 // than strings so a site compares without parsing anything per file.
-var godot40 = versiongate.Version{Major: 4}
-
-// godot44 is when Dictionary[K, V] arrived; a bare Dictionary has no fix before
-// it, while Array[T] has been available since 4.0.
-var godot44 = versiongate.Version{Major: 4, Minor: 4}
+var (
+	// godot40 is the floor for a type annotation at all, and for Array[T].
+	godot40 = versiongate.Version{Major: 4}
+	// godot42 is when a typed "for" variable arrived.
+	godot42 = versiongate.Version{Major: 4, Minor: 2}
+	// godot44 is when Dictionary[K, V] arrived; a bare Dictionary has no fix
+	// before it, while Array[T] has been available since 4.0.
+	godot44 = versiongate.Version{Major: 4, Minor: 4}
+)
 
 // typingRule reports a declaration that carries no static type annotation.
 // Static typing is Godot's documented correctness and performance win, and an
@@ -142,6 +151,8 @@ func (c *typingCollector) classBody(statements []ast.Statement) {
 			c.function(declaration)
 		case *ast.VariableDeclaration:
 			c.classVariable(declaration)
+		case *ast.SignalDeclaration:
+			c.signal(declaration)
 		case *ast.EnumDeclaration:
 			for _, member := range declaration.Members {
 				c.inspect("", member.Value)
@@ -173,6 +184,20 @@ func (c *typingCollector) classVariable(declaration *ast.VariableDeclaration) {
 	c.functionScope(declaration.Name, declaration.Getter)
 	if declaration.Setter != nil {
 		c.functionScope(declaration.Name, declaration.Setter.Body)
+	}
+}
+
+// signal records a signal's untyped parameters. A signal's payload is the
+// boundary an untyped value travels furthest from: the emitter and every
+// receiver are written apart, and nothing checks the type between them.
+//
+// A signal has no enclosing function, so its own name is what an exempt
+// pattern matches.
+func (c *typingCollector) signal(declaration *ast.SignalDeclaration) {
+	c.parameters(ruleRequireSignalArgumentType, declaration.Parameters, declaration.Name,
+		fmt.Sprintf("signal %q", declaration.Name))
+	for _, parameter := range declaration.Parameters {
+		c.inspect(declaration.Name, parameter.Default)
 	}
 }
 
@@ -287,6 +312,19 @@ func (c *typingCollector) inspect(enclosing string, node ast.Node) {
 		switch declaration := node.(type) {
 		case *ast.VariableDeclaration:
 			c.variable(declaration, enclosing)
+		case *ast.ForStatement:
+			// A "for" header has no ":=" form, so an empty name is the whole
+			// test.
+			if declaration.Type == "" {
+				c.add(typingSite{
+					rule:      ruleRequireTypedLoopVariable,
+					message:   fmt.Sprintf("Loop variable %q has no type", declaration.Variable),
+					enclosing: enclosing,
+					floor:     godot42,
+					span:      declaration.VariableSpan,
+				})
+			}
+			c.collection(declaration.Type, declaration.TypeSpan, enclosing)
 		case *ast.LambdaExpression:
 			// A lambda's parameters are a contract its caller satisfies, so
 			// they are checked. Its return value is consumed where the lambda
