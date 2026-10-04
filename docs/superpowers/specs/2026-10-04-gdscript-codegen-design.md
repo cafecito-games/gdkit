@@ -261,6 +261,17 @@ ordering:
 3. **Index** — over the whole universe: `class_name` to script, the inheritance
    edge each class declares, each class's declared methods with their staticness
    and arity, and each class's selectable fields.
+
+   Two things about its scope are load-bearing. It covers **inner classes**,
+   identified as `path#Name`, even though an inner class can never be a
+   generation target: an unrequested inner class can extend a generated base
+   and add fields, which is precisely what the descendant rule exists to catch,
+   and indexing them is also what lets a marker on one be reported rather than
+   ignored. And it resolves **every** form of `extends` a project script can
+   use — a `class_name`, a `res://` path, a `uid://` identifier via
+   `Snapshot.UIDs`, and a dotted `Outer.Inner` — because a subclass whose base
+   failed to resolve looks parentless, and a parentless class skips the
+   composition and both refusal rules without anything saying so.
 4. **Resolve capabilities** — decide which (class, signature) pairs are
    *realizable*, by monotone demotion to stability.
 5. **Emit and canonicalise** — each requested generator produces its method
