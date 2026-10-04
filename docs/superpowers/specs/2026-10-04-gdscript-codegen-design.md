@@ -49,10 +49,45 @@ four characters and remove the question.
 
 A comment directive rather than configuration alone, because the marker is then
 visible in the script a reader is already looking at, travels with the file when
-it moves, and appears in the diff that introduces it. A base class
+it moves, and appears in the diff that introduces it. A hand-written base class
 (`extends GdkitValue`) was rejected because it spends GDScript's single
 inheritance slot, forces an addon into the project, and cannot say *which*
 helpers the class wants.
+
+### Why not a wholly owned generated file
+
+The `go generate` model — emit a file the tool owns outright and rewrite it
+whole — is not available, because GDScript requires a class's methods to live in
+that class's one script file. A sibling file cannot add a method to `Hex`.
+
+A **generated base class** does get most of the way there, and was considered
+seriously rather than dismissed: `hex.gd` declares
+`extends "res://domain/hex.generated.gd"`, and the generated file holds the
+methods and extends what `Hex` used to. It would delete the region extent rules,
+byte-identity verification, the format oracle, `generate.unsafe`, the orphan
+lifecycle and `--prune`, and most of `generate.conflict` — a hand-written
+`equals` would simply override the generated one. It would also fix inherited
+fields and thread the inheritance slot through rather than spending it, since
+each generated base extends the real one.
+
+It was rejected for what the generated bodies would have to look like. A base
+class cannot statically reference a member declared in its subclass — GDScript
+rejects the identifier — so every field access would become `get("q")`. That
+costs static type checking inside the generated code and replaces direct member
+access with a dynamic property lookup in `_to_string` and `equals`, which are
+exactly the methods that run on every `print()` and every comparison. It also
+requires the generated files to be committed, since a fresh clone would not open
+in Godot until `gen write` had run, and each new `.gd` file needs a `.uid`
+sidecar, putting `gen` and `uid` in each other's way.
+
+The in-file region keeps `self.q`: type-checked, direct, and adding nothing to
+the filesystem or to Godot's global class list. The cost is this document's
+length, which is paid once.
+
+A free-function helper (`HexEquality.equals(a, b)`) would keep full static typing
+in a wholly owned file, but `_to_string` must be a method on the class for
+`str()` and `print()` to use it, so that model cannot deliver one of the three
+generators at all.
 
 ### Grammar
 
