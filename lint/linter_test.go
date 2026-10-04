@@ -243,6 +243,27 @@ func TestLoadConfigRejectsUnknownKeys(t *testing.T) {
 	}
 }
 
+func TestLoadConfigKeepsTheDefaultGodotVersionWhenTheKeyIsOmitted(t *testing.T) {
+	root := t.TempDir()
+	writeConfigFile(t, root, DefaultConfigPath, `{"max-line-length": 80}`)
+	config, err := LoadConfig(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.GodotVersion != "4.7" {
+		t.Errorf("GodotVersion = %q, want the default \"4.7\"", config.GodotVersion)
+	}
+}
+
+func TestLoadConfigRejectsAnEmptyGodotVersion(t *testing.T) {
+	root := t.TempDir()
+	writeConfigFile(t, root, DefaultConfigPath, `{"godot_version": ""}`)
+	_, err := LoadConfig(root, "")
+	if err == nil || !strings.Contains(err.Error(), "godot_version") {
+		t.Errorf("want an error naming godot_version, got %v", err)
+	}
+}
+
 func TestLintSourceFailsOnUnparseableFixture(t *testing.T) {
 	if got := lintSource(t, "source-parse", "func (   \n"); len(got) != 1 {
 		t.Errorf("asking for source-parse must still work, got %v", got)

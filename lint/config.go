@@ -12,6 +12,7 @@ import (
 
 	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/internal/glob"
+	"github.com/cafecito-games/gdkit/internal/versiongate"
 )
 
 // DefaultConfigPath is where gdkit lint looks for its configuration.
@@ -39,6 +40,17 @@ type Config struct {
 	Version     int      `json:"version"`
 	SourceRoots []string `json:"source_roots"`
 	Exclude     []string `json:"exclude"`
+
+	// GodotVersion is the engine version the project targets, written as
+	// "major.minor" or "major.minor.patch". A rule whose fix needs newer syntax
+	// than this reports nothing, so a project is never told to write a type
+	// annotation its engine cannot parse.
+	//
+	// It defaults to the newest Godot gdkit knows, which is safe only because
+	// every version-gated rule ships inert: a project that has not opted in
+	// cannot be affected by the default, and a project on an older engine
+	// lowers this one key instead of hunting for the right rule name.
+	GodotVersion string `json:"godot_version"`
 
 	// Disable turns rules off by name.
 	Disable []string `json:"disable,omitempty"`
@@ -101,9 +113,10 @@ type NoEngineLoggingConfig struct {
 // DefaultConfig is gdlint's default policy, expressed in gdkit's config shape.
 func DefaultConfig() Config {
 	return Config{
-		Version:     1,
-		SourceRoots: []string{"."},
-		Exclude:     []string{".git/**", ".godot/**", ".gdkit/**", "addons/**"},
+		Version:      1,
+		SourceRoots:  []string{"."},
+		Exclude:      []string{".git/**", ".godot/**", ".gdkit/**", "addons/**"},
+		GodotVersion: "4.7",
 
 		FunctionName:                fmt.Sprintf(`(_on_%s(_[a-z0-9]+)*|%s)`, pascalCase, privateSnakeCase),
 		ClassName:                   pascalCase,
@@ -224,7 +237,8 @@ func (c Config) Validate() error {
 // accessors by convention rather than by enforcement: every rule lives in this
 // package, so an unexported field is reachable either way.
 type compiledConfig struct {
-	patterns map[string]*regexp.Regexp
+	patterns     map[string]*regexp.Regexp
+	godotVersion versiongate.Version
 }
 
 // validate is Validate, also returning the compiled configuration so a caller
@@ -299,9 +313,13 @@ func (c Config) validate() (*compiledConfig, error) {
 			return nil, fmt.Errorf("%s must not be negative, got %d", limit.name, limit.value)
 		}
 	}
+	godotVersion, err := versiongate.ParseEngineVersion(c.GodotVersion)
+	if err != nil {
+		return nil, fmt.Errorf("godot_version: %w", err)
+	}
 	patterns, err := c.compileNamePatterns()
 	if err != nil {
 		return nil, err
 	}
-	return &compiledConfig{patterns: patterns}, nil
+	return &compiledConfig{patterns: patterns, godotVersion: godotVersion}, nil
 }

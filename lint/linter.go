@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"sort"
 
+	"github.com/cafecito-games/gdkit/internal/versiongate"
 	"github.com/cafecito-games/gdkit/project"
 )
 
@@ -45,6 +46,16 @@ func (c *Context) Pattern(rule string) *regexp.Regexp {
 		return nil
 	}
 	return c.compiled.patterns[rule]
+}
+
+// supports reports whether the project's configured Godot version is at least
+// floor. A typing site names the version that first accepts the annotation it
+// wants, so a site is dropped rather than reported when the engine is older.
+func (c *Context) supports(floor versiongate.Version) bool {
+	if c.compiled == nil {
+		return false
+	}
+	return !c.compiled.godotVersion.Less(floor)
 }
 
 var registry = map[string]Rule{}
