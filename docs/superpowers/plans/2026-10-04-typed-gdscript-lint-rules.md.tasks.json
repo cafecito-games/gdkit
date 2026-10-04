@@ -10,7 +10,7 @@
     {
       "id": 1,
       "subject": "Task 2: godot_version",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         0
       ],
