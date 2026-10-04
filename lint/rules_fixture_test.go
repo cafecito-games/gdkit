@@ -144,6 +144,36 @@ var docstringFixtureExpectations = map[string][]fixtureFinding{
 	},
 }
 
+// loggingFixtureExpectations is the complete set of diagnostics the files in
+// testdata/logging must produce once no-engine-logging is enabled. The rule
+// ships inert, so it needs a fixture group of its own.
+var loggingFixtureExpectations = map[string][]fixtureFinding{
+	"logger.gd": {},
+	"engine_logging.gd": {
+		{10, "no-engine-logging"},
+		{11, "no-engine-logging"},
+		{12, "no-engine-logging"},
+		{13, "no-engine-logging"},
+		{14, "no-engine-logging"},
+		{15, "no-engine-logging"},
+		{16, "no-engine-logging"},
+		{17, "no-engine-logging"},
+		{18, "no-engine-logging"},
+		{19, "no-engine-logging"},
+		{20, "no-engine-logging"},
+		// Nothing from the second function: a call through an object reaches
+		// the project's logger, and the last one is suppressed by comment.
+	},
+}
+
+// loggingFixtureConfig opts in to the inert rule and leaves its function list
+// at the default, so the fixture covers the shipped policy.
+func loggingFixtureConfig() Config {
+	config := DefaultConfig()
+	config.Enable = []string{"no-engine-logging"}
+	return config
+}
+
 // docstringFixtureConfig enables every member kind, so one fixture covers the
 // whole rule.
 func docstringFixtureConfig() Config {
@@ -211,6 +241,12 @@ func TestDocstringFixtureDiagnostics(t *testing.T) {
 	checkFixtures(t, lintFixtures(t, "docstrings", docstringFixtureConfig()), docstringFixtureExpectations)
 }
 
+// TestLoggingFixtureDiagnostics is TestFixtureDiagnostics for the fixtures that
+// only produce diagnostics once no-engine-logging is enabled.
+func TestLoggingFixtureDiagnostics(t *testing.T) {
+	checkFixtures(t, lintFixtures(t, "logging", loggingFixtureConfig()), loggingFixtureExpectations)
+}
+
 func checkFixtures(t *testing.T, found map[string][]fixtureFinding, expectations map[string][]fixtureFinding) {
 	t.Helper()
 
@@ -250,7 +286,7 @@ func TestFixturesExerciseEveryRule(t *testing.T) {
 	driverReported := map[string]bool{"source-parse": true, "unknown-ignore": true}
 
 	exercised := make(map[string]bool)
-	for _, group := range []map[string][]fixtureFinding{fixtureExpectations, docstringFixtureExpectations} {
+	for _, group := range []map[string][]fixtureFinding{fixtureExpectations, docstringFixtureExpectations, loggingFixtureExpectations} {
 		for _, findings := range group {
 			for _, finding := range findings {
 				exercised[finding.rule] = true

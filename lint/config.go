@@ -82,6 +82,20 @@ type Config struct {
 	// documentation comment. It is empty by default, which makes the
 	// missing-docstring rule inert, so a project opts in one kind at a time.
 	MissingDocstring []string `json:"missing-docstring"`
+
+	NoEngineLogging NoEngineLoggingConfig `json:"no-engine-logging"`
+}
+
+// NoEngineLoggingConfig configures the no-engine-logging rule.
+type NoEngineLoggingConfig struct {
+	// Functions names the calls the rule reports. A name may carry one
+	// qualifier, as in "OS.alert"; an unqualified name matches a bare call
+	// only, so a method of the project's own logger is never reported. An
+	// empty list silences the rule.
+	Functions []string `json:"functions"`
+	// Logger names the abstraction the diagnostic points at. When it is empty
+	// the message says "a logger abstraction" instead.
+	Logger string `json:"logger,omitempty"`
 }
 
 // DefaultConfig is gdlint's default policy, expressed in gdkit's config shape.
@@ -121,6 +135,12 @@ func DefaultConfig() Config {
 		},
 
 		MissingDocstring: []string{},
+
+		// Copied, because decoding a configuration file onto the defaults
+		// writes through the slice it finds here.
+		NoEngineLogging: NoEngineLoggingConfig{
+			Functions: append([]string(nil), defaultEngineLoggingFunctions...),
+		},
 	}
 }
 
@@ -248,6 +268,11 @@ func (c Config) validate() (map[string]*regexp.Regexp, error) {
 	for _, kind := range c.MissingDocstring {
 		if !knownDocKinds[kind] {
 			return nil, fmt.Errorf("missing-docstring names unknown member kind %q", kind)
+		}
+	}
+	for _, function := range c.NoEngineLogging.Functions {
+		if err := validateEngineLoggingFunction(function); err != nil {
+			return nil, err
 		}
 	}
 	limits := []struct {

@@ -107,17 +107,21 @@ stricter" promise safe. `disable` wins over `enable`, and `enable` deliberately
 accepts any known rule name rather than only an inert one, so a config that
 opted in keeps working after the rule graduates to running by default.
 Pending-ness is an optional interface rather than a parallel registry map so a
-test can inject one through `newLinter`. No rule is inert today;
-`missing-docstring` predates the mechanism and is inert through its own empty
-list, which only worked because that rule is configured by a list.
+test can inject one through `newLinter`. `no-engine-logging` is the only inert
+rule, and `TestPendingRulesAreExactlyTheInertOnes` pins that set so a rule
+cannot start or stop shipping inert unnoticed. `missing-docstring` predates the
+mechanism and is inert through its own empty list, which only worked because
+that rule is configured by a list.
 
 `tab-characters` is a configuration value used by `max-line-length`, not a rule.
 `source-parse` and `unknown-ignore` are reported by the driver rather than by a
 registered rule. Several rules encode deliberately unusual behavior — token-based
 rather than scope-based name counting in `unused-argument`, token-stream
 comparison in `comparison-with-itself`, annotation re-pairing in
-`class-definitions-order`, and a static function that `missing-docstring`
-checks while `max-public-methods` does not count it. The comments in `lint/`
+`class-definitions-order`, a static function that `missing-docstring` checks
+while `max-public-methods` does not count it, and callee-shape rather than name
+matching in `no-engine-logging`, so a project logger with a method named
+`push_error` is not mistaken for the engine's function. The comments in `lint/`
 record why; do not "simplify" them without reading those.
 
 ### Analysis pipeline
