@@ -531,3 +531,49 @@ func TestLoadSelectionNarrowsBySourceRoot(t *testing.T) {
 		t.Errorf("Paths = %v, want both", snapshot.Paths)
 	}
 }
+
+func TestLoadReadsScriptBackedAutoloads(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"game_state.gd": "class_name GameState\nextends Node\n",
+		"menu.tscn":     "[gd_scene]\n",
+		ManifestFileName: "config_version=5\n\n" +
+			"[application]\nconfig/name=\"Demo\"\n\n" +
+			"[autoload]\n; a comment\n" +
+			"GameState=\"*res://game_state.gd\"\n" +
+			"Plain=\"res://game_state.gd\"\n" +
+			"Menu=\"*res://menu.tscn\"\n\n" +
+			"[rendering]\nquality=1\n",
+	})
+	snapshot, err := Load(Config{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot.Autoloads["GameState"]; got != "game_state.gd" {
+		t.Errorf("GameState = %q, want game_state.gd", got)
+	}
+	// The "*" prefix only marks the singleton enabled; it is not part of the path.
+	if got := snapshot.Autoloads["Plain"]; got != "game_state.gd" {
+		t.Errorf("Plain = %q, want game_state.gd", got)
+	}
+	// A scene declares no class, so it cannot be extended.
+	if _, ok := snapshot.Autoloads["Menu"]; ok {
+		t.Error("a scene-backed autoload was recorded")
+	}
+	// Keys outside [autoload] must not leak in.
+	if _, ok := snapshot.Autoloads["quality"]; ok {
+		t.Error("a key from another section was recorded")
+	}
+}
+
+func TestLoadWithNoManifestHasNoAutoloads(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"a.gd": "class_name A\n"})
+	snapshot, err := Load(Config{Root: root})
+	if err != nil {
+		t.Fatalf("a project without a manifest must still load: %v", err)
+	}
+	if len(snapshot.Autoloads) != 0 {
+		t.Errorf("Autoloads = %v, want empty", snapshot.Autoloads)
+	}
+}
