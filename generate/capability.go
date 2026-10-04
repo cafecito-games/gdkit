@@ -154,13 +154,13 @@ func Resolve(index *Index, requested map[string][]string, blockers map[string]bo
 	}
 	for id, names := range requested {
 		for _, name := range names {
-			generator := generatorByName(name)
-			if generator == nil {
+			emitter := emitterByName(name)
+			if emitter == nil {
 				continue
 			}
-			for _, signature := range generator.Signatures() {
+			for _, signature := range emitter.Signatures() {
 				key := pair{id, signature}
-				capabilities.inheritanceSensitive[key] = generator.NeedsInheritanceGraph()
+				capabilities.inheritanceSensitive[key] = emitter.NeedsInheritanceGraph()
 				if capabilities.handwritten[key] {
 					continue
 				}

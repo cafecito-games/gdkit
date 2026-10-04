@@ -6,17 +6,17 @@ import (
 )
 
 // emitOf runs one generator over the single file a.gd.
-func emitOf(t *testing.T, generator Generator, source string) string {
+func emitOf(t *testing.T, emitter Emitter, source string) string {
 	t.Helper()
-	return emitFor(t, "a.gd", generator, map[string]string{"a.gd": source})
+	return emitFor(t, "a.gd", emitter, map[string]string{"a.gd": source})
 }
 
 // emitFor runs one generator over the named class of a multi-file project.
-func emitFor(t *testing.T, id string, generator Generator, files map[string]string) string {
+func emitFor(t *testing.T, id string, emitter Emitter, files map[string]string) string {
 	t.Helper()
 	index := indexOf(t, files)
-	capabilities := Resolve(index, map[string][]string{id: {generator.Name()}}, nil)
-	text, diagnostics := generator.Emit(index.Classes[id], index, capabilities)
+	capabilities := Resolve(index, map[string][]string{id: {emitter.Name()}}, nil)
+	text, diagnostics := emitter.Emit(index.Classes[id], index, capabilities)
 	if len(diagnostics) > 0 {
 		t.Fatalf("emit produced diagnostics: %+v", diagnostics)
 	}
