@@ -4,8 +4,12 @@ A fifth gdkit tool, `gdkit gen`, that writes boilerplate value-object methods
 into a class the project has opted in. This spec covers two generators,
 `to_string` and `equals`, and the machinery they share. A third,
 `deep_equals`, is specified separately in
-[the deep_equals design](2026-10-04-gdscript-deep-equals-design.md) and adds no
-new concepts to this one — a generator is an `emit_*.go` and a registry entry.
+[the deep_equals design](2026-10-04-gdscript-deep-equals-design.md). That one is
+**not** a drop-in third generator: it replaces capability resolution with a
+version that follows field references, and it adds a builtin type catalogue, a
+second emitted helper method carrying recursion state, diagnostic severity, and
+`Report.HasErrors()`. v1 should not be built on the assumption that a later
+generator is only an `emit_*.go` and a registry entry, because that one is not.
 
 GDScript has no partial classes, no mixins, and no user-defined annotations — an
 `@gdkit_value` is a compile error in Godot, not an extension point. Generated
@@ -255,15 +259,24 @@ ordering:
 3. **Index** — over the whole universe: `class_name` to script, the inheritance
    edge each class declares, each class's declared methods with their staticness
    and arity, and each class's selectable fields.
-4. **Resolve capabilities** — walk the inheritance forest parents-first and
-   decide which (class, signature) pairs are *realizable*.
+4. **Resolve capabilities** — decide which (class, signature) pairs are
+   *realizable*, by monotone demotion to stability.
 5. **Emit and canonicalise** — each requested generator produces its method
    text. The region, including the leading gap it owns, is formatted in
    isolation with the project's `format` configuration and spliced into the
    file.
 6. **Verify** — the candidate must reparse, and every byte outside the region
    must be identical to the source.
-7. **Sort** — by path, then line, column, rule.
+7. **Re-resolve if verification blocked anything** — a refused candidate is a
+   new blocker, so return to step 4 and repeat 4–6. Blockers only ever
+   accumulate, and they are bounded by the number of (class, signature) pairs,
+   so this terminates.
+8. **Sort** — by path, then line, column, rule.
+
+Step 7 exists because a `generate.unsafe` refusal is only discovered after
+emission, and it withdraws a capability that a descendant may already have
+composed with. Without the loop, a parent whose region was refused leaves a
+child emitting `super.equals` against a method that was never written.
 
 **Field selection is part of indexing, not a later step for requested classes
 only.** Both inheritance rules ask whether some *other* class — an ancestor, or
@@ -274,22 +287,59 @@ universe, including classes that never opt in.
 
 ### Capabilities
 
-For a class `C` and a signature `S`, `provider(C, S)` is the nearest class in
-`C`'s ancestry, including `C` itself, that declares a compatible `S` or has `S`
-realizable. `realizable(C, S)` holds when `C` declares a compatible `S`, or
-requested `S` and carries no blocking diagnostic.
+`provider(C, S)` is found by walking `C`'s ancestry, including `C` itself, and
+**stopping at the nearest class that declares a method with `S`'s name** — not
+at the nearest *compatible* one. If that declaration is compatible, or is a
+realizable generated one, it is the provider. If it is incompatible, it is a
+**barrier**: there is no provider, and a class trying to compose through it is
+refused.
 
-A declared, compatible method is **immutable**: it already exists in the file
-and nothing this run can do takes it away. Only a generated realization can be
-withdrawn, so the set tracks provenance and a blocked generator can never erase
-a hand-written provider that something else was relying on.
+Walking past an incompatible method would be wrong, because GDScript's runtime
+lookup does not walk past it. Given `A` with a good `equals`, `B extends A`
+declaring `equals(a, b)`, and `C extends B` emitting `super.equals(p_other)`,
+the call resolves to `B.equals` and fails. Nearest-compatible-ancestor would
+have reported `A` as the provider and emitted that call anyway.
 
-No fixed-point iteration is needed, and it is worth being precise about why.
-A generated `equals` depends on exactly one other capability — its parent's —
-and GDScript inheritance is acyclic, so resolving the forest parents-first
-settles every class in one pass. Iteration becomes necessary only when a
-capability can depend on a *field's* type, which can cycle; that is a
-`deep_equals` concern and is specified in its own document.
+A method declared **inside a generated region** is never an immutable provider.
+Its existence is contingent on this run: an orphaned region's methods are
+scheduled for removal by `gen write --prune`, so treating them as declared
+would let a child compose with a parent method that pruning then deletes. **An
+orphaned region provides no capability.**
+
+A hand-written method outside any region *is* immutable: it already exists in
+the file and nothing this run can do takes it away. Only a generated
+realization can be withdrawn, so the set tracks provenance and a blocked
+generator can never erase a hand-written provider something else relies on.
+
+### Resolution is a fixed point, not a single pass
+
+`realizable(C, S)` holds when `C` declares a compatible `S` outside a region,
+or requested `S` and carries no blocking diagnostic. It is computed by
+**monotone demotion to stability**: seed optimistically, then repeatedly demote
+any generated pair whose provider is not realizable or whose class has acquired
+a blocker, until a pass demotes nothing.
+
+An earlier draft of this spec claimed a parents-first walk in one pass would do,
+on the grounds that a generated `equals` depends only on its parent's capability
+and that inheritance is acyclic. That was wrong, because the descendant refusal
+rule points the other way. Take requested `A` providing `equals`, requested
+`B extends A` providing it, and unrequested `C extends B` that adds a field:
+the descendant rule demotes `B`, which moves `provider(C, equals)` from `B` to
+`A`, which must then demote `A` — a class a parents-first pass had already
+settled. Capability therefore flows both up and down the hierarchy, and only
+iteration closes it.
+
+### The inheritance graph may not be a forest
+
+`project.Load` parses syntactically; it does not check that `extends` edges are
+acyclic, and cycle detection lives in `architecture`, not in `project`. Two
+parseable scripts can therefore name each other, and an unguarded parent walk
+would not terminate.
+
+Indexing detects inheritance SCCs and refuses every requested class in one with
+`generate.unsupported`, naming the cycle in a deterministic order. Godot would
+reject such a project too, but `gen` must not hang on it before Godot gets the
+chance.
 
 ### Composing with the ancestor
 
@@ -438,8 +488,31 @@ type Plan struct {
 }
 ```
 
+`Plan` is internal. The public, JSON-shaped result mirrors `format.Report`:
+
+```go
+type Result struct {
+	Path    string `json:"path"`
+	Changed bool   `json:"changed"`
+}
+
+type Report struct {
+	Results     []Result     `json:"results"`
+	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
+func (r Report) HasChanges() bool
+func (r Report) HasDiagnostics() bool
+```
+
+v1 diagnostics carry **no severity field**, as `format` and `uid` carry none.
+`deep_equals` introduces the first warning and with it both the field and
+`HasErrors()`; adding them now would make `HasErrors()` and `HasDiagnostics()`
+the same predicate.
+
 - **`gen check`** reports every `Changed` candidate as `generate.stale`, plus
-  every diagnostic. Exit 1 if either is non-empty at error severity.
+  every diagnostic. Exit 1 when there is any diagnostic or any changed
+  candidate.
 - **`gen write`** applies every `Changed` candidate. Staleness is not a failure
   for `write` — fixing it is the point. It exits 1 only when a blocking
   diagnostic remains, 2 on an I/O failure, and prints what it changed either
@@ -697,6 +770,17 @@ with a named test:
   where the hand-written one must survive and its dependents must still
   generate;
 - a class that stops opting in while its region remains;
+- an orphaned parent region whose `equals` a requested child would compose
+  with, where the child must be refused rather than `--prune` breaking it;
+- `A` providing `equals`, requested `B extends A` providing it, and unrequested
+  field-adding `C extends B`, where demoting `B` must cascade to demote `A`;
+- `A` with a compatible `equals`, `B extends A` declaring `equals(a, b)`, and
+  requested `C extends B`, where `B` must be a barrier rather than `A` a
+  provider;
+- two scripts that `extend` each other, which must be refused deterministically
+  rather than hang;
+- a parent whose candidate is refused at verification, where the child that
+  composed with it must also be refused;
 - an orphaned region in an excluded file, which must still be reported;
 - an unparseable file outside the selection, which must block `equals` but not
   `to_string`;

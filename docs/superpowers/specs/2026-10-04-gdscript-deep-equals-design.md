@@ -5,13 +5,16 @@ class that holds other value objects. It builds on
 [the code generation design](2026-10-04-gdscript-codegen-design.md) and does not
 revisit it: the marker grammar, the region and its extent, verification, the
 format oracle, the plan model, field selection, configuration, and the command
-surface are all unchanged. A generator is an `emit_*.go` and a registry entry.
+surface are all unchanged.
 
-This document covers only what `deep_equals` adds, which is substantial and is
-the reason it is separate: structural recursion needs to know a field's type,
-which needs a builtin catalogue; it needs the target type to actually have the
-method, which needs capability resolution that can cycle; and it needs the walk
-to terminate, which needs cycle detection in the generated code.
+It is **not** a drop-in generator. It extends capability resolution to follow
+field references, and it adds a builtin type catalogue, a second emitted helper
+method carrying recursion state, diagnostic severity, and
+`Report.HasErrors()`. This document covers only those additions: structural
+recursion needs to know a field's type, which needs the catalogue; it needs the
+target type to actually have the method, which widens the capability graph; and
+it needs the walk to terminate, which needs cycle detection in the generated
+code.
 
 **Status: specified, not scheduled.** The base design ships first.
 
@@ -69,20 +72,18 @@ refused inheritance — then a `deep_equals` in `A` that called into `B` would
 compile and crash. "Requested" is an intention; emission may only depend on a
 capability that survives every blocker.
 
-The base design resolves capabilities parents-first in a single pass, which is
-sound there because a generated `equals` depends on exactly one other
-capability, its parent's, and inheritance is acyclic. `deep_equals` breaks that:
-it depends on the capabilities of every class it holds as a field, and field
-references *can* cycle. So capability resolution becomes a **greatest** fixed
-point:
+The base design already resolves capabilities by monotone demotion to
+stability, because its descendant refusal rule makes capability flow both up
+and down the inheritance hierarchy. `deep_equals` does not introduce the
+iteration — it **widens the dependency graph** the iteration runs over, from
+inheritance edges alone to inheritance edges plus every field whose type is a
+project class. Those edges can form cycles that inheritance cannot.
 
-- seed it optimistically — every declared-and-compatible method, plus every
-  requested generator, is assumed realizable;
-- repeatedly demote any **generated** pair whose own emission needs a provider
-  that is not realizable, or whose class carries a blocking diagnostic;
-- stop when a pass demotes nothing.
-
-The set only ever shrinks, so this terminates. Starting optimistically rather
+The algorithm is unchanged: seed optimistically with every
+declared-and-compatible method and every requested generator, repeatedly demote
+any **generated** pair whose provider is not realizable or whose class carries a
+blocker, and stop when a pass demotes nothing. The set only ever shrinks, so
+this terminates. Starting optimistically rather
 than pessimistically is what makes a cycle work: `A` and `B` holding each other
 and both newly requesting `deep_equals` are realizable together, because neither
 is demoted by anything other than the other's absence. A cycle survives exactly
@@ -200,6 +201,12 @@ a comment naming the untyped field *inside* the region, where the reader who
 needs it is already looking. That needs no severity concept at all. It was
 rejected because a fallback is something CI should be able to see, and a comment
 inside a generated region is invisible to `--format json`.
+
+`provider` keeps the base design's barrier rule: the walk stops at the nearest
+declaration of the method *name*, and an incompatible one blocks rather than
+being skipped. For recursion the name is `_gdkit_deep_equals`, so a class whose
+nearest declaration of it is hand-written and wrongly shaped is a barrier, not
+a provider.
 
 `generate.unsupported` gains three new causes: a field type in neither
 catalogue, a field type with no provider for the signature, and a field type
