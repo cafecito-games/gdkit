@@ -1,6 +1,7 @@
 package generate
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -129,9 +130,9 @@ func TestEqualsComposesEvenWithNoLocalFields(t *testing.T) {
 // Emission order is the registry's, not the directive's, so a region's content
 // depends only on the class.
 func TestRegistryOrderIsIndependentOfTheDirective(t *testing.T) {
-	forward := inRegistryOrder([]string{"to_string", "equals"})
-	reverse := inRegistryOrder([]string{"equals", "to_string"})
-	if len(forward) != 2 || len(reverse) != 2 {
+	forward := inRegistryOrder([]string{"to_string", "equals", "deep_equals"})
+	reverse := inRegistryOrder([]string{"deep_equals", "equals", "to_string"})
+	if len(forward) != 3 || len(reverse) != 3 {
 		t.Fatalf("got %d and %d generators", len(forward), len(reverse))
 	}
 	for index := range forward {
@@ -146,10 +147,13 @@ func TestRegistryOrderIsIndependentOfTheDirective(t *testing.T) {
 
 func TestGeneratorNamesAreTheRegisteredOnes(t *testing.T) {
 	names := GeneratorNames()
-	if len(names) != 2 || names[0] != "equals" || names[1] != "to_string" {
-		t.Errorf("GeneratorNames() = %v", names)
+	want := []string{"deep_equals", "equals", "to_string"}
+	if !slices.Equal(names, want) {
+		t.Errorf("GeneratorNames() = %v, want %v", names, want)
 	}
-	if isGeneratorName("deep_equals") {
-		t.Error("deep_equals is not registered in v1 and must not be accepted")
+	// hash is the obvious next member of the family and is not implemented, so
+	// naming it must be an error rather than a silent no-op.
+	if isGeneratorName("hash") {
+		t.Error("hash is not registered and must not be accepted")
 	}
 }

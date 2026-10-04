@@ -9,6 +9,9 @@ var (
 	toStringSignature = Signature{Name: "_to_string", Arity: 0}
 	// equalsSignature is what must exist for other.equals(x) to be callable.
 	equalsSignature = Signature{Name: "equals", Arity: 1}
+	// deepEqualsSignature is the shape the generated code dispatches on at
+	// runtime, so a hand-written method of this shape participates too.
+	deepEqualsSignature = Signature{Name: "deep_equals", Arity: 1}
 )
 
 type pair struct {
@@ -204,6 +207,12 @@ func (c *Capabilities) demote(index *Index, key pair, blockers map[string]bool) 
 		return false
 	}
 	if c.UniverseCause != "" || index.ReachesCycle(key.class) {
+		return true
+	}
+	// A cyclic field-type graph cannot be shown to terminate: comparing two
+	// independently built cyclic graphs never finds an identical pair, so the
+	// identity check that settles every realistic recursive shape never fires.
+	if key.signature == deepEqualsSignature && index.FieldTypeCycle(key.class) {
 		return true
 	}
 	// A class_name this pair must resolve to find its provider is claimed by

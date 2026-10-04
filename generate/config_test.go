@@ -77,10 +77,10 @@ func TestConfigHasNoGodotVersionKey(t *testing.T) {
 
 func TestLoadConfigRejectsAnUnknownGeneratorName(t *testing.T) {
 	root := t.TempDir()
-	writeConfig(t, root, `{"generate":[{"paths":["a/**"],"generators":["deep_equals"]}]}`)
+	writeConfig(t, root, `{"generate":[{"paths":["a/**"],"generators":["hash"]}]}`)
 	_, err := LoadConfig(root, "")
-	if err == nil || !strings.Contains(err.Error(), "deep_equals") {
-		t.Errorf("err = %v, want one naming deep_equals", err)
+	if err == nil || !strings.Contains(err.Error(), "hash") {
+		t.Errorf("err = %v, want one naming hash", err)
 	}
 }
 

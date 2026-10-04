@@ -35,6 +35,7 @@ type Emitter interface {
 var registry = []Emitter{
 	toStringGenerator{},
 	equalsGenerator{},
+	deepEqualsGenerator{},
 }
 
 // emitterByName returns the registered emitter for a generator name, or nil.

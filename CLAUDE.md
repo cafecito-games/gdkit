@@ -76,19 +76,30 @@ the default branch.
   `.import` file — so a sidecar is not the only way a `uid://` load resolves; it
   loses malformed and duplicated sidecars, while `Snapshot.Sidecars` keeps every
   `.uid` file as read, which is what `uid` reports on.
-- `generate/` — the code generator behind `gdkit gen`: writes `_to_string` and
-  `equals` into a class that opted in, inside a sentinel-delimited region it
-  owns. Unlike `lint` it is a whole-project analysis, because `equals` composes
+- `generate/` — the code generator behind `gdkit gen`: writes `_to_string`,
+  `equals`, and `deep_equals` into a class that opted in, inside a
+  sentinel-delimited region it owns. Unlike `lint` it is a whole-project analysis, because `equals` composes
   with an ancestor's implementation and is refused when a descendant would
   inherit an unsound one, so both answers need the entire inheritance graph.
   `Check` is pure and `Apply` is the only writer. `generate.stale`,
   `generate.marker`, `generate.conflict`, `generate.unsupported`,
   `generate.orphaned`, and `generate.unsafe` are its public diagnostic names.
-  `deep_equals` is specified but deliberately unimplemented; see
-  `docs/superpowers/specs/2026-10-04-gdscript-deep-equals-design.md`, and note
-  that it is *not* a drop-in third generator — it widens capability resolution
-  to follow field references and adds a builtin type catalogue, a
-  recursion-state helper method, and diagnostic severity.
+  `deep_equals` dispatches at runtime — `x is Object and x.has_method(...)` —
+  rather than resolving each field's type statically. That is deliberate and
+  deletes three mechanisms an earlier design needed: a catalogue of builtin
+  Variant names, capability resolution over field edges, and a severity field
+  for an untyped-field warning. It also uses a field type that has only a
+  hand-written `equals`, which the static design refused. `is Object` precedes
+  `has_method` because `has_method` is declared on `Object`, so calling it on an
+  `int` is a runtime error rather than `false`.
+  Recursion terminates on the realistic shapes through `if self == p_other`,
+  which settles a self-reference and a shared sub-object without recursing. Two
+  independently built cyclic graphs cannot terminate that way, so
+  `Index.FieldTypeCycle` refuses the class rather than the generator threading a
+  visited set through a helper method. `fieldTypeTarget` deliberately does not
+  follow an element type inside `Array[T]`: a container is handed to `==`, which
+  Godot 4 evaluates by value, so the emitted code never recurses into elements
+  and following it would refuse cycles the code cannot reach.
 - `internal/atomicwrite/` — the write-beside-and-rename replacement shared by
   `format` and `generate`, including the re-read before the rename that keeps a
   concurrent edit from being lost.

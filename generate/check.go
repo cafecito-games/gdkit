@@ -384,6 +384,10 @@ func (g *Generator) whyRefused(index *Index, class *Class, signature Signature, 
 	case capabilities.UniverseCause != "":
 		return fmt.Sprintf("%s needs the whole inheritance graph, and it is incomplete: %s",
 			signature.Name, capabilities.UniverseCause)
+	case signature == deepEqualsSignature && index.FieldTypeCycle(class.ID):
+		return fmt.Sprintf(
+			"deep_equals cannot be shown to terminate: this class's field types form a cycle through %s",
+			strings.Join(index.FieldTypeTargets(class.ID), ", "))
 	case ancestryHasFields(index, class.ID):
 		nearest := "its base class"
 		if parent := index.Classes[class.ParentID]; parent != nil {

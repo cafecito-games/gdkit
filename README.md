@@ -19,7 +19,7 @@ parse the same way, so every tool agrees on which files are in scope.
 | [`gdkit lint`](#linting) | Reports 30 naming, structural, design, documentation, and formatting problems |
 | [`gdkit format`](#formatting) | Rewrites GDScript into one canonical style, verifying every rewrite first |
 | [`gdkit uid`](#uid-sidecars) | Creates the `uid://` sidecars Godot would have created |
-| [`gdkit gen`](#code-generation) | Generates `_to_string` and `equals` into the classes that opt in |
+| [`gdkit gen`](#code-generation) | Generates `_to_string`, `equals`, and `deep_equals` into the classes that opt in |
 
 The analyzer uses [`gdparser`](https://github.com/cafecito-games/gdparser) and
 does not search source text with regular expressions. It parses GDScript,
@@ -662,8 +662,8 @@ left without an identity just as it is left unlinted.
 
 ## Code generation
 
-`gdkit gen` writes two boilerplate value-object methods into a class that asks
-for them, inside a region it owns:
+`gdkit gen` writes boilerplate value-object methods into a class that asks for
+them, inside a region it owns:
 
 ```gdscript
 class_name Coordinate
@@ -744,8 +744,50 @@ its `equals` while adding fields of its own. Opting that subclass in clears it.
 
 `equals` compares an object-valued field **by reference**, because that is what
 `==` does to an `Object` in Godot 4. `Array` and `Dictionary` fields compare by
-value, because that is what `==` does to those. Structural comparison of a
-nested value object is planned as a separate `deep_equals` generator.
+value, because that is what `==` does to those. For a class that holds another
+value object, that is usually not the answer you want — use `deep_equals`.
+
+### What `deep_equals` compares
+
+`deep_equals` asks each value what it can do instead of comparing it with `==`:
+
+```gdscript
+if self.position != p_other.position:
+	if self.position == null or p_other.position == null:
+		return false
+	if self.position is Object and self.position.has_method("deep_equals"):
+		if not self.position.deep_equals(p_other.position):
+			return false
+	elif self.position is Object and self.position.has_method("equals"):
+		if not self.position.equals(p_other.position):
+			return false
+	else:
+		return false
+```
+
+So two distinct instances carrying equal values compare equal, which is the
+whole point and what `equals` gets wrong. A field whose type has only a
+hand-written `equals` is used rather than refused.
+
+The method opens with `if self == p_other: return true` — the same instance is
+strictly equal. That is also what makes the realistic recursive shapes
+terminate: a self-reference, and a sub-object both sides share, are settled
+without recursing.
+
+What it will not do is compare two **independently built cyclic** graphs, where
+no pair of instances is ever identical and the recursion never bottoms out. A
+cyclic value object is pathological, so `gen` refuses the class instead:
+
+```
+node.gd:1: Error: deep_equals cannot be shown to terminate: this class's field
+types form a cycle through node.gd (generate.unsupported)
+```
+
+That check reads declared field types, so a field with no type, an explicit
+`Variant`, or a `:=`-inferred type is invisible to it; an untyped field in a
+cycle will still exhaust the stack. A field typed `Array[Branch]` is **not** a
+cycle — a container is handed to `==`, which Godot 4 evaluates by value, so the
+generated code never recurses into its elements.
 
 ### Generation diagnostics
 
@@ -756,7 +798,7 @@ nested value object is planned as a separate `deep_equals` generator.
 | `generate.stale` | a region that is missing or out of date |
 | `generate.marker` | a malformed directive, an unknown generator name, or a second region in one class |
 | `generate.conflict` | a method of the same name already declared with a different signature |
-| `generate.unsupported` | a class `gen` refuses, with the reason |
+| `generate.unsupported` | a class `gen` refuses, with the reason: an unopened ancestor, a field-adding subclass, or a cyclic field-type graph |
 | `generate.orphaned` | a region whose class no longer opts in |
 | `generate.unsafe` | a rewrite that verification refused |
 

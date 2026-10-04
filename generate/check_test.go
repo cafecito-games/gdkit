@@ -148,7 +148,7 @@ func TestARefusalForAnUnopenedAncestorNamesIt(t *testing.T) {
 
 func TestAnUnknownGeneratorNameIsAMarkerDiagnostic(t *testing.T) {
 	report := checkProject(t, DefaultConfig(), map[string]string{
-		"a.gd": "class_name Hex\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar q: int\n",
+		"a.gd": "class_name Hex\nextends RefCounted\n\n# gdkit:generate = hash\nvar q: int\n",
 	})
 	assertDiagnostic(t, report, ruleMarker)
 }
