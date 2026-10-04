@@ -1291,6 +1291,126 @@ func TestIndexResolvesEveryInheritanceForm(t *testing.T) {
 	}
 }
 
+func TestIndexBuildsNestedIdentitiesWithoutLosingSegments(t *testing.T) {
+	index := indexOf(t, map[string]string{
+		"a.gd": "class_name Holder\nextends RefCounted\n\n" +
+			"class A:\n\tclass B:\n\t\tclass C:\n\t\t\tvar q: int\n" +
+			"\nclass D:\n\tclass C:\n\t\tvar r: int\n",
+	})
+	deep := index.Classes["a.gd#A#B#C"]
+	if deep == nil {
+		t.Fatalf("a.gd#A#B#C missing; have %v", sortedKeys(index.Classes))
+	}
+	if len(deep.Fields) != 1 || deep.Fields[0].Name != "q" {
+		t.Errorf("A.B.C fields = %+v, want [q]", deep.Fields)
+	}
+	// A sibling subtree's C must not collide with A.B.C.
+	sibling := index.Classes["a.gd#D#C"]
+	if sibling == nil || len(sibling.Fields) != 1 || sibling.Fields[0].Name != "r" {
+		t.Errorf("D.C = %+v, want its own identity holding [r]", sibling)
+	}
+}
+
+// Calling FindRegion per class gave every inner class in a generated file the
+// file's region, so the orphan scan reported one region once per inner class.
+func TestAnInnerClassDoesNotInheritTheFilesRegion(t *testing.T) {
+	index := indexOf(t, map[string]string{
+		"a.gd": "class_name Holder\nextends RefCounted\n\nclass Nested:\n\tvar q: int\n\n" +
+			"# gdkit:generated:begin\nfunc _to_string() -> String:\n\treturn \"Holder()\"\n# gdkit:generated:end\n",
+	})
+	if !index.TopLevel["a.gd"].HasRegion {
+		t.Error("the top-level class does not own the region")
+	}
+	if index.Classes["a.gd#Nested"].HasRegion {
+		t.Error("an inner class claimed the file's region")
+	}
+}
+
+// A sentinel inside an inner class is not the top-level region; splicing it
+// would rewrite at the wrong indentation.
+func TestARegionInsideAnInnerClassIsRefused(t *testing.T) {
+	index := indexOf(t, map[string]string{
+		"a.gd": "class_name Holder\nextends RefCounted\n\nclass Nested:\n" +
+			"\t# gdkit:generated:begin\n\tfunc f():\n\t\tpass\n\t# gdkit:generated:end\n",
+	})
+	top := index.TopLevel["a.gd"]
+	if top.HasRegion || top.RegionError == nil {
+		t.Errorf("an inner-owned region was taken as the top-level one: %+v", top)
+	}
+}
+
+func TestIndexResolvesTheRemainingInheritanceForms(t *testing.T) {
+	index := indexOf(t, map[string]string{
+		"domain/base.gd":   "class_name Base\nextends RefCounted\n\nvar q: int\n\nclass Inner:\n\tvar r: int\n",
+		"domain/rel.gd":    "class_name Rel\nextends \"base.gd\"\n",
+		"domain/chain.gd":  "class_name Chain\nextends \"res://domain/base.gd\".Inner\n",
+		"domain/dotted.gd": "class_name Dotted\nextends Base.Inner\n",
+	})
+	if got := index.TopLevel["domain/rel.gd"].ParentID; got != "domain/base.gd" {
+		t.Errorf("relative path ParentID = %q, want domain/base.gd", got)
+	}
+	for _, path := range []string{"domain/chain.gd", "domain/dotted.gd"} {
+		if got := index.TopLevel[path].ParentID; got != "domain/base.gd#Inner" {
+			t.Errorf("%s ParentID = %q, want domain/base.gd#Inner", path, got)
+		}
+	}
+}
+
+// An inner class shadows a global of the same name, as Godot's own scope
+// lookup does.
+func TestALexicalInnerClassShadowsAGlobal(t *testing.T) {
+	index := indexOf(t, map[string]string{
+		"base.gd": "class_name Base\nextends RefCounted\n",
+		"a.gd": "class_name Holder\nextends RefCounted\n\n" +
+			"class Base:\n\tvar q: int\n\nclass Child extends Base:\n\tvar r: int\n",
+	})
+	if got := index.Classes["a.gd#Child"].ParentID; got != "a.gd#Base" {
+		t.Errorf("Child.ParentID = %q, want the lexical a.gd#Base", got)
+	}
+}
+
+// A path names a file, not an engine type, so failing to resolve one leaves
+// the graph incomplete and must refuse rather than shrug.
+func TestAnUnresolvableBaseDemotesEquals(t *testing.T) {
+	index := indexOf(t, map[string]string{
+		"a.gd":     "class_name Hex\nextends RefCounted\n\n# gdkit:generate = equals\nvar q: int\n",
+		"stray.gd": "class_name Stray\nextends \"res://gone.gd\"\n",
+	})
+	if !index.TopLevel["stray.gd"].UnresolvedBase {
+		t.Fatal("an unresolvable res:// base was treated as an engine type")
+	}
+	capabilities := Resolve(index, map[string][]string{"a.gd": {"equals"}}, nil)
+	if capabilities.Realizable("a.gd", equalsSignature) {
+		t.Error("equals generated with an incomplete inheritance graph")
+	}
+}
+
+// "extends Control" must stay an engine type, or no real project can generate.
+func TestABareEngineBaseIsNotUnresolved(t *testing.T) {
+	index := indexOf(t, map[string]string{
+		"a.gd": "class_name Panel\nextends Control\n\n# gdkit:generate = equals\nvar q: int\n",
+	})
+	if index.TopLevel["a.gd"].UnresolvedBase {
+		t.Error("an engine base was reported as unresolved")
+	}
+	capabilities := Resolve(index, map[string][]string{"a.gd": {"equals"}}, nil)
+	if !capabilities.Realizable("a.gd", equalsSignature) {
+		t.Error("an engine base blocked generation")
+	}
+}
+
+// A marker inside a function body is not a class-level marker, and must not
+// opt the enclosing class in.
+func TestAMarkerInsideAFunctionDoesNotOptIn(t *testing.T) {
+	report, _ := checkProject(t, DefaultConfig(), map[string]string{
+		"a.gd": "class_name Hex\nextends RefCounted\n\nvar q: int\n\n" +
+			"func f() -> void:\n\t# gdkit:generate = to_string\n\tpass\n",
+	})
+	if report.HasChanges() {
+		t.Error("a marker inside a function opted the class in")
+	}
+}
+
 // An inner class cannot be a generation target, and a marker on one must be
 // reported rather than quietly doing nothing.
 func TestAMarkerOnAnInnerClassIsRefused(t *testing.T) {
@@ -1386,12 +1506,26 @@ type Class struct {
 	ParentID string
 	Fields     []Field
 	Methods    map[string]Method
-	// Region is the generated region's span, zero when there is none.
+	// Body is the span of the class's body in the file. It is what attributes
+	// a directive comment and a region sentinel to the class that owns it: a
+	// marker inside an inner class, or inside a function, must not opt in the
+	// file's top-level class.
+	Body Span
+	// Region is the generated region this class owns, zero when it owns none.
+	// Only a top-level class can own one in v1. An earlier draft called
+	// FindRegion for every class, which gave every inner class in a generated
+	// file HasRegion=true and made the orphan scan report the file's single
+	// region once per inner class.
 	Region Span
-	// HasRegion reports a generated region in the file.
+	// HasRegion reports a generated region owned by this class.
 	HasRegion bool
 	// RegionError is the error FindRegion returned, if any.
 	RegionError error
+	// UnresolvedBase reports an extends target that should have named a
+	// project file but did not. It makes the inheritance graph incomplete, so
+	// it demotes every inheritance-sensitive pair in the universe — this class
+	// could be an unseen field-adding descendant of any requested one.
+	UnresolvedBase bool
 	Line        int
 	Column      int
 }
@@ -1436,11 +1570,20 @@ func BuildIndex(snapshot *project.Snapshot) *Index {
 			index.ParseFailures = append(index.ParseFailures, path)
 			continue
 		}
-		top := buildClass(path, path, false, script, script.File.Statements)
+		region, found, regionErr := FindRegion(script.Source)
+		whole := Span{Start: 0, End: len(script.Source)}
+		top := buildClass(path, path, false, script, script.File.Statements, whole, region, found, regionErr)
 		index.Classes[top.ID] = top
 		index.TopLevel[path] = top
-		for _, inner := range buildInnerClasses(path, script, script.File.Statements) {
+		for _, inner := range buildInnerClasses(path, path, script, script.File.Statements, region, found, regionErr) {
 			index.Classes[inner.ID] = inner
+			// A sentinel inside an inner class body is not the top-level
+			// region. Rewriting it would splice at the wrong indentation, so
+			// the top-level class disowns the region and the file is refused.
+			if found && inner.Body.Start <= region.Start && region.End <= inner.Body.End {
+				top.Region, top.HasRegion = Span{}, false
+				top.RegionError = fmt.Errorf("a generated region sits inside the inner class %q", inner.Name)
+			}
 		}
 	}
 	for _, path := range sortedKeys(index.Classes) {
@@ -1471,18 +1614,25 @@ func BuildIndex(snapshot *project.Snapshot) *Index {
 }
 
 // buildClass records one class from the statements of its body.
-func buildClass(id, path string, inner bool, script *project.Script, statements []ast.Statement) *Class {
+//
+// region is the file's region span and is passed in rather than recomputed,
+// and it is attributed to this class only when the class owns it — which in v1
+// means only a top-level class. Calling FindRegion per class would hand every
+// inner class in a generated file the same region.
+func buildClass(id, path string, inner bool, script *project.Script, statements []ast.Statement, body Span, region Span, found bool, regionErr error) *Class {
 	class := &Class{
 		ID:      id,
 		Path:    path,
 		Inner:   inner,
 		Name:    baseName(path),
 		Methods: map[string]Method{},
+		Body:    body,
 		Line:    1,
 		Column:  1,
 	}
-	region, found, err := FindRegion(script.Source)
-	class.Region, class.HasRegion, class.RegionError = region, found, err
+	if !inner {
+		class.Region, class.HasRegion, class.RegionError = region, found, regionErr
+	}
 	for _, statement := range statements {
 		switch node := statement.(type) {
 		case *ast.ClassNameDeclaration:
@@ -1504,68 +1654,160 @@ func buildClass(id, path string, inner bool, script *project.Script, statements 
 }
 
 // buildInnerClasses records every class declared inside statements,
-// recursively. Their identities are path + "#" + name, nested names joined by
-// further "#", so an inner class is addressable without colliding with the
-// file's top-level class.
-func buildInnerClasses(path string, script *project.Script, statements []ast.Statement) []*Class {
-	found := []*Class{}
+// recursively. An identity is its enclosing class's ID plus "#" plus its name,
+// so Outer.Inner.Deep is "path#Outer#Inner#Deep".
+//
+// The enclosing ID is passed down rather than patched onto the returned
+// classes afterwards. An earlier draft rewrote each returned ID as
+// parentID + "#" + nested.Name, which dropped every middle segment: A.B.C
+// became path#A#C, and two sibling subtrees holding a C would then collide on
+// one ID.
+func buildInnerClasses(enclosingID, path string, script *project.Script, statements []ast.Statement, region Span, found bool, regionErr error) []*Class {
+	classes := []*Class{}
 	for _, statement := range statements {
 		declaration, ok := statement.(*ast.ClassDeclaration)
 		if !ok {
 			continue
 		}
-		id := path + "#" + declaration.Name
-		class := buildClass(id, path, true, script, declaration.Body)
+		id := enclosingID + "#" + declaration.Name
+		span := declaration.Span()
+		body := Span{Start: span.Start.Offset, End: span.End.Offset}
+		class := buildClass(id, path, true, script, declaration.Body, body, region, found, regionErr)
 		class.Name = declaration.Name
 		class.Extends = declaration.Extends
-		class.Line = lineAt(script, declaration.Span().Start.Offset)
-		found = append(found, class)
-		for _, nested := range buildInnerClasses(path, script, declaration.Body) {
-			nested.ID = id + "#" + nested.Name
-			found = append(found, nested)
-		}
+		class.Line = lineAt(script, span.Start.Offset)
+		classes = append(classes, class)
+		classes = append(classes, buildInnerClasses(id, path, script, declaration.Body, region, found, regionErr)...)
 	}
-	return found
+	return classes
 }
 
 // resolveExtends resolves a class's extends target to another indexed class.
 //
-// Every form a project script can use has to resolve, not just a class_name.
-// A subclass written "extends \"res://base.gd\"" would otherwise look
+// Every form a project script can use has to resolve, not just a class_name. A
+// subclass written "extends \"res://base.gd\"" would otherwise look
 // parentless, which silently skips the super composition and both refusal
-// rules — the subclass would compare only its own fields and nothing would say
-// so. uid:// goes through Snapshot.UIDs, which already resolves every place
-// Godot declares an identifier.
+// rules — it would compare only its own fields and nothing would say so.
+//
+// The target is a base followed by an arbitrary member chain, so it is parsed
+// structurally rather than with a single Cut:
+//
+//	extends Base                       a global class_name
+//	extends Outer.Inner.Deep           a chain of inner classes
+//	extends "res://domain/base.gd"     an absolute project path
+//	extends "base.gd"                  a path relative to this script
+//	extends "uid://b2u1q..."           an identifier, via Snapshot.UIDs
+//	extends "res://base.gd".Inner      a path plus a chain
+//	extends Sibling                    an inner class in lexical scope
+//
+// The second return value is "resolved". A target that *should* name a project
+// file but does not — a path, an identifier, or a chain whose head resolved —
+// sets class.UnresolvedBase, which is a hard condition rather than a shrug: a
+// path names a file, not an engine type, so failing to resolve one means the
+// graph is incomplete. A bare identifier that is not a project class is taken
+// to be an engine type, which is the only reading that lets "extends Node"
+// work; a typo there is a project Godot itself will not load.
 func (i *Index) resolveExtends(snapshot *project.Snapshot, class *Class) (*Class, bool) {
-	target := strings.Trim(class.Extends, `"'`)
-	if target == "" {
+	base, chain := splitExtends(class.Extends)
+	if base == "" {
 		return nil, false
 	}
+	var head *Class
 	switch {
-	case strings.HasPrefix(target, "res://"):
-		if parent, ok := i.TopLevel[strings.TrimPrefix(target, "res://")]; ok {
-			return parent, true
-		}
-	case strings.HasPrefix(target, "uid://"):
-		if path, ok := snapshot.UIDs[target]; ok {
-			if parent, ok := i.TopLevel[path]; ok {
-				return parent, true
-			}
-		}
-	default:
-		// A dotted target names an inner class of a global class, as in
-		// "extends Outer.Inner".
-		if outer, inner, found := strings.Cut(target, "."); found {
-			if enclosing, ok := i.ByClassName[outer]; ok {
-				if parent, ok := i.Classes[enclosing.Path+"#"+inner]; ok {
-					return parent, true
-				}
-			}
+	case strings.HasPrefix(base, "uid://"):
+		path, ok := snapshot.UIDs[base]
+		if !ok {
+			class.UnresolvedBase = true
 			return nil, false
 		}
-		if parent, ok := i.ByClassName[target]; ok {
-			return parent, true
+		head = i.TopLevel[path]
+	case strings.HasPrefix(base, "res://"):
+		head = i.TopLevel[strings.TrimPrefix(base, "res://")]
+	case strings.HasSuffix(base, ".gd"):
+		// A relative path resolves against the declaring script's directory,
+		// as Godot's analyzer does.
+		head = i.TopLevel[joinRelative(class.Path, base)]
+	default:
+		// A bare identifier is looked up in lexical scope first — an inner
+		// class of an enclosing class shadows a global of the same name — and
+		// then globally.
+		if lexical, ok := i.lexicalLookup(class, base); ok {
+			head = lexical
+		} else if global, ok := i.ByClassName[base]; ok {
+			head = global
+		} else {
+			// Not a project class: an engine type, which is not a parent for
+			// our purposes.
+			return nil, false
 		}
+	}
+	if head == nil {
+		class.UnresolvedBase = true
+		return nil, false
+	}
+	for _, segment := range chain {
+		next, ok := i.Classes[head.ID+"#"+segment]
+		if !ok {
+			class.UnresolvedBase = true
+			return nil, false
+		}
+		head = next
+	}
+	return head, true
+}
+
+// splitExtends separates the base from its member chain. A quoted path may be
+// followed by a chain, as in `extends "res://base.gd".Inner`.
+func splitExtends(target string) (string, []string) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", nil
+	}
+	if target[0] == '"' || target[0] == '\'' {
+		quote := target[0]
+		if end := strings.IndexByte(target[1:], quote); end >= 0 {
+			base := target[1 : 1+end]
+			rest := strings.TrimPrefix(target[2+end:], ".")
+			return base, splitChain(rest)
+		}
+		return strings.Trim(target, `"'`), nil
+	}
+	segments := splitChain(target)
+	if len(segments) == 0 {
+		return "", nil
+	}
+	return segments[0], segments[1:]
+}
+
+func splitChain(rest string) []string {
+	if rest = strings.TrimSpace(rest); rest == "" {
+		return nil
+	}
+	return strings.Split(rest, ".")
+}
+
+// joinRelative resolves a path relative to the directory of from.
+func joinRelative(from, relative string) string {
+	directory := path.Dir(from)
+	if directory == "." {
+		return path.Clean(relative)
+	}
+	return path.Clean(directory + "/" + relative)
+}
+
+// lexicalLookup finds name as an inner class of class or of any class
+// enclosing it, innermost first, which is the scope Godot searches before the
+// global class list.
+func (i *Index) lexicalLookup(class *Class, name string) (*Class, bool) {
+	for scope := class.ID; scope != ""; {
+		if found, ok := i.Classes[scope+"#"+name]; ok && found.ID != class.ID {
+			return found, true
+		}
+		cut := strings.LastIndexByte(scope, '#')
+		if cut < 0 {
+			break
+		}
+		scope = scope[:cut]
 	}
 	return nil, false
 }
@@ -1996,13 +2238,25 @@ func (c *Capabilities) Provider(index *Index, path string, signature Signature) 
 // path carrying a local blocking diagnostic, which includes a verification
 // failure discovered after emission — Check re-enters Resolve with those.
 func Resolve(index *Index, requested map[string][]string, blockers map[string]bool) *Capabilities {
-	// Any unparseable script in the universe demotes every
-	// inheritance-sensitive pair. Inheritance is a reverse dependency, so an
-	// unreadable file may be a field-adding subclass that no refusal rule can
-	// see. Reporting the parse failure is not enough on its own: gen write
-	// applies candidates despite unrelated diagnostics, so without demoting
-	// here it would write the unsound method anyway.
+	// Two conditions make the inheritance graph untrustworthy as a whole, and
+	// both demote every inheritance-sensitive pair rather than one class's.
+	// Inheritance is a reverse dependency: the class that would invalidate a
+	// generated equals is a descendant, and nothing in the base names it, so
+	// an incomplete graph cannot be narrowed to the pairs it affects.
+	//
+	// Reporting them as diagnostics is not enough, because gen write applies
+	// candidates despite unrelated diagnostics and would write the unsound
+	// method anyway.
 	universeUnreadable := len(index.ParseFailures) > 0
+	for _, class := range index.Classes {
+		// An extends target that should have named a project file but did
+		// not. A bare identifier that is not a project class is an engine
+		// type and does not set this.
+		if class.UnresolvedBase {
+			universeUnreadable = true
+			break
+		}
+	}
 	capabilities := &Capabilities{
 		realizable:           map[pair]bool{},
 		handwritten:          map[pair]bool{},
@@ -3123,8 +3377,11 @@ func (g *Generator) localBlockers(index *Index, requested map[string][]string, m
 		}
 	}
 	for path, names := range requested {
+		// Only a top-level class can be requested: resolveOptIn refuses an
+		// inner-class marker outright rather than adding it here, so an inner
+		// class never reaches this map.
 		class := index.TopLevel[path]
-		if class == nil || class.Inner || class.RegionError != nil {
+		if class == nil || class.RegionError != nil {
 			blockers[path] = true
 			continue
 		}
@@ -3179,7 +3436,38 @@ func (g *Generator) Check(snapshot *project.Snapshot) Plan {
 
 Write `resolveOptIn` and `buildPlan` in the same file:
 
-- `resolveOptIn` walks `snapshot.Selected`, reads each script's lines for `MatchGenerate`, `MatchIgnore`, and reports a `generate.marker` for a `MatchGenerate` error or a `RegionError`. Config supplies the list when no directive is present. `MatchIgnore` wins over both. Only a standalone directive counts, via `standsAlone`.
+- `resolveOptIn` walks `snapshot.Selected` and, for each standalone directive
+  line, **attributes it to the innermost class whose `Body` span contains it**
+  before doing anything else. This is not optional bookkeeping: a line scan
+  that returns path-keyed requests lets a marker written inside an inner class,
+  or even inside a function body, opt in the file's top-level class.
+
+  ```go
+  // ownerOf returns the innermost class whose body contains offset. The
+  // innermost wins, which is why candidates are compared by span width.
+  func (i *Index) ownerOf(path string, offset int) *Class {
+  	owner := i.TopLevel[path]
+  	for _, class := range i.Classes {
+  		if class.Path != path || !class.Inner {
+  			continue
+  		}
+  		if class.Body.Start > offset || offset >= class.Body.End {
+  			continue
+  		}
+  		if owner == nil || class.Body.End-class.Body.Start < owner.Body.End-owner.Body.Start {
+  			owner = class
+  		}
+  	}
+  	return owner
+  }
+  ```
+
+  A directive owned by an inner class yields `generate.unsupported` naming that
+  class, and is **not** added to the top-level class's request. A directive
+  owned by the top-level class behaves as before: `MatchGenerate` populates the
+  request, a `MatchGenerate` error or a `RegionError` is a `generate.marker`,
+  config supplies the list when no directive is present, and `MatchIgnore`
+  beats both.
 - `buildPlan` walks requested paths in sorted order, and for each: skips and diagnoses an inner class or a class whose `Realizable` is false (with the reason — `ruleUnsupported`), diagnoses `ruleConflict` for an incompatible same-name method, skips a signature a compatible hand-written method already satisfies, emits each generator in `inRegistryOrder`, wraps the bodies in the sentinels joined by `blank_lines.top_level` newlines, canonicalises with `canonicaliseRegion`, splices with `Splice`, verifies, and appends the candidate. It also appends `ruleSourceParse` diagnostics for every `index.ParseFailures` entry when any requested generator has `NeedsInheritanceGraph`, `ruleClassNameDuplicate` for a duplicate a requested class needs, and fills `Orphans` from every class in the universe with a region and no request.
 
 ```go
