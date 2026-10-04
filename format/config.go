@@ -203,3 +203,9 @@ func (c Config) options() (gdformat.Options, error) {
 	}
 	return options, nil
 }
+
+// Options translates the configuration into the formatter's own options, for a
+// tool that must produce text in the project's style. generate canonicalises
+// its generated region with these, so that gen write introduces no new format
+// check finding.
+func (c Config) Options() (gdformat.Options, error) { return c.options() }

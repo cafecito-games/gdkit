@@ -1,12 +1,10 @@
 package format
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 
+	"github.com/cafecito-games/gdkit/internal/atomicwrite"
 	"github.com/cafecito-games/gdkit/project"
 )
 
@@ -34,46 +32,12 @@ func Apply(snapshot *project.Snapshot, report Report) ([]string, error) {
 }
 
 // errChangedOnDisk reports a target that was edited after the snapshot read it.
-var errChangedOnDisk = errors.New("file changed on disk since it was read")
+// It is kept as an alias so this package's tests and callers keep their name
+// for the condition.
+var errChangedOnDisk = atomicwrite.ErrChangedOnDisk
 
-// replaceFile swaps target's contents for contents, keeping its permission
-// bits. The new contents are written beside the target and renamed over it, so
-// an interrupted run leaves either the old file or the new one, never a
-// truncated script. The target is read again just before the rename and must
-// still hold expected, the source contents were computed from, so an edit made
-// while the run was in progress is not lost.
-func replaceFile(target string, expected, contents []byte) (err error) {
-	info, err := os.Stat(target)
-	if err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(target), ".gdkit-format-*")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = temporary.Close()
-			_ = os.Remove(temporary.Name())
-		}
-	}()
-	if _, err = temporary.Write(contents); err != nil {
-		return err
-	}
-	if err = temporary.Chmod(info.Mode().Perm()); err != nil {
-		return err
-	}
-	if err = temporary.Close(); err != nil {
-		return err
-	}
-	current, err := os.ReadFile(target)
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(current, expected) {
-		err = errChangedOnDisk
-		return err
-	}
-	err = os.Rename(temporary.Name(), target)
-	return err
+// replaceFile swaps target's contents for contents atomically, keeping its
+// permission bits and refusing a target that changed under the run.
+func replaceFile(target string, expected, contents []byte) error {
+	return atomicwrite.Replace(target, ".gdkit-format-*", expected, contents)
 }

@@ -26,9 +26,29 @@ import (
 // paths a tool skips when it sets Config.HonorIgnoreFile.
 const IgnoreFileName = ".gdkitignore"
 
+// ManifestFileName is Godot's project manifest, read for its [autoload]
+// section. It is the only file this package reads that is not a source or a
+// resource.
+const ManifestFileName = "project.godot"
+
 // maxResourceLine caps a line read from a .tscn, .tres, or .import file. A
 // header or uid= line is short; a longer line holds something else.
 const maxResourceLine = 64 * 1024
+
+// Selection narrows which parsed scripts a tool acts on. Scripts outside it
+// are still walked, parsed, and present in the snapshot.
+//
+// It exists for a tool that must index more than it writes. generate resolves
+// a class's equals against the whole inheritance graph, so a file hidden by
+// .gdkitignore has to keep its class_name and its extends edge in the index
+// even though generate will never rewrite it. Putting those filters on Config
+// instead would drop the file from the snapshot, and absence from the index is
+// indistinguishable from a type generate knows nothing about.
+type Selection struct {
+	SourceRoots     []string
+	Exclude         []string
+	HonorIgnoreFile bool
+}
 
 // Config selects the files that belong to a project.
 type Config struct {
@@ -39,6 +59,10 @@ type Config struct {
 	// Exclude still applies: a path is skipped when either one covers it, so a
 	// negated ignore pattern cannot bring back an excluded path.
 	HonorIgnoreFile bool
+	// Selection, when non-nil, narrows what the caller acts on without
+	// narrowing the universe that is walked and parsed. A nil Selection, which
+	// every tool but generate passes, selects everything discovered.
+	Selection *Selection
 }
 
 // Script is one discovered GDScript file.
@@ -125,6 +149,20 @@ type Snapshot struct {
 	// Sidecars is every discovered .uid file, sorted by path. It covers
 	// sidecars beside files this package does not parse, such as shaders.
 	Sidecars []Sidecar
+	// Selected is the subset of Paths that Config.Selection admits, sorted. It
+	// is Paths itself when Selection is nil.
+	Selected []string
+	// Autoloads maps each script-backed autoload name declared in
+	// project.godot to the project-relative path it names.
+	//
+	// Godot resolves an autoload identifier as a project global while
+	// analysing a base class, so "extends SomeAutoload" is a real inheritance
+	// edge. A tool that reasons about inheritance needs it: treating the name
+	// as an engine type would drop the edge, and a subclass reached that way
+	// would be invisible to any analysis of descendants. An autoload pointing
+	// at a scene rather than a script is not recorded, since it declares no
+	// class.
+	Autoloads map[string]string
 }
 
 // Load walks the configured source roots and parses every .gd file it finds.
@@ -273,7 +311,116 @@ func Load(config Config) (*Snapshot, error) {
 		}
 		scripts[name] = script
 	}
-	return &Snapshot{Root: root, Paths: paths, Scripts: scripts, UIDs: uids, Sidecars: sidecars}, nil
+	selected, err := selectPaths(root, config.Selection, paths)
+	if err != nil {
+		return nil, err
+	}
+	autoloads, err := loadAutoloads(root)
+	if err != nil {
+		return nil, err
+	}
+	return &Snapshot{
+		Root:      root,
+		Paths:     paths,
+		Scripts:   scripts,
+		UIDs:      uids,
+		Sidecars:  sidecars,
+		Selected:  selected,
+		Autoloads: autoloads,
+	}, nil
+}
+
+// loadAutoloads reads the [autoload] section of project.godot. A project
+// without a manifest has none, which is not an error: a tool may be pointed at
+// a directory of scripts.
+//
+// An entry's value is a path optionally prefixed with "*", which marks the
+// singleton as enabled; the prefix is not part of the path. Only a .gd target
+// is recorded, because only a script declares a class that something could
+// extend.
+func loadAutoloads(root string) (map[string]string, error) {
+	file, err := os.Open(filepath.Join(root, ManifestFileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", ManifestFileName, err)
+	}
+	defer file.Close()
+	autoloads := map[string]string{}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 4096), maxResourceLine)
+	inSection := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "[") {
+			inSection = line == "[autoload]"
+			continue
+		}
+		if !inSection || line == "" || strings.HasPrefix(line, ";") {
+			continue
+		}
+		name, value, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		target := strings.TrimPrefix(strings.Trim(strings.TrimSpace(value), `"`), "*")
+		if name == "" || !strings.HasPrefix(target, "res://") || !strings.HasSuffix(target, ".gd") {
+			continue
+		}
+		autoloads[name] = strings.TrimPrefix(target, "res://")
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read %s: %w", ManifestFileName, err)
+	}
+	return autoloads, nil
+}
+
+// selectPaths returns the subset of paths that selection admits, sorted. A nil
+// selection admits everything, which is what every tool that does not need to
+// index more than it acts on passes.
+func selectPaths(root string, selection *Selection, paths []string) ([]string, error) {
+	if selection == nil {
+		return paths, nil
+	}
+	var ignored *ignore.Matcher
+	if selection.HonorIgnoreFile {
+		matcher, err := loadIgnoreFile(root)
+		if err != nil {
+			return nil, err
+		}
+		ignored = matcher
+	}
+	selected := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if !underAnyRoot(path, selection.SourceRoots) {
+			continue
+		}
+		if glob.MatchAny(selection.Exclude, path) {
+			continue
+		}
+		if ignored.Ignored(path, false) {
+			continue
+		}
+		selected = append(selected, path)
+	}
+	return selected, nil
+}
+
+// underAnyRoot reports whether path sits under one of roots. No roots, or a
+// root of "." , admits everything, matching how Load defaults SourceRoots.
+func underAnyRoot(path string, roots []string) bool {
+	if len(roots) == 0 {
+		return true
+	}
+	for _, root := range roots {
+		root = strings.TrimSuffix(filepath.ToSlash(root), "/")
+		if root == "" || root == "." || path == root || strings.HasPrefix(path, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // loadIgnoreFile reads the ignore file at the project root. A project without

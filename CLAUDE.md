@@ -38,7 +38,7 @@ the default branch.
 
 ## Architecture
 
-`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Twelve packages:
+`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Fifteen packages:
 
 - `architecture/` — the dependency analyzer: layer and feature boundaries, cycles,
   and engine purity (the substance of `gdkit arch`).
@@ -65,11 +65,44 @@ the default branch.
   disk, so every tool agrees on scope and parses once. `Config.HonorIgnoreFile`
   is how lint, format, and uid share the root `.gdkitignore`; `architecture`
   leaves it off, because hiding a file would drop its `class_name` from the
-  index. `Snapshot.UIDs` resolves an identifier to one path and covers every
+  index. `Config.Selection` is the third option, for a tool that must index
+  more than it writes: the universe is walked and parsed unfiltered while
+  `Snapshot.Selected` names the subset the caller acts on. `generate` uses it;
+  the other four pass `Selection: nil`, which selects everything.
+  `Snapshot.Autoloads` holds the manifest's `[autoload]` table, because Godot
+  resolves an autoload identifier as a project global while analysing a base
+  class, so `extends SomeAutoload` is a real inheritance edge. `Snapshot.UIDs` resolves an identifier to one path and covers every
   place Godot declares one — a `.uid` sidecar, a `.tscn` or `.tres` header, or a
   `.import` file — so a sidecar is not the only way a `uid://` load resolves; it
   loses malformed and duplicated sidecars, while `Snapshot.Sidecars` keeps every
   `.uid` file as read, which is what `uid` reports on.
+- `generate/` — the code generator behind `gdkit gen`: writes `_to_string`,
+  `equals`, and `deep_equals` into a class that opted in, inside a
+  sentinel-delimited region it owns. Unlike `lint` it is a whole-project analysis, because `equals` composes
+  with an ancestor's implementation and is refused when a descendant would
+  inherit an unsound one, so both answers need the entire inheritance graph.
+  `Check` is pure and `Apply` is the only writer. `generate.stale`,
+  `generate.marker`, `generate.conflict`, `generate.unsupported`,
+  `generate.orphaned`, and `generate.unsafe` are its public diagnostic names.
+  `deep_equals` dispatches at runtime — `x is Object and x.has_method(...)` —
+  rather than resolving each field's type statically. That is deliberate and
+  deletes three mechanisms an earlier design needed: a catalogue of builtin
+  Variant names, capability resolution over field edges, and a severity field
+  for an untyped-field warning. It also uses a field type that has only a
+  hand-written `equals`, which the static design refused. `is Object` precedes
+  `has_method` because `has_method` is declared on `Object`, so calling it on an
+  `int` is a runtime error rather than `false`.
+  Recursion terminates on the realistic shapes through `if self == p_other`,
+  which settles a self-reference and a shared sub-object without recursing. Two
+  independently built cyclic graphs cannot terminate that way, so
+  `Index.FieldTypeCycle` refuses the class rather than the generator threading a
+  visited set through a helper method. `fieldTypeTarget` deliberately does not
+  follow an element type inside `Array[T]`: a container is handed to `==`, which
+  Godot 4 evaluates by value, so the emitted code never recurses into elements
+  and following it would refuse cycles the code cannot reach.
+- `internal/atomicwrite/` — the write-beside-and-rename replacement shared by
+  `format` and `generate`, including the re-read before the rename that keeps a
+  concurrent edit from being lost.
 - `internal/glob/` — the shared glob engine.
 - `internal/versiongate/` — the `major.minor.patch` comparison behind
   `--minimum-version` and `minimum_gdkit_version`. Comparison is on the numeric
@@ -219,6 +252,29 @@ default rule sitting at the same position.
   captures a segment. It is not `path/filepath.Match`.
 - `Config.Validate()` runs from both `LoadConfig` and `NewAnalyzer`, and compiles
   every pattern in the config so bad globs fail as configuration errors, not silently.
+
+### Capability resolution in `generate`
+
+Two things an earlier design got wrong, recorded so they are not reintroduced.
+
+- **`provider` stops at the nearest declaration of a method *name*, not the
+  nearest compatible one.** GDScript's runtime lookup does not walk past an
+  incompatible override, so neither may the analysis: given `A` with a good
+  `equals`, `B extends A` declaring `equals(a, b)`, and `C extends B` emitting
+  `super.equals(p_other)`, the call reaches `B`'s and fails.
+  Nearest-compatible-ancestor would have reported `A` and emitted it anyway.
+- **Resolution must iterate.** It is a monotone demotion to stability, not a
+  parents-first walk, because the descendant refusal rule points *up* the
+  hierarchy: demoting `B` can move `provider(C)` from `B` to `A` and force `A`
+  down after a single pass had already settled it. Seeding is optimistic so a
+  first adoption across a hierarchy can start at all — a newly requested parent
+  declares nothing yet and is a *virtual* provider.
+
+`canonicalise` formats the region with its sentinels rather than wrapping them
+around formatted bodies. Both sentinels are comment runs, and gdparser's
+`blankLineGaps` attributes a `top_level` gap to a comment run, so the canonical
+form carries blank lines before the *end* sentinel too. Predicting that and
+wrapping afterwards produced a region the full-file format oracle rejected.
 
 ### Diagnostic rules and exit codes
 

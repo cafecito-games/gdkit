@@ -30,6 +30,9 @@ Usage:
   gdkit format init  [flags] [project-root]
   gdkit uid check    [flags] [project-root]
   gdkit uid write    [flags] [project-root]
+  gdkit gen check    [flags] [project-root]
+  gdkit gen write    [flags] [project-root]
+  gdkit gen init     [flags] [project-root]
   gdkit version      [flags]
 
 Commands:
@@ -42,6 +45,9 @@ Commands:
   format init    write the default .gdkit/format.json configuration
   uid check      report scripts whose Godot uid:// sidecar is missing or unusable
   uid write      create the missing .uid sidecars Godot would have written
+  gen check      report classes whose generated methods are missing or stale
+  gen write      write the generated methods into the classes that opted in
+  gen init       write the default .gdkit/generate.json configuration
   version        print version and source revision information
 `
 
@@ -67,6 +73,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runFormat(args[1:], stdout, stderr)
 	case "uid":
 		return runUID(args[1:], stdout, stderr)
+	case "gen":
+		return runGen(args[1:], stdout, stderr)
 	case "version":
 		return runVersion(args[1:], stdout, stderr)
 	default:
