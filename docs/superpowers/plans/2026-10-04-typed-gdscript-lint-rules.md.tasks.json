@@ -46,7 +46,7 @@
     {
       "id": 5,
       "subject": "Task 6: require-signal-argument-type, require-typed-loop-variable",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         4
       ],

@@ -1776,7 +1776,7 @@ engine there is no fix to recommend and it says nothing."
 - Modify: `lint/rules_typing_test.go`
 
 **Acceptance Criteria:**
-- [ ] One test asserts that a 4.0 project gets the 4.0 rules and neither gated rule
+- [ ] One test asserts that a 4.0 project gets the 4.0 rules and not the 4.2-gated rule
 - [ ] The same source at 4.7 produces every rule, proving the silence was the gate and not a dead traversal
 
 **Verify:** `go test -race ./lint/ -run TypingVersionGate` → PASS
@@ -1819,6 +1819,7 @@ func tally(start) -> int:
 			want: []string{
 				"require-argument-type",
 				"require-return-type",
+				"require-signal-argument-type",
 				"require-typed-collection",
 				"require-variable-type",
 			},
@@ -1857,7 +1858,7 @@ func tally(start) -> int:
 
 Add `"reflect"` and `"sort"` to the file's imports.
 
-Every rule has a site in that source: `reset` is unannotated (`require-return-type`), `tally`'s `start` is untyped (`require-argument-type`), `total` is untyped (`require-variable-type`), `items` and `lookup` are bare collections (`require-typed-collection`), `damaged`'s parameter is untyped (`require-signal-argument-type`), and the `for` header is untyped (`require-typed-loop-variable`). The two lists may therefore differ only by the two gated rules.
+Every rule has a site in that source: `reset` is unannotated (`require-return-type`), `tally`'s `start` is untyped (`require-argument-type`), `total` is untyped (`require-variable-type`), `items` and `lookup` are bare collections (`require-typed-collection`), `damaged`'s parameter is untyped (`require-signal-argument-type`), and the `for` header is untyped (`require-typed-loop-variable`). A typed signal parameter is Godot 4.0 syntax, so `require-signal-argument-type` fires at both versions; `require-typed-loop-variable` is the only whole-rule gate, so the two lists differ by exactly that one rule.
 
 - [ ] **Step 2: Run it**
 
@@ -1865,7 +1866,7 @@ Every rule has a site in that source: `reset` is unannotated (`require-return-ty
 go test -race ./lint/ -run TypingVersionGate
 ```
 
-Expected: PASS. If it fails, the failure names exactly which rule set each version produced. The property the test exists for is that the 4.0 list is the 4.7 list minus `require-signal-argument-type` and `require-typed-loop-variable`; if anything else differs, that is a bug in a rule, not in the test.
+Expected: PASS. If it fails, the failure names exactly which rule set each version produced. The property the test exists for is that the 4.0 list is the 4.7 list minus `require-typed-loop-variable`; if anything else differs, that is a bug in a rule, not in the test.
 
 - [ ] **Step 3: Commit**
 
@@ -1875,8 +1876,8 @@ git commit -m "Pin both sides of the typing rules' version gate
 
 A gated rule reports nothing, which is also what a rule with a broken
 traversal does. Asserting the same source on the oldest and the newest
-engine tells them apart: the two lists may differ only by the two gated
-rules."
+engine tells them apart: the two lists may differ only by the rule the
+older engine has no syntax for."
 ```
 
 ---
