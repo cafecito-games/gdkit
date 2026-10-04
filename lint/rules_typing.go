@@ -15,6 +15,9 @@ import (
 const (
 	ruleRequireReturnType   = "require-return-type"
 	ruleRequireArgumentType = "require-argument-type"
+
+	ruleRequireVariableType    = "require-variable-type"
+	ruleRequireTypedCollection = "require-typed-collection"
 )
 
 // typingRuleNames is every rule backed by the typing collector. Registering
@@ -23,6 +26,8 @@ const (
 var typingRuleNames = []string{
 	ruleRequireReturnType,
 	ruleRequireArgumentType,
+	ruleRequireVariableType,
+	ruleRequireTypedCollection,
 }
 
 func init() {
@@ -34,6 +39,10 @@ func init() {
 // The Godot version that first accepts each typed form. They are values rather
 // than strings so a site compares without parsing anything per file.
 var godot40 = versiongate.Version{Major: 4}
+
+// godot44 is when Dictionary[K, V] arrived; a bare Dictionary has no fix before
+// it, while Array[T] has been available since 4.0.
+var godot44 = versiongate.Version{Major: 4, Minor: 4}
 
 // typingRule reports a declaration that carries no static type annotation.
 // Static typing is Godot's documented correctness and performance win, and an
@@ -150,7 +159,16 @@ func (c *typingCollector) classBody(statements []ast.Statement) {
 // is not inside a function and no exempt pattern can name it. An accessor body
 // carries the property's name, which is what a reader would write a pattern
 // for.
+//
+// It walks the initializer rather than the declaration, and that is what keeps
+// a class-scope variable from being recorded twice: ast.Inspect both visits a
+// VariableDeclaration and descends into it, so inspecting the declaration here
+// would record the same variable that this function already recorded, and would
+// reach accessor bodies a second time with the wrong enclosing name. A local
+// variable is recorded by the walk instead, which is the only path that reaches
+// one.
 func (c *typingCollector) classVariable(declaration *ast.VariableDeclaration) {
+	c.variable(declaration, "")
 	c.inspect("", declaration.Value)
 	c.functionScope(declaration.Name, declaration.Getter)
 	if declaration.Setter != nil {
@@ -171,6 +189,7 @@ func (c *typingCollector) function(declaration *ast.FunctionDeclaration) {
 			span:      declaration.NameSpan,
 		})
 	}
+	c.collection(declaration.ReturnType, declaration.ReturnTypeSpan, declaration.Name)
 	c.parameters(ruleRequireArgumentType, declaration.Parameters, declaration.Name,
 		fmt.Sprintf("function %q", declaration.Name))
 	for _, parameter := range declaration.Parameters {
@@ -182,10 +201,12 @@ func (c *typingCollector) function(declaration *ast.FunctionDeclaration) {
 // parameters records every parameter with no type.
 func (c *typingCollector) parameters(rule string, parameters []ast.Parameter, enclosing, owner string) {
 	for _, parameter := range parameters {
+		// The annotation is examined first and for every parameter, because the
+		// collection rule is about what is written rather than what is absent.
+		c.collection(parameter.Type, parameter.TypeSpan, enclosing)
 		// A variadic parameter needs no annotation: it collects the arguments
 		// after it into an Array whatever is passed, so "untyped" is not a
-		// missing type. It can still carry one, which a rule about the
-		// annotation itself must be free to inspect.
+		// missing type.
 		if parameter.Variadic || annotated(parameter.Type, parameter.Inferred) {
 			continue
 		}
@@ -197,6 +218,56 @@ func (c *typingCollector) parameters(rule string, parameters []ast.Parameter, en
 			span:      parameter.NameSpan,
 		})
 	}
+}
+
+// variable records a variable with no type. A constant is never recorded:
+// GDScript types a const from its value, so it is already statically typed. An
+// @export is recorded like any other variable — the editor infers the exported
+// type from the assigned value, which is not the same as the variable carrying
+// one.
+func (c *typingCollector) variable(declaration *ast.VariableDeclaration, enclosing string) {
+	if !declaration.Constant && !annotated(declaration.Type, declaration.Inferred) {
+		c.add(typingSite{
+			rule:      ruleRequireVariableType,
+			message:   fmt.Sprintf("Variable %q has no type", declaration.Name),
+			enclosing: enclosing,
+			floor:     godot40,
+			span:      declaration.NameSpan,
+		})
+	}
+	c.collection(declaration.Type, declaration.TypeSpan, enclosing)
+}
+
+// collection records a bare Array or Dictionary annotation, wherever it is
+// written: a variable, a parameter, a return type, or a loop variable.
+//
+// Only a written annotation is examined. "var x := []" infers an untyped Array,
+// and catching that needs expression inference this package does not have and
+// should not grow — a single-file linter that starts inferring types is the
+// first step toward a semantic analyzer, which belongs in its own package.
+func (c *typingCollector) collection(typeName string, span token.Span, enclosing string) {
+	// The floor and the typed form travel together: they differ per collection,
+	// and splitting them across a switch and a lookup table invites one to gain
+	// an entry the other lacks.
+	var (
+		floor versiongate.Version
+		form  string
+	)
+	switch typeName {
+	case "Array":
+		floor, form = godot40, "Array[T]"
+	case "Dictionary":
+		floor, form = godot44, "Dictionary[K, V]"
+	default:
+		return
+	}
+	c.add(typingSite{
+		rule:      ruleRequireTypedCollection,
+		message:   fmt.Sprintf("%s has no element type; write %s", typeName, form),
+		enclosing: enclosing,
+		floor:     floor,
+		span:      span,
+	})
 }
 
 func (c *typingCollector) functionScope(enclosing string, statements []ast.Statement) {
@@ -214,6 +285,8 @@ func (c *typingCollector) inspect(enclosing string, node ast.Node) {
 	}
 	ast.Inspect(node, func(node ast.Node) bool {
 		switch declaration := node.(type) {
+		case *ast.VariableDeclaration:
+			c.variable(declaration, enclosing)
 		case *ast.LambdaExpression:
 			// A lambda's parameters are a contract its caller satisfies, so
 			// they are checked. Its return value is consumed where the lambda

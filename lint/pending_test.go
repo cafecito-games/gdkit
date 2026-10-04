@@ -113,7 +113,10 @@ func TestEnableRejectsAnUnknownRule(t *testing.T) {
 // configuration. missing-docstring is absent because it is inert through its
 // own empty configuration value rather than through PendingRule.
 func TestPendingRulesAreExactlyTheInertOnes(t *testing.T) {
-	want := []string{"no-engine-logging", "require-argument-type", "require-return-type"}
+	want := []string{
+		"no-engine-logging", "require-argument-type", "require-return-type",
+		"require-typed-collection", "require-variable-type",
+	}
 	got := PendingRuleNames()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("PendingRuleNames() = %v, want %v", got, want)

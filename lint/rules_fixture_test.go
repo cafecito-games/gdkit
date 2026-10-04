@@ -256,13 +256,20 @@ func typingFixtureConfig() Config {
 // testdata/typing must produce once the typing rules are enabled.
 var typingFixtureExpectations = map[string][]fixtureFinding{
 	"signatures.gd": {
-		// A class-scope lambda: no function body reaches it.
+		// A class-scope lambda: no function body reaches it. The variable
+		// holding it is itself untyped, so both rules fire on the one line.
 		{3, "require-argument-type"},
+		{3, "require-variable-type"},
 		{6, "require-return-type"},
 		// "first" only: "second" is annotated.
 		{11, "require-argument-type"},
 		// The lambda's parameter, not its missing return type.
 		{16, "require-argument-type"},
+	},
+	"variables.gd": {
+		{5, "require-variable-type"},
+		{7, "require-typed-collection"},
+		{12, "require-variable-type"},
 	},
 }
 

@@ -188,3 +188,122 @@ func build() -> void:
 		t.Fatalf("got %v, want one diagnostic per lambda parameter", found)
 	}
 }
+
+func TestRequireVariableTypeReportsAtBothScopes(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-variable-type", `
+var health = 100
+var typed: int = 100
+const LIMIT = 10
+
+func move() -> void:
+	var speed = 1.0
+	var inferred := 1.0
+	print(health, typed, LIMIT, speed, inferred)
+`)
+	if len(found) != 2 {
+		t.Fatalf("got %v, want the two untyped variables", found)
+	}
+	if found[0].Line != 2 || found[1].Line != 7 {
+		t.Errorf("reported lines %d and %d, want 2 and 7", found[0].Line, found[1].Line)
+	}
+	if found[0].Message != `Variable "health" has no type` {
+		t.Errorf("message = %q", found[0].Message)
+	}
+}
+
+// An @export is still a Variant; the editor infers the exported type from the
+// assigned value, which is not the same as the variable carrying one.
+func TestRequireVariableTypeReportsAnUntypedExport(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-variable-type", `
+@export var speed = 1.0
+@export var typed: float = 1.0
+`)
+	if len(found) != 1 {
+		t.Fatalf("got %v, want one diagnostic", found)
+	}
+	if found[0].Line != 2 {
+		t.Errorf("reported line %d, want 2", found[0].Line)
+	}
+}
+
+// GDScript types a const from its value, so it is already statically typed.
+func TestRequireVariableTypeIgnoresAConstant(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-variable-type", `
+const LIMIT = 10
+
+func move() -> void:
+	const LOCAL = 2
+	print(LIMIT, LOCAL)
+`)
+	if len(found) != 0 {
+		t.Fatalf("got %v, want none", found)
+	}
+}
+
+func TestRequireTypedCollectionReportsABareAnnotation(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+var items: Array = []
+var typed: Array[int] = []
+`)
+	if len(found) != 1 {
+		t.Fatalf("got %v, want one diagnostic", found)
+	}
+	if found[0].Line != 2 || found[0].Column != 12 {
+		t.Errorf("reported at %d:%d, want 2:12 (the annotation)", found[0].Line, found[0].Column)
+	}
+	if found[0].Message != "Array has no element type; write Array[T]" {
+		t.Errorf("message = %q", found[0].Message)
+	}
+}
+
+// This is the only rule in gdkit whose applicability varies per finding:
+// Array[T] is Godot 4.0 and Dictionary[K, V] is 4.4, so one engine version
+// accepts the fix for one and not the other.
+func TestRequireTypedCollectionGatesDictionarySeparately(t *testing.T) {
+	source := `
+var items: Array = []
+var lookup: Dictionary = {}
+`
+	tests := []struct {
+		version string
+		want    []int
+	}{
+		{version: "4.3", want: []int{2}},
+		{version: "4.4", want: []int{2, 3}},
+	}
+	for _, test := range tests {
+		config := typingConfig()
+		config.GodotVersion = test.version
+		found := lintSourceWithConfig(t, config, "require-typed-collection", source)
+		if len(found) != len(test.want) {
+			t.Fatalf("godot_version %q: got %v, want %d diagnostics", test.version, found, len(test.want))
+		}
+		for index, line := range test.want {
+			if found[index].Line != line {
+				t.Errorf("godot_version %q: diagnostic %d on line %d, want %d", test.version, index, found[index].Line, line)
+			}
+		}
+	}
+}
+
+func TestRequireTypedCollectionChecksSignaturesToo(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+func pick(from: Array) -> Array:
+	return from
+`)
+	if len(found) != 2 {
+		t.Fatalf("got %v, want the parameter and the return type", found)
+	}
+}
+
+// A variadic parameter needs no annotation, but it may carry one, and a bare
+// Array there is the same defect as anywhere else.
+func TestRequireTypedCollectionChecksAVariadicAnnotation(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+func gather(...rest: Array) -> void:
+	print(rest)
+`)
+	if len(found) != 1 {
+		t.Fatalf("got %v, want the variadic annotation", found)
+	}
+}
