@@ -320,6 +320,145 @@ var typed: Array[int] = []
 	}
 }
 
+// An empty literal with no written type infers the same untyped collection a
+// bare annotation declares, at both scopes, and the finding underlines the
+// literal because that is what the reader has to change.
+func TestRequireTypedCollectionReportsAnEmptyLiteral(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+var pending := []
+var cache := {}
+var typed: Array[int] = []
+
+func collect() -> void:
+	var seen := {}
+	print(pending, cache, typed, seen)
+`)
+	want := []struct {
+		line    int
+		column  int
+		message string
+	}{
+		{line: 2, column: 16, message: "Array has no element type; write Array[T]"},
+		{line: 3, column: 14, message: "Dictionary has no element type; write Dictionary[K, V]"},
+		{line: 7, column: 14, message: "Dictionary has no element type; write Dictionary[K, V]"},
+	}
+	if len(found) != len(want) {
+		t.Fatalf("got %v, want %d diagnostics", found, len(want))
+	}
+	for index, expected := range want {
+		if found[index].Line != expected.line || found[index].Column != expected.column {
+			t.Errorf("diagnostic %d reported at %d:%d, want %d:%d (the literal)",
+				index, found[index].Line, found[index].Column, expected.line, expected.column)
+		}
+		if found[index].Message != expected.message {
+			t.Errorf("diagnostic %d message = %q, want %q", index, found[index].Message, expected.message)
+		}
+	}
+}
+
+// A written annotation is the whole story when there is one: the declaration is
+// one bare collection, so it is reported once, from the annotation.
+func TestRequireTypedCollectionReportsAnAnnotatedEmptyLiteralOnce(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+var items: Array = []
+var lookup: Dictionary = {}
+`)
+	if len(found) != 2 {
+		t.Fatalf("got %v, want one diagnostic per declaration", found)
+	}
+	if found[0].Line != 2 || found[0].Column != 12 {
+		t.Errorf("reported at %d:%d, want 2:12 (the annotation, not the literal)",
+			found[0].Line, found[0].Column)
+	}
+	if found[1].Line != 3 || found[1].Column != 13 {
+		t.Errorf("reported at %d:%d, want 3:13 (the annotation, not the literal)",
+			found[1].Line, found[1].Column)
+	}
+}
+
+// Nothing but an empty literal is inferred. A populated literal is an untyped
+// collection in Godot too, but choosing its element type is the expression
+// inference this package does not have, and a call or a reference says even
+// less.
+func TestRequireTypedCollectionIgnoresAnythingButAnEmptyLiteral(t *testing.T) {
+	sources := map[string]string{
+		"populated array":      "var items := [1, 2, 3]\n",
+		"populated dictionary": "var lookup := {\"a\": 1}\n",
+		"nested empty array":   "var rows := [[]]\n",
+		"call":                 "var items := build()\n\nfunc build() -> Array[int]:\n\treturn []\n",
+		"reference":            "var source := [1]\nvar items := source\n",
+		"other literal":        "var count := 0\n",
+	}
+	for name, source := range sources {
+		t.Run(name, func(t *testing.T) {
+			if found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", source); len(found) != 0 {
+				t.Fatalf("got %v, want none", found)
+			}
+		})
+	}
+}
+
+// An inferred empty dictionary inherits the same version gate a written bare
+// Dictionary has: below 4.4 there is no Dictionary[K, V] to suggest, so the
+// finding is dropped silently.
+func TestRequireTypedCollectionGatesAnEmptyDictionaryLiteral(t *testing.T) {
+	source := `
+var pending := []
+var cache := {}
+`
+	tests := []struct {
+		version string
+		want    []int
+	}{
+		{version: "4.3", want: []int{2}},
+		{version: "4.4", want: []int{2, 3}},
+	}
+	for _, test := range tests {
+		config := typingConfig()
+		config.GodotVersion = test.version
+		found := lintSourceWithConfig(t, config, "require-typed-collection", source)
+		if len(found) != len(test.want) {
+			t.Fatalf("godot_version %q: got %v, want %d diagnostics", test.version, found, len(test.want))
+		}
+		for index, line := range test.want {
+			if found[index].Line != line {
+				t.Errorf("godot_version %q: diagnostic %d on line %d, want %d", test.version, index, found[index].Line, line)
+			}
+		}
+	}
+}
+
+// A constant's collection is as untyped as a variable's, and a written "const
+// ITEMS: Array" is already reported, so the inferred spelling is too. The
+// element type is what is missing, which typing the const from its value does
+// not supply.
+func TestRequireTypedCollectionReportsAConstantsEmptyLiteral(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+const WRITTEN: Array = []
+const INFERRED := []
+`)
+	if len(found) != 2 {
+		t.Fatalf("got %v, want both constants", found)
+	}
+	if found[0].Line != 2 || found[1].Line != 3 {
+		t.Errorf("reported lines %d and %d, want 2 and 3", found[0].Line, found[1].Line)
+	}
+}
+
+// A declaration with neither a type nor ":=" is missing both a type and an
+// element type, and the two rules report that independently: the fix for the
+// first, "var items: Array = []", still leaves the collection untyped.
+func TestRequireTypedCollectionAndVariableTypeBothReportABareAssignment(t *testing.T) {
+	config := typingConfig()
+	reported := map[string]int{}
+	for _, rule := range []string{"require-variable-type", "require-typed-collection"} {
+		reported[rule] = len(lintSourceWithConfig(t, config, rule, "var items = []\n"))
+	}
+	if reported["require-variable-type"] != 1 || reported["require-typed-collection"] != 1 {
+		t.Fatalf("got %v, want one diagnostic from each rule", reported)
+	}
+}
+
 // This is the only rule in gdkit whose applicability varies per finding:
 // Array[T] is Godot 4.0 and Dictionary[K, V] is 4.4, so one engine version
 // accepts the fix for one and not the other.

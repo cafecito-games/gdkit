@@ -261,10 +261,17 @@ var typingFixtureExpectations = map[string][]fixtureFinding{
 	},
 	"variables.gd": {
 		{5, "require-variable-type"},
-		// "items" is annotated, so only its bare Array is reported.
+		// "items" is annotated, so only its bare Array is reported — once, from
+		// the annotation, even though the initializer is an empty literal too.
 		{7, "require-typed-collection"},
-		{12, "require-variable-type"},
-		{13, "require-typed-loop-variable"},
+		// An empty literal with no written type: the inferred Array and
+		// Dictionary are as untyped as a written bare one.
+		{9, "require-typed-collection"},
+		{10, "require-typed-collection"},
+		{14, "require-variable-type"},
+		// The same inference at function scope.
+		{15, "require-typed-collection"},
+		{16, "require-typed-loop-variable"},
 	},
 	"signals.gd": {
 		{3, "require-signal-argument-type"},

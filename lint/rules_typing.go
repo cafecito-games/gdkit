@@ -264,15 +264,48 @@ func (c *typingCollector) variable(declaration *ast.VariableDeclaration, enclosi
 		})
 	}
 	c.collection(declaration.Type, declaration.TypeSpan, enclosing)
+	// A written annotation is the whole story when there is one: "var x: Array =
+	// []" is one bare collection, reported from the annotation, not two.
+	if declaration.Type == "" {
+		c.emptyCollectionLiteral(declaration.Value, enclosing)
+	}
 }
 
-// collection records a bare Array or Dictionary annotation, wherever it is
-// written: a variable, a parameter, a return type, or a loop variable.
+// emptyCollectionLiteral records a declaration whose collection type comes from
+// an empty literal. "var items := []" and "var lookup := {}" are the same defect
+// as a written bare "Array" or "Dictionary" — the declaration is an untyped
+// container either way — and they are the commoner spelling, so a rule that said
+// nothing about them would not mean a project's collections are typed.
 //
-// Only a written annotation is examined. "var x := []" infers an untyped Array,
-// and catching that needs expression inference this package does not have and
-// should not grow — a single-file linter that starts inferring types is the
-// first step toward a semantic analyzer, which belongs in its own package.
+// Only a syntactically empty literal is in scope. "[1, 2, 3]" is an untyped
+// Array too, but naming its element type means typing every element and deciding
+// what their common type is, which is the expression inference this package does
+// not have and should not grow. An empty literal needs none of it: there is
+// nothing to infer from, so the element type can only come from the author, and
+// the collection it declares is known from the literal's own shape.
+//
+// Nothing else is examined. "var x := build()" and "var x := other" may well be
+// collections, but deciding that is the same inference problem.
+func (c *typingCollector) emptyCollectionLiteral(value ast.Expression, enclosing string) {
+	switch literal := value.(type) {
+	case *ast.ArrayLiteral:
+		if len(literal.Elements) == 0 {
+			c.collection("Array", literal.Span(), enclosing)
+		}
+	case *ast.DictionaryLiteral:
+		if len(literal.Entries) == 0 {
+			c.collection("Dictionary", literal.Span(), enclosing)
+		}
+	}
+}
+
+// collection records a bare Array or Dictionary, whether it was written as an
+// annotation — on a variable, a parameter, a return type, or a loop variable —
+// or inferred from an empty literal by emptyCollectionLiteral.
+//
+// The span is the caller's, so a finding underlines whichever of the two the
+// reader has to change: the annotation when one is written, the literal when the
+// type came from it.
 func (c *typingCollector) collection(typeName string, span token.Span, enclosing string) {
 	// The floor and the typed form travel together: they differ per collection,
 	// and splitting them across a switch and a lookup table invites one to gain
