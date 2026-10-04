@@ -381,6 +381,17 @@ false for `_to_string`:
   no refusal rule can see. Without this condition the diagnostic is reported
   while `gen write` writes the unsound method anyway, since `write` otherwise
   applies candidates despite unrelated diagnostics;
+- **unresolved base** — any class in the universe declares an `extends` that
+  should have named a project script and did not: a `res://` or relative path
+  with no such file, a `uid://` nothing declares, or a member chain whose head
+  resolved but whose inner name did not. The same reverse-dependency argument
+  applies, and a path names a file rather than an engine type, so failing to
+  resolve one means the graph is genuinely incomplete rather than merely
+  pointing outside the project. A bare identifier that is not a project class
+  *is* read as an engine type, since otherwise `extends Control` would block
+  every real project; a typo there is a project Godot will not load either.
+  The refusal names the offending class and target, so the reader learns which
+  file to fix rather than only that something is wrong;
 - **unresolvable `class_name`** — a `class_name` this pair needs to resolve is
   claimed by more than one script, so `provider` cannot be computed;
 - **ancestry rule fails** — `C`'s strict ancestry declares a selectable field
@@ -752,7 +763,7 @@ belongs to the former family — and `class_name.duplicate`, from `architecture`
 | `generate.stale` | a region that is missing or out of date (`check` only) | error |
 | `generate.marker` | a malformed directive, an unknown generator name, or a second region in one class | error |
 | `generate.conflict` | the class declares, outside the region, a method with the same name as one a requested generator emits, in a shape that is not compatible with it | error |
-| `generate.unsupported` | an inner class; a requested class whose ancestry has fields but no provider; or a class whose descendant would inherit an unsound method | error |
+| `generate.unsupported` | an inner class; a requested class whose ancestry has fields but no provider; a class whose descendant would inherit an unsound method; or an inheritance-sensitive request made while the graph is incomplete, naming the unparseable file or the class whose base does not resolve | error |
 | `generate.orphaned` | a region whose class no longer opts in, anywhere in the universe | error |
 | `generate.unsafe` | verification or the format oracle refused the splice | error |
 
@@ -894,3 +905,7 @@ marker forms.
 - **Rewriting a hand-written `_to_string`.** `generate.conflict` reports it;
   nothing migrates it.
 - **A `_to_string` format option.** One documented format.
+- **Autoloads as base classes.** `extends SomeAutoload` is not resolved,
+  because the autoload table lives in `project.godot`, which `project` does not
+  read. A `const Base = preload(…)` alias *is* resolved, since that is the
+  common way a script names another script as a base without a `class_name`.

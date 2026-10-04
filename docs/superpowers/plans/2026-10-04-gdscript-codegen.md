@@ -1356,16 +1356,57 @@ func TestIndexResolvesTheRemainingInheritanceForms(t *testing.T) {
 	}
 }
 
-// An inner class shadows a global of the same name, as Godot's own scope
-// lookup does.
-func TestALexicalInnerClassShadowsAGlobal(t *testing.T) {
+// Godot searches global class names before classes in the current scope, and
+// rejects an inner class that hides a global rather than preferring it. An
+// earlier draft of this plan asserted the opposite.
+func TestAGlobalClassNameBeatsAnInnerClassOfTheSameName(t *testing.T) {
 	index := indexOf(t, map[string]string{
 		"base.gd": "class_name Base\nextends RefCounted\n",
 		"a.gd": "class_name Holder\nextends RefCounted\n\n" +
 			"class Base:\n\tvar q: int\n\nclass Child extends Base:\n\tvar r: int\n",
 	})
-	if got := index.Classes["a.gd#Child"].ParentID; got != "a.gd#Base" {
-		t.Errorf("Child.ParentID = %q, want the lexical a.gd#Base", got)
+	if got := index.Classes["a.gd#Child"].ParentID; got != "base.gd" {
+		t.Errorf("Child.ParentID = %q, want the global base.gd", got)
+	}
+}
+
+// A preload constant is a type to Godot, so it is a real inheritance edge. A
+// field-adding subclass hidden behind one would otherwise be invisible to the
+// descendant rule.
+func TestAPreloadAliasIsAnInheritanceEdge(t *testing.T) {
+	index := indexOf(t, map[string]string{
+		"base.gd": "extends RefCounted\n\nvar q: int\n",
+		"sub.gd":  "const Base = preload(\"res://base.gd\")\n\nextends Base\n\nvar r: int\n",
+	})
+	if got := index.TopLevel["sub.gd"].ParentID; got != "base.gd" {
+		t.Errorf("ParentID = %q, want base.gd via the preload alias", got)
+	}
+}
+
+// A class body span covers its functions, so a marker inside a method must be
+// excluded structurally rather than by span containment.
+func TestADirectiveIsOnlyADirectStatementOfAClassSuite(t *testing.T) {
+	report, _ := checkProject(t, DefaultConfig(), map[string]string{
+		"a.gd": "class_name Hex\nextends RefCounted\n\nvar q: int\n\n" +
+			"func f() -> void:\n\t# gdkit:generate = to_string\n\tpass\n",
+	})
+	if report.HasChanges() || report.HasDiagnostics() {
+		t.Errorf("a marker inside a function was treated as a class directive: %+v %+v",
+			report.Results, report.Diagnostics)
+	}
+}
+
+// A begin sentinel inside an inner class with its end outside is contained by
+// nothing, so a containment check would pass it as the top-level region.
+func TestSentinelsStraddlingAClassBoundaryAreRefused(t *testing.T) {
+	index := indexOf(t, map[string]string{
+		"a.gd": "class_name Holder\nextends RefCounted\n\nclass Nested:\n" +
+			"\t# gdkit:generated:begin\n\tfunc f():\n\t\tpass\n" +
+			"# gdkit:generated:end\n",
+	})
+	top := index.TopLevel["a.gd"]
+	if top.HasRegion || top.RegionError == nil {
+		t.Errorf("a straddling region was accepted as top-level: %+v", top)
 	}
 }
 
@@ -1506,11 +1547,20 @@ type Class struct {
 	ParentID string
 	Fields     []Field
 	Methods    map[string]Method
-	// Body is the span of the class's body in the file. It is what attributes
-	// a directive comment and a region sentinel to the class that owns it: a
-	// marker inside an inner class, or inside a function, must not opt in the
-	// file's top-level class.
+	// Body is the span of the class's body in the file.
 	Body Span
+	// Statements are the class's own body statements. A directive or a
+	// sentinel counts only when it is a direct statement here: a class's body
+	// span also covers its functions, so span containment alone cannot tell a
+	// class-level marker from one written inside a method.
+	Statements []ast.Statement
+	// PreloadAliases maps a constant's name to the project path it preloads,
+	// for "const Base = preload(\"res://base.gd\")". Godot treats such a
+	// constant as a type, so it can appear as a base class.
+	PreloadAliases map[string]string
+	// UnresolvedCause names the class or path that could not be resolved, so a
+	// refusal can say which one rather than only that the graph is incomplete.
+	UnresolvedCause string
 	// Region is the generated region this class owns, zero when it owns none.
 	// Only a top-level class can own one in v1. An earlier draft called
 	// FindRegion for every class, which gave every inner class in a generated
@@ -1573,17 +1623,23 @@ func BuildIndex(snapshot *project.Snapshot) *Index {
 		region, found, regionErr := FindRegion(script.Source)
 		whole := Span{Start: 0, End: len(script.Source)}
 		top := buildClass(path, path, false, script, script.File.Statements, whole, region, found, regionErr)
+		// Ownership of the region is decided by which suite owns each
+		// sentinel, not by whether the span sits inside a class's body.
+		// Containment alone accepts a begin sentinel inside an inner class
+		// whose end sentinel is outside it: the containment test fails, so the
+		// span looks top-level, and rewriting or pruning it then crosses the
+		// class boundary. Both sentinels must be direct Comment statements of
+		// the same top-level suite.
+		if found {
+			if err := checkSentinelOwnership(top, script, region); err != nil {
+				top.Region, top.HasRegion, top.RegionError = Span{}, false, err
+			}
+		}
 		index.Classes[top.ID] = top
 		index.TopLevel[path] = top
 		for _, inner := range buildInnerClasses(path, path, script, script.File.Statements, region, found, regionErr) {
 			index.Classes[inner.ID] = inner
-			// A sentinel inside an inner class body is not the top-level
-			// region. Rewriting it would splice at the wrong indentation, so
-			// the top-level class disowns the region and the file is refused.
-			if found && inner.Body.Start <= region.Start && region.End <= inner.Body.End {
-				top.Region, top.HasRegion = Span{}, false
-				top.RegionError = fmt.Errorf("a generated region sits inside the inner class %q", inner.Name)
-			}
+			_ = inner
 		}
 	}
 	for _, path := range sortedKeys(index.Classes) {
@@ -1621,14 +1677,15 @@ func BuildIndex(snapshot *project.Snapshot) *Index {
 // inner class in a generated file the same region.
 func buildClass(id, path string, inner bool, script *project.Script, statements []ast.Statement, body Span, region Span, found bool, regionErr error) *Class {
 	class := &Class{
-		ID:      id,
-		Path:    path,
-		Inner:   inner,
-		Name:    baseName(path),
-		Methods: map[string]Method{},
-		Body:    body,
-		Line:    1,
-		Column:  1,
+		ID:         id,
+		Path:       path,
+		Inner:      inner,
+		Name:       baseName(path),
+		Methods:    map[string]Method{},
+		Body:       body,
+		Statements: statements,
+		Line:       1,
+		Column:     1,
 	}
 	if !inner {
 		class.Region, class.HasRegion, class.RegionError = region, found, regionErr
@@ -1661,7 +1718,35 @@ func buildClass(id, path string, inner bool, script *project.Script, statements 
 		}
 	}
 	class.Fields = SelectFields(statements, script, region)
+	class.PreloadAliases = collectPreloadAliases(statements)
 	return class
+}
+
+// collectPreloadAliases records "const Name = preload(\"res://path.gd\")",
+// which Godot treats as a type and which may therefore appear as a base class.
+// Only a literal path is recorded; a computed one is not a static edge.
+func collectPreloadAliases(statements []ast.Statement) map[string]string {
+	aliases := map[string]string{}
+	for _, statement := range statements {
+		declaration, ok := statement.(*ast.VariableDeclaration)
+		if !ok || !declaration.Constant {
+			continue
+		}
+		call, ok := declaration.Value.(*ast.CallExpression)
+		if !ok || len(call.Arguments) != 1 {
+			continue
+		}
+		callee, ok := call.Callee.(*ast.Identifier)
+		if !ok || callee.Name != "preload" {
+			continue
+		}
+		literal, ok := call.Arguments[0].(*ast.StringLiteral)
+		if !ok || !strings.HasPrefix(literal.Value, "res://") {
+			continue
+		}
+		aliases[declaration.Name] = strings.TrimPrefix(literal.Value, "res://")
+	}
+	return aliases
 }
 
 // buildInnerClasses records every class declared inside statements,
@@ -1733,22 +1818,27 @@ func (i *Index) resolveExtends(snapshot *project.Snapshot, class *Class) (*Class
 	var head *Class
 	switch {
 	case target.Path == "":
-		// A bare identifier is looked up in lexical scope first — an inner
-		// class of an enclosing class shadows a global of the same name — and
-		// then globally.
-		if lexical, found := i.lexicalLookup(class, base); found {
-			head = lexical
-		} else if global, found := i.ByClassName[base]; found {
+		// Godot's analyzer searches global class names, autoloads, and native
+		// classes BEFORE classes in the current scope, and it rejects an inner
+		// class that hides a global rather than preferring it. An earlier
+		// draft of this plan had that order inverted and asserted the wrong
+		// behaviour in a test.
+		if global, found := i.ByClassName[base]; found {
 			head = global
+		} else if alias, found := i.preloadAlias(class, base); found {
+			// "const Base = preload(\"res://base.gd\")" then "extends Base".
+			head = alias
+		} else if scoped, found := i.scopeLookup(class, base); found {
+			head = scoped
 		} else {
 			// Not a project class: an engine type, which is not a parent for
-			// our purposes.
+			// our purposes. A typo here is a project Godot will not load.
 			return nil, false
 		}
 	case strings.HasPrefix(base, "uid://"):
 		path, ok := snapshot.UIDs[base]
 		if !ok {
-			class.UnresolvedBase = true
+			class.UnresolvedBase, class.UnresolvedCause = true, base
 			return nil, false
 		}
 		head = i.TopLevel[path]
@@ -1760,13 +1850,13 @@ func (i *Index) resolveExtends(snapshot *project.Snapshot, class *Class) (*Class
 		head = i.TopLevel[joinRelative(class.Path, base)]
 	}
 	if head == nil {
-		class.UnresolvedBase = true
+		class.UnresolvedBase, class.UnresolvedCause = true, base
 		return nil, false
 	}
 	for _, segment := range chain {
 		next, ok := i.Classes[head.ID+"#"+segment]
 		if !ok {
-			class.UnresolvedBase = true
+			class.UnresolvedBase, class.UnresolvedCause = true, base+"."+segment
 			return nil, false
 		}
 		head = next
@@ -1822,10 +1912,41 @@ func joinRelative(from, relative string) string {
 	return path.Clean(directory + "/" + relative)
 }
 
-// lexicalLookup finds name as an inner class of class or of any class
-// enclosing it, innermost first, which is the scope Godot searches before the
-// global class list.
-func (i *Index) lexicalLookup(class *Class, name string) (*Class, bool) {
+// preloadAlias resolves a name bound by a preload constant, searching the
+// class and then the classes enclosing it.
+//
+// Godot's analyzer treats such a constant as a type, so "extends Base" where
+// Base is "const Base = preload(...)" is a real inheritance edge. It has to be
+// indexed because the descendant rule needs every edge that could name a
+// requested class: a field-adding subclass hidden behind an alias would
+// otherwise be invisible, and the generated equals unsound with nothing saying
+// so.
+//
+// Known gap: an autoload used as a base class is not resolved, because that
+// needs project.godot, which this package does not read. It is recorded in the
+// spec's out-of-scope list rather than silently ignored.
+func (i *Index) preloadAlias(class *Class, name string) (*Class, bool) {
+	for scope := class.ID; scope != ""; {
+		if owner, ok := i.Classes[scope]; ok {
+			if target, ok := owner.PreloadAliases[name]; ok {
+				if parent, ok := i.TopLevel[target]; ok {
+					return parent, true
+				}
+			}
+		}
+		cut := strings.LastIndexByte(scope, '#')
+		if cut < 0 {
+			break
+		}
+		scope = scope[:cut]
+	}
+	return nil, false
+}
+
+// scopeLookup finds name as an inner class of class or of any class enclosing
+// it, innermost first. Godot searches this only after the global, autoload,
+// and native names.
+func (i *Index) scopeLookup(class *Class, name string) (*Class, bool) {
 	for scope := class.ID; scope != ""; {
 		if found, ok := i.Classes[scope+"#"+name]; ok && found.ID != class.ID {
 			return found, true
@@ -1837,6 +1958,36 @@ func (i *Index) lexicalLookup(class *Class, name string) (*Class, bool) {
 		scope = scope[:cut]
 	}
 	return nil, false
+}
+
+// checkSentinelOwnership requires both sentinels to be direct Comment
+// statements of the top-level class's own suite.
+//
+// Containment is the wrong test. A begin sentinel inside an inner class whose
+// end sentinel sits outside it is contained by nothing, so a containment check
+// passes it as top-level, and splicing or pruning the resulting span then
+// crosses a class boundary and rewrites at the wrong indentation.
+func checkSentinelOwnership(top *Class, script *project.Script, region Span) error {
+	begin, end := -1, -1
+	for _, statement := range top.Statements {
+		comment, ok := statement.(*ast.Comment)
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(comment.Text) {
+		case beginSentinel:
+			begin = comment.Span().Start.Offset
+		case endSentinel:
+			end = comment.Span().Start.Offset
+		}
+	}
+	if begin < 0 || end < 0 {
+		return fmt.Errorf("a generated region's sentinels are not both statements of the file's own class body")
+	}
+	if begin > end {
+		return fmt.Errorf("a generated region's end sentinel precedes its begin sentinel")
+	}
+	return nil
 }
 
 // Ancestry returns id and every ancestor above it, nearest first. It carries
@@ -2196,6 +2347,11 @@ type Capabilities struct {
 	// inheritanceSensitive is the generator's NeedsInheritanceGraph, recorded
 	// per generated pair at seed time.
 	inheritanceSensitive map[pair]bool
+	// UniverseCause is why every inheritance-sensitive pair was demoted, when
+	// one was: an unparseable file, or a class whose base does not resolve. It
+	// goes into the generate.unsupported message so the reader learns which
+	// file to fix.
+	UniverseCause string
 }
 
 // Realizable reports that the class will have a callable implementation of
@@ -2264,6 +2420,10 @@ func (c *Capabilities) Provider(index *Index, path string, signature Signature) 
 // requested maps a path to the generator names it asked for. blockers marks a
 // path carrying a local blocking diagnostic, which includes a verification
 // failure discovered after emission — Check re-enters Resolve with those.
+// Resolve also returns, through Capabilities.UniverseCause, the reason every
+// inheritance-sensitive pair was demoted when one was, so the refusal can name
+// the file or class responsible instead of only reporting that the graph is
+// incomplete.
 func Resolve(index *Index, requested map[string][]string, blockers map[string]bool) *Capabilities {
 	// Two conditions make the inheritance graph untrustworthy as a whole, and
 	// both demote every inheritance-sensitive pair rather than one class's.
@@ -2275,12 +2435,22 @@ func Resolve(index *Index, requested map[string][]string, blockers map[string]bo
 	// candidates despite unrelated diagnostics and would write the unsound
 	// method anyway.
 	universeUnreadable := len(index.ParseFailures) > 0
-	for _, class := range index.Classes {
+	unresolvedCause := ""
+	if universeUnreadable {
+		unresolvedCause = fmt.Sprintf("%s could not be parsed", index.ParseFailures[0])
+	}
+	// The refusal names the class and target that caused it, so a reader is
+	// not told only that the graph is incomplete. Sorted, so the message is
+	// deterministic when several are unresolved.
+	for _, id := range sortedKeys(index.Classes) {
+		class := index.Classes[id]
 		// An extends target that should have named a project file but did
 		// not. A bare identifier that is not a project class is an engine
 		// type and does not set this.
 		if class.UnresolvedBase {
 			universeUnreadable = true
+			unresolvedCause = fmt.Sprintf("%s extends %s, which does not resolve to a project script",
+				class.ID, class.UnresolvedCause)
 			break
 		}
 	}
@@ -2290,6 +2460,7 @@ func Resolve(index *Index, requested map[string][]string, blockers map[string]bo
 		orphaned:             map[string]bool{},
 		inheritanceSensitive: map[pair]bool{},
 	}
+	defer func() { capabilities.UniverseCause = unresolvedCause }()
 	for path, class := range index.Classes {
 		if class.HasRegion && len(requested[path]) == 0 {
 			capabilities.orphaned[path] = true
