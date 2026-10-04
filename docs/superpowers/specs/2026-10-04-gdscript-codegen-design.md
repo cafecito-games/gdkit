@@ -311,6 +311,15 @@ four cases are not interchangeable:
 | incompatible, hand-written | **barrier** — no provider |
 | inside a generated region, that pair realizable | **provider** |
 | inside a generated region, that pair not realizable, or the region orphaned | **barrier** — no provider |
+| **no declaration at all, but the pair is currently realizable** | **virtual provider** |
+| no declaration and the pair is not realizable | keep walking to the ancestor |
+
+The virtual-provider row is what makes a first adoption work. A class that
+requested a generator but has no region yet declares nothing, so every row
+above it fails to match — and without this row a newly requested parent could
+never provide for its child, which is the whole case the optimistic seed exists
+to serve. It is a *virtual* provider because the method does not exist yet;
+being realizable is the promise that it will.
 
 The last row is the one that needs the argument. An orphaned region's method
 physically exists, so runtime dispatch reaches it and the walk must not fall
@@ -340,11 +349,29 @@ realizable₀(C, S) = compatibleHandwritten(C, S) ∨ requested(C, S)
 ```
 
 Then iterate, recomputing `provider` against the current set on every pass. A
-**generated** pair is demoted when any of three conditions holds:
+**generated** pair is demoted when any condition below holds. The conditions
+split by whether `S`'s soundness depends on the inheritance graph, because
+applying all of them to every signature would refuse `_to_string` for reasons
+that cannot affect it.
+
+Applying to **every** generated pair:
 
 - **local blocker** — `C` has a `generate.marker`, `generate.conflict`, or
-  `generate.unsafe` diagnostic, is an inner class, or its ancestry reaches an
-  inheritance cycle;
+  `generate.unsafe` diagnostic, or is an inner class.
+
+Applying only when `S.NeedsInheritanceGraph()`, which is true for `equals` and
+false for `_to_string`:
+
+- **cycle** — `C`'s ancestry reaches an inheritance cycle, so the walk the
+  composition depends on has no answer;
+- **universe parse failure** — any script in the universe failed to parse. This
+  is the transfer-function half of the scope exception below: inheritance is a
+  reverse dependency, so an unreadable file may be a field-adding subclass that
+  no refusal rule can see. Without this condition the diagnostic is reported
+  while `gen write` writes the unsound method anyway, since `write` otherwise
+  applies candidates despite unrelated diagnostics;
+- **unresolvable `class_name`** — a `class_name` this pair needs to resolve is
+  claimed by more than one script, so `provider` cannot be computed;
 - **ancestry rule fails** — `C`'s strict ancestry declares a selectable field
   and `providerₙ(parent(C), S)` does not exist;
 - **descendant rule fails** — some descendant `D` has `providerₙ(D, S) == C`
@@ -353,6 +380,11 @@ Then iterate, recomputing `provider` against the current set on every pass. A
 
 A pair satisfying `compatibleHandwritten` is never demoted. The set only
 shrinks, so iteration stops when a pass demotes nothing.
+
+`_to_string` is therefore subject to local blockers alone. It neither composes
+with an ancestor nor walks one, so a fieldful ancestor without a `_to_string`,
+a cycle elsewhere in the hierarchy, and an unparseable unrelated file are all
+irrelevant to it.
 
 An earlier draft of this spec claimed a parents-first walk in one pass would do,
 on the grounds that a generated `equals` depends only on its parent's capability
@@ -671,6 +703,12 @@ func equals(p_other: Variant) -> bool:
 		return false
 	return self.q == p_other.q and self.r == p_other.r
 ```
+
+A class with no selected fields emits `return true` after the guards and after
+the `super` check, if any. That is the correct answer rather than a degenerate
+one: the guards have already established that both operands are the same
+script, and a class with no state of its own has nothing further to compare.
+Golden fixtures pin the body, since the emitted bytes are the unit under test.
 
 Field-wise `==` behind a script-identity guard, with the `super.equals`
 composition above inserted when the parent provides one. `is <ClassName>` was
