@@ -28,7 +28,7 @@
     {
       "id": 3,
       "subject": "Task 4: Collector, require-return-type, require-argument-type",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         2
       ],

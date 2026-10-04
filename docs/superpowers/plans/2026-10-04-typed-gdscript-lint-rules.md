@@ -1126,6 +1126,25 @@ is consumed where the lambda is written."
 
 ---
 
+> **Inherited from Task 4, verified empirically.** The collector reaches lambdas
+> in a class-scope `var`/`const` initializer, a property getter and setter body,
+> an enum member's value, a parameter default, and inside inner classes to any
+> depth. `classBody` handles `VariableDeclaration` through `classVariable` and
+> `EnumDeclaration` inline; `function` inspects each parameter's `Default`. All
+> four of those walk calls are load-bearing — `classBody` never calls
+> `ast.Inspect` on the declaration itself, and the accessor calls exist so an
+> accessor body carries the property's name while the initializer carries none.
+> Nothing is reported twice. The only sites still silent are a lambda in a
+> `signal` parameter default and in an annotation argument, both of which Godot
+> rejects as invalid; **Task 6 adds the `SignalDeclaration` case anyway.**
+>
+> Rule names are now constants (`ruleRequireReturnType`, …) — add one per new
+> rule and reference it from `typingRuleNames` rather than repeating a literal.
+>
+> The variadic early `continue` in `parameters` guards only the missing-type
+> site. `require-typed-collection` must still inspect a variadic parameter's
+> annotation, because `...rest: Array` is a bare `Array`.
+
 ### Task 5: `require-variable-type` and `require-typed-collection`
 
 **Goal:** Variables, at class and function scope, and the bare `Array`/`Dictionary` annotation — the rule with two version floors.
