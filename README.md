@@ -1,16 +1,49 @@
 # gdkit
 
-`gdkit` is a Go 1.26 toolkit for static analysis and source processing of
-Godot 4 GDScript. `gdkit arch` enforces architectural boundaries across a
-project, `gdkit lint` checks GDScript style and correctness, `gdkit format`
-rewrites GDScript into one canonical style, and `gdkit uid` gives a script the
-`uid://` identity Godot would have given it.
+**Static analysis and source processing for Godot 4 GDScript — architecture
+boundaries, linting, formatting, and `uid://` identities in one binary.**
+
+[![CI](https://img.shields.io/github/actions/workflow/status/cafecito-games/gdkit/ci.yml?branch=main&label=CI&logo=github)](https://github.com/cafecito-games/gdkit/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/cafecito-games/gdkit?label=release&logo=github)](https://github.com/cafecito-games/gdkit/releases/latest)
+[![Go reference](https://img.shields.io/badge/go-reference-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/cafecito-games/gdkit)
+[![Go version](https://img.shields.io/github/go-mod/go-version/cafecito-games/gdkit?logo=go&logoColor=white)](go.mod)
+[![Godot 4](https://img.shields.io/badge/godot-4.x-478cbf?logo=godotengine&logoColor=white)](https://godotengine.org)
+[![License](https://img.shields.io/github/license/cafecito-games/gdkit)](LICENSE)
+
+`gdkit` is four tools over one project model. They share project discovery and
+parse the same way, so every tool agrees on which files are in scope.
+
+| Tool | What it does |
+| --- | --- |
+| [`gdkit arch`](#architecture-checks) | Enforces layer, feature, and engine-purity boundaries, and finds dependency cycles |
+| [`gdkit lint`](#linting) | Reports 30 naming, structural, design, documentation, and formatting problems |
+| [`gdkit format`](#formatting) | Rewrites GDScript into one canonical style, verifying every rewrite first |
+| [`gdkit uid`](#uid-sidecars) | Creates the `uid://` sidecars Godot would have created |
 
 The analyzer uses [`gdparser`](https://github.com/cafecito-games/gdparser) and
 does not search source text with regular expressions. It parses GDScript,
 indexes global `class_name` declarations, resolves semantic identifier and type
 references, and inspects static `load()` and `preload()` calls. Comments and
 string contents cannot accidentally create class dependencies.
+
+## Quick start
+
+```sh
+brew install cafecito-games/tap/gdkit
+
+cd /path/to/godot-project
+gdkit arch check .      # layer, feature, and engine-purity boundaries
+gdkit lint check .      # GDScript style and correctness
+gdkit format check .    # canonical formatting; writes nothing
+gdkit uid check .       # scripts with no uid:// identity
+```
+
+Nothing needs configuring first: every tool runs with a built-in default policy.
+`gdkit <tool> init` writes that policy to `.gdkit/` as an editable starting
+point. Every check command accepts `--format json`, and exits `0` when clean,
+`1` on findings, and `2` on a configuration, usage, or I/O failure — so each one
+works as a CI gate as it stands. See
+[Continuous integration](#continuous-integration).
 
 ## Install
 
@@ -32,9 +65,37 @@ Or run it from a checkout:
 go run ./cmd/gdkit arch check /path/to/godot-project
 ```
 
+Releases carry macOS, Linux, and Windows archives for AMD64 and ARM64 with a
+SHA-256 manifest.
+
+## Contents
+
+**Tools**
+
+- [Architecture checks](#architecture-checks) — `gdkit arch`
+- [Linting](#linting) — `gdkit lint`
+- [Formatting](#formatting) — `gdkit format`
+- [UID sidecars](#uid-sidecars) — `gdkit uid`
+
+**Across every tool**
+
+- [Ignoring files with `.gdkitignore`](#ignoring-files-with-gdkitignore)
+- [Continuous integration](#continuous-integration)
+- [Pinning the gdkit version](#pinning-the-gdkit-version)
+- [Machine-readable failures](#machine-readable-failures)
+- [Version information](#version-information)
+
+**Reference**
+
+- [Architecture configuration](#architecture-configuration)
+- [ADR-backed exceptions](#adr-backed-exceptions)
+- [Library use](#library-use)
+- [Development](#development) and [releasing](#releasing)
+
 ## Architecture checks
 
-`gdkit arch check` currently reports:
+`gdkit arch check` classifies every `.gd` file into a layer and a feature,
+builds the dependency graph from the parsed AST, and reports:
 
 - duplicate `class_name` declarations and GDScript parse errors;
 - GDScript files that have no layer and feature classification;
@@ -64,11 +125,27 @@ gdkit arch check --show-edges .
 gdkit arch check --minimum-version 0.3.0 .
 ```
 
+Text output is one line per diagnostic, naming the rule in brackets, then a
+summary:
+
+```text
+features/combat/presentation/health_panel.gd:5:16: combat/presentation may not depend on combat/infrastructure (features/combat/infrastructure/godot_health_reader.gd) [dependency.direction]
+architecture check failed (1 diagnostics, 2 files, 1 dependencies)
+```
+
+JSON output carries the classified `files`, the deduplicated dependency
+`edges`, and the `diagnostics`, each sorted by path, line, column, and rule, so
+the output is stable between runs.
+
 The command exits `0` when clean, `1` for architecture violations, and `2` for
 configuration, usage, or I/O failures.
 
 `--minimum-version` refuses to run unless the binary is at least the named
 release. See [Pinning the gdkit version](#pinning-the-gdkit-version).
+
+Classification rules, the dependency policy, and the built-in project layout are
+in [Architecture configuration](#architecture-configuration); the documented
+escape hatch is in [ADR-backed exceptions](#adr-backed-exceptions).
 
 ## Linting
 
@@ -634,6 +711,68 @@ when `exclude` covers it or `.gdkitignore` ignores it. A negated pattern does
 not override `exclude`, so re-including a directory under the root `addons/`
 also requires removing `addons/**` from the default `exclude` of that tool.
 
+## Continuous integration
+
+Every check command is a gate as it stands: it writes nothing, exits non-zero on
+findings, and sorts its output so two runs over the same source produce the same
+bytes. A GitHub Actions job needs no wrapper:
+
+```yaml
+name: gdkit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gdkit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+      - run: go install github.com/cafecito-games/gdkit/cmd/gdkit@v0.4.0
+
+      - run: gdkit arch check .
+      - run: gdkit lint check .
+        if: ${{ !cancelled() }}
+      - run: gdkit format check --diff .
+        if: ${{ !cancelled() }}
+      - run: gdkit uid check .
+        if: ${{ !cancelled() }}
+```
+
+Two details make this hold up over time:
+
+- **Pin the binary.** Installing `@v0.4.0` rather than `@latest` keeps CI and
+  every developer machine on one gdkit, so the two cannot reach different
+  verdicts over the same source. Add
+  [`--minimum-version`](#pinning-the-gdkit-version), or
+  `minimum_gdkit_version` in the configuration, as defense in depth for the
+  machines a pin does not reach.
+- **`!cancelled()` reports everything once.** Without it the job stops at the
+  first tool that fails, and a contributor fixes one class of finding per push.
+
+Exit codes are the same for every check command:
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | clean — no findings, or `lint` findings that are all warnings |
+| `1` | findings: a violation, a diagnostic, or a file that would be reformatted |
+| `2` | a configuration, usage, or I/O failure; no report was produced |
+
+For an annotating or reporting job, `--format json` carries the same
+diagnostics with paths, 1-based rune columns, and rule names, and a failure
+before the report is a single [error envelope on
+stderr](#machine-readable-failures) while stdout stays empty — so a consumer can
+tell "no report" from "an empty report".
+
+`gdkit format write` and `gdkit uid write` are the two commands meant to run
+outside CI, on a developer machine or in a job that opens a pull request. In a
+gate, use their `check` form.
+
 ## Version information
 
 Release binaries report their semantic version, commit hash, commit timestamp,
@@ -800,7 +939,7 @@ Architecture checks do not yet have the inert-by-default mechanism, because no
 release has needed to change one's semantics. Until they do, the floor is the
 only guard there.
 
-## Configuration
+## Architecture configuration
 
 Create editable starter files in a Godot project:
 
@@ -981,6 +1120,11 @@ tag still points to the current default-branch commit.
 The release contains macOS, Linux, and Windows archives for AMD64 and ARM64,
 plus a SHA-256 checksum manifest. GoReleaser also updates the `gdkit` cask in
 [cafecito-games/homebrew-tap](https://github.com/cafecito-games/homebrew-tap),
-using the `HOMEBREW_TAP_TOKEN` secret to push to that repository. Release versions omit the leading `v`, so tag
-`v0.1.0` is reported by the binary as `0.1.0`. Directly pushed `v*` tags remain
-supported for automation and advanced use.
+using the `HOMEBREW_TAP_TOKEN` secret to push to that repository. Release
+versions omit the leading `v`, so tag `v0.1.0` is reported by the binary as
+`0.1.0`. Directly pushed `v*` tags remain supported for automation and advanced
+use.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Copyright Cafecito Games LLC.
