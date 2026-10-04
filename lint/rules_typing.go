@@ -12,6 +12,11 @@ import (
 
 // Rule names are a public contract. Naming them once means a typo at a site
 // fails to compile instead of silently dropping that rule's findings.
+//
+// Unlike rules_name.go, which renders every message from the nameMessages
+// table, each message here is rendered where its site is recorded: every one
+// names the declaration's owner — the function, signal, lambda, or property
+// that the site belongs to — which a table keyed by rule name cannot reach.
 const (
 	ruleRequireReturnType   = "require-return-type"
 	ruleRequireArgumentType = "require-argument-type"
@@ -196,9 +201,6 @@ func (c *typingCollector) classVariable(declaration *ast.VariableDeclaration) {
 func (c *typingCollector) signal(declaration *ast.SignalDeclaration) {
 	c.parameters(ruleRequireSignalArgumentType, declaration.Parameters, declaration.Name,
 		fmt.Sprintf("signal %q", declaration.Name))
-	for _, parameter := range declaration.Parameters {
-		c.inspect(declaration.Name, parameter.Default)
-	}
 }
 
 // function records a function's signature and walks its body. An abstract
@@ -217,15 +219,16 @@ func (c *typingCollector) function(declaration *ast.FunctionDeclaration) {
 	c.collection(declaration.ReturnType, declaration.ReturnTypeSpan, declaration.Name)
 	c.parameters(ruleRequireArgumentType, declaration.Parameters, declaration.Name,
 		fmt.Sprintf("function %q", declaration.Name))
-	for _, parameter := range declaration.Parameters {
-		c.inspect(declaration.Name, parameter.Default)
-	}
 	c.functionScope(declaration.Name, declaration.Body)
 }
 
-// parameters records every parameter with no type.
+// parameters records every parameter with no type and walks every default
+// value. A default is code that runs in the declaration's own scope, so it is
+// walked here rather than by each caller: a lambda written as a default is
+// reached no other way.
 func (c *typingCollector) parameters(rule string, parameters []ast.Parameter, enclosing, owner string) {
 	for _, parameter := range parameters {
+		c.inspect(enclosing, parameter.Default)
 		// The annotation is examined first and for every parameter, because the
 		// collection rule is about what is written rather than what is absent.
 		c.collection(parameter.Type, parameter.TypeSpan, enclosing)

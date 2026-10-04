@@ -3,7 +3,6 @@ package lint
 import (
 	"fmt"
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -12,15 +11,12 @@ import (
 //
 // It opts in by name rather than with EnableNewRules, which would also enable
 // no-engine-logging and make a fixture holding a print() report a rule this
-// group is not about. Deriving the names from PendingRuleNames keeps the helper
-// correct as each task registers another rule.
+// group is not about. The names come from typingRuleNames, the same list the
+// rules register from, so the helper enables exactly the typing rules and
+// nothing a later inert rule happens to be named like.
 func typingConfig() Config {
 	config := DefaultConfig()
-	for _, name := range PendingRuleNames() {
-		if strings.HasPrefix(name, "require-") {
-			config.Enable = append(config.Enable, name)
-		}
-	}
+	config.Enable = append(config.Enable, typingRuleNames...)
 	return config
 }
 
@@ -102,17 +98,32 @@ func TestRequireArgumentTypeAcceptsTypedAndInferredAndVariadic(t *testing.T) {
 	}
 }
 
+// A named lambda is named in the diagnostic, because that is the name Godot
+// reports in a stack trace and the one a reader will recognize.
 func TestRequireArgumentTypeChecksALambdaParameter(t *testing.T) {
-	found := lintSourceWithConfig(t, typingConfig(), "require-argument-type", `
-func build() -> void:
-	var double := func(value): return value * 2
-	double.call(1)
-`)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want one diagnostic", found)
+	cases := map[string]struct {
+		source  string
+		message string
+	}{
+		"anonymous": {
+			source:  "func build() -> void:\n\tvar double := func(value): return value * 2\n\tdouble.call(1)\n",
+			message: `Argument "value" of lambda has no type`,
+		},
+		"named": {
+			source:  "func build() -> void:\n\tvar named := func helper(value): return value\n\tnamed.call(1)\n",
+			message: `Argument "value" of lambda "helper" has no type`,
+		},
 	}
-	if found[0].Message != `Argument "value" of lambda has no type` {
-		t.Errorf("message = %q", found[0].Message)
+	for name, test := range cases {
+		t.Run(name, func(t *testing.T) {
+			found := lintSourceWithConfig(t, typingConfig(), "require-argument-type", test.source)
+			if len(found) != 1 {
+				t.Fatalf("got %v, want one diagnostic", found)
+			}
+			if found[0].Message != test.message {
+				t.Errorf("message = %q, want %q", found[0].Message, test.message)
+			}
+		})
 	}
 }
 
@@ -138,6 +149,57 @@ func move():
 	}
 	if found[0].Line != 5 {
 		t.Errorf("reported line %d, want 5", found[0].Line)
+	}
+}
+
+func TestRequireVariableTypeHonorsAnExemptPattern(t *testing.T) {
+	config := typingConfig()
+	config.RequireVariableType = []string{"_process"}
+	found := lintSourceWithConfig(t, config, "require-variable-type", `
+func _process(delta: float) -> void:
+	var count = delta
+	print(count)
+
+func tally() -> void:
+	var count = 1
+	print(count)
+`)
+	if len(found) != 1 {
+		t.Fatalf("got %v, want only the variable in the unexempted function", found)
+	}
+	if found[0].Line != 7 {
+		t.Errorf("reported line %d, want 7", found[0].Line)
+	}
+}
+
+// A bare collection can be written in three places inside one function — a
+// local, the return type, and a loop variable's annotation — and the exempt
+// pattern has to reach all three. ["_process"] to quiet a hot loop is the
+// motivating case, and each place is carried by its own call site.
+func TestRequireTypedCollectionHonorsAnExemptPatternEverywhereInAFunction(t *testing.T) {
+	config := typingConfig()
+	config.RequireTypedCollection = []string{"_process"}
+	found := lintSourceWithConfig(t, config, "require-typed-collection", `
+func _process(delta: float) -> Array:
+	var bag: Array = [delta]
+	for row: Array in bag:
+		print(row)
+	return bag
+
+func tally() -> Array:
+	var bag: Array = []
+	for row: Array in bag:
+		print(row)
+	return bag
+`)
+	var lines []int
+	for _, diagnostic := range found {
+		lines = append(lines, diagnostic.Line)
+	}
+	slices.Sort(lines)
+	// The return type, the local, and the loop annotation, all in "tally".
+	if !slices.Equal(lines, []int{8, 9, 10}) {
+		t.Fatalf("reported lines %v, want [8 9 10] (only the unexempted function)", lines)
 	}
 }
 

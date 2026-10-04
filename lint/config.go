@@ -208,12 +208,12 @@ func (c Config) namePatterns() map[string]string {
 // exemptPatterns maps each typing rule to its configured exempt patterns.
 func (c Config) exemptPatterns() map[string][]string {
 	return map[string][]string{
-		"require-return-type":          c.RequireReturnType,
-		"require-argument-type":        c.RequireArgumentType,
-		"require-variable-type":        c.RequireVariableType,
-		"require-typed-collection":     c.RequireTypedCollection,
-		"require-signal-argument-type": c.RequireSignalArgumentType,
-		"require-typed-loop-variable":  c.RequireTypedLoopVariable,
+		ruleRequireReturnType:         c.RequireReturnType,
+		ruleRequireArgumentType:       c.RequireArgumentType,
+		ruleRequireVariableType:       c.RequireVariableType,
+		ruleRequireTypedCollection:    c.RequireTypedCollection,
+		ruleRequireSignalArgumentType: c.RequireSignalArgumentType,
+		ruleRequireTypedLoopVariable:  c.RequireTypedLoopVariable,
 	}
 }
 

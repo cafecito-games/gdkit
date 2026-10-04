@@ -245,13 +245,6 @@ func TestDocstringFixtureDiagnostics(t *testing.T) {
 	checkFixtures(t, lintFixtures(t, "docstrings", docstringFixtureConfig()), docstringFixtureExpectations)
 }
 
-// typingFixtureConfig enables every typing rule. They ship inert, so they need
-// a fixture group of their own. It reuses typingConfig so the fixture group and
-// the per-rule tests cannot drift into enabling different sets.
-func typingFixtureConfig() Config {
-	return typingConfig()
-}
-
 // typingFixtureExpectations is the complete set of diagnostics the files in
 // testdata/typing must produce once the typing rules are enabled.
 var typingFixtureExpectations = map[string][]fixtureFinding{
@@ -288,9 +281,11 @@ func TestLoggingFixtureDiagnostics(t *testing.T) {
 }
 
 // TestTypingFixtureDiagnostics is TestFixtureDiagnostics for the fixtures that
-// only produce diagnostics once the typing rules are enabled.
+// only produce diagnostics once the typing rules are enabled. It shares
+// typingConfig with the per-rule tests, so the two cannot drift into enabling
+// different sets.
 func TestTypingFixtureDiagnostics(t *testing.T) {
-	checkFixtures(t, lintFixtures(t, "typing", typingFixtureConfig()), typingFixtureExpectations)
+	checkFixtures(t, lintFixtures(t, "typing", typingConfig()), typingFixtureExpectations)
 }
 
 func checkFixtures(t *testing.T, found map[string][]fixtureFinding, expectations map[string][]fixtureFinding) {
