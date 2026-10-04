@@ -108,17 +108,19 @@ func lineByteRange(script *project.Script, number int) (start, end int) {
 }
 
 // atomsOnLine maps a one-based line number to the display width of the widest
-// run on that line that holds no place to break it. A run ends wherever a line
-// break is already legal, which in GDScript is inside an unclosed "(", "[", or
-// "{": a construct the code already brackets offers a break point, and the rule
-// asks the reader to use it. Nowhere else does, because breaking a line that
-// brackets nothing means introducing parentheses or a backslash, and a width
-// limit is not a reason to add syntax. A long bracket-free expression is
-// therefore not reported.
+// token on that line, which is the one thing on it that cannot be broken.
 //
-// A comment is a run of its own, measured by its longest whitespace-free word,
+// Anything longer than a token can be wrapped: Godot's GDScript style guide
+// favors parentheses for wrapping a statement over several lines, and allows a
+// backslash where parentheses do not fit, as in a match pattern list. So a long
+// line is reducible unless a single token on it already passes the limit, and
+// that is the only case this measurement exempts.
+//
+// A comment is measured by its longest whitespace-free word rather than whole,
 // because prose wraps and a trailing comment can move to the line above. A URL
-// or a res:// path in a comment is one word.
+// or a res:// path in a comment is one word. A string literal is measured
+// whole: concatenating one with "+" across a wrap is possible, but splitting a
+// resource path or a message that way reads worse than the long line does.
 //
 // Widths come from each token's span rather than from its lexeme, because an
 // operator token carries no lexeme, and because a string literal spanning
@@ -129,68 +131,29 @@ func atomsOnLine(script *project.Script, tabWidth int) (map[int]int, error) {
 		return nil, err
 	}
 	widest := make(map[int]int)
-	consider := func(line, from, to int) {
-		if line < 1 || from >= to {
-			return
-		}
-		text := strings.TrimRight(string(script.Source[from:to]), "\r\n")
-		widest[line] = max(widest[line], displayWidth(text, tabWidth))
-	}
-
-	// The run in progress, as the line it lies on and the byte range it covers
-	// so far. Line 0 means there is none.
-	runLine, runFrom, runTo := 0, 0, 0
-	flush := func() {
-		consider(runLine, runFrom, runTo)
-		runLine = 0
-	}
-	depth := 0
 	for _, current := range tokens {
 		switch current.Type {
 		case token.Newline, token.Indent, token.Dedent, token.EOF:
 			// Layout, not content: a rewrite is free to move all of it.
-			flush()
 			continue
 		}
-		last := current.Span.End.Line
-		for line := current.Span.Start.Line; line <= last; line++ {
+		for line := current.Span.Start.Line; line <= current.Span.End.Line; line++ {
 			start, end := lineByteRange(script, line)
 			from, to := max(start, current.Span.Start.Offset), min(end, current.Span.End.Offset)
 			if from >= to {
 				continue
 			}
+			text := strings.TrimRight(string(script.Source[from:to]), "\r\n")
+			width := displayWidth(text, tabWidth)
 			if current.Type == token.Comment {
-				flush()
-				text := strings.TrimRight(string(script.Source[from:to]), "\r\n")
-				width := 0
+				width = 0
 				for _, word := range strings.FieldsFunc(text, unicode.IsSpace) {
 					width = max(width, displayWidth(word, tabWidth))
 				}
-				widest[line] = max(widest[line], width)
-				continue
 			}
-			if line != runLine {
-				flush()
-				runLine, runFrom = line, from
-			}
-			runTo = to
-			if line != last {
-				// The token runs on past this line, so nothing else can join
-				// what it covers here.
-				flush()
-			}
-		}
-		switch current.Type {
-		case token.LParen, token.LBracket, token.LBrace:
-			depth++
-		case token.RParen, token.RBracket, token.RBrace:
-			depth = max(depth-1, 0)
-		}
-		if depth > 0 {
-			flush()
+			widest[line] = max(widest[line], width)
 		}
 	}
-	flush()
 	return widest, nil
 }
 
@@ -199,16 +162,18 @@ func atomsOnLine(script *project.Script, tabWidth int) (map[int]int, error) {
 // configured tab-characters width.
 //
 // A line is only reported when a shorter form of it exists. The narrowest a
-// line can be rewritten to is its indentation plus the widest run on it that
-// holds no place to break, so a line already over the limit by that measure is
-// left alone: a reference to a long class name from generated code or an addon,
-// a deep res:// path, or a URL in a documentation comment cannot be shortened,
-// and reporting one only asks the reader to suppress it.
+// line can be rewritten to is its indentation plus its widest token, because a
+// wrap can go anywhere between tokens but never inside one, so a line already
+// over the limit by that measure is left alone. A name from generated code or
+// an addon that is longer than the limit on its own, a res:// path that deep, or
+// a URL in a documentation comment cannot be shortened, and reporting one only
+// asks the reader to suppress it.
 //
-// Only breaking the line counts as shortening it. Binding a long name to a
-// shorter local, extracting a function, and wrapping an expression in
-// parentheses to gain a break point deliberately do not, because every line is
-// reducible under those and the rule would say nothing at all.
+// Nothing shorter than that is exempt, because Godot's style guide favors
+// wrapping a long statement in parentheses, so a line holding several ordinary
+// tokens does have a shorter form however unwieldy it looks. Binding a long
+// name to a shorter local and extracting a function are not counted, since
+// every line is reducible under those and the rule would say nothing at all.
 type maxLineLengthRule struct{}
 
 func (maxLineLengthRule) Name() string { return "max-line-length" }

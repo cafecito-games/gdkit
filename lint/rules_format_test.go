@@ -41,24 +41,22 @@ func TestFormatMaxLineLengthSparesIrreducibleLines(t *testing.T) {
 	assertRule(t, "max-line-length", strings.Repeat(" ", 120)+"\n", 1)
 }
 
-// TestFormatMaxLineLengthAsksOnlyForBreakPointsTheCodeAlreadyHas pins which
-// long lines still have a shorter form. GDScript continues a line implicitly
-// inside an unclosed bracket, so a bracketed construct can be broken and a
-// line that brackets nothing cannot be without adding syntax. None of these
-// names is long enough to be irreducible on its own.
-func TestFormatMaxLineLengthAsksOnlyForBreakPointsTheCodeAlreadyHas(t *testing.T) {
+// TestFormatMaxLineLengthReportsAnythingAWrapCanShorten pins the other side of
+// the measurement. Godot's style guide wraps a long statement in parentheses,
+// which can go anywhere between two tokens, so a long line built from ordinary
+// tokens does have a shorter form however unwieldy it looks. None of the names
+// here passes the limit on its own.
+func TestFormatMaxLineLengthReportsAnythingAWrapCanShorten(t *testing.T) {
 	longName := strings.Repeat("Generated", 6)
 
-	// An argument list is already bracketed, so the call can be broken.
 	assertRule(t, "max-line-length", "var a := "+longName+".new("+strings.Repeat("1, ", 15)+"2)\n", 1)
+	assertRule(t, "max-line-length", "var a := "+longName+" + "+longName+"\n", 1)
+	assertRule(t, "max-line-length", "var a: "+longName+" = "+longName+"Factory.create()\n", 1)
 
-	// Nothing here brackets anything, so breaking the line means introducing
-	// parentheses the code does not have.
-	assertRule(t, "max-line-length", "var a := "+longName+" + "+longName+"\n")
-
-	// The call's parentheses hold nothing, so breaking inside them leaves the
-	// first line exactly as long as it was.
-	assertRule(t, "max-line-length", "var a: "+longName+" = "+longName+"Factory.create()\n")
+	// A match pattern list is the one place parentheses do not fit, and the
+	// style guide allows a backslash there, so it is reducible all the same.
+	patterns := "Node.NOTIFICATION_ENTER_TREE, Node.NOTIFICATION_EXIT_TREE, Node.NOTIFICATION_READY, Node.NOTIFICATION_PAUSED"
+	assertRule(t, "max-line-length", "func f(v):\n\tmatch v:\n\t\t"+patterns+":\n\t\t\treturn 1\n", 3)
 }
 
 // TestFormatMaxLineLengthMeasuresEachLineOfAMultiLineString checks that a
