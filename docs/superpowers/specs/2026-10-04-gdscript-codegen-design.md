@@ -298,6 +298,55 @@ be answerable for every parsed class before step 4 runs.
 `# gdkit:generate:ignore-field` is therefore read for every class in the
 universe, including classes that never opt in.
 
+### Base-class resolution is tri-state
+
+Resolving `extends` is not a yes-or-no question, and treating it as one leaves a
+hole the unresolved-base condition cannot see. Every target is in exactly one
+of three states:
+
+| State | Meaning | Effect |
+| --- | --- | --- |
+| **resolved** | names an indexed project class | the inheritance edge is recorded |
+| **unresolved project reference** | a form that *must* name a project script, but does not | sets `UnresolvedBase`, demoting every inheritance-sensitive pair |
+| **not a project reference** | a bare identifier that is not a global `class_name`, an autoload, a preload alias, or a class in scope | read as an engine type; no edge, no refusal |
+
+The middle state has to be enumerated, because every omission from it is a
+silently dropped edge and therefore an unsound `equals`:
+
+- a `res://`, relative, or `uid://` path naming no script;
+- a member chain whose head resolved but whose inner name did not;
+- a **declared preload alias whose target is missing or did not parse** — the
+  alias proves a project script was meant, so falling through to "engine type"
+  is wrong;
+- an **autoload name whose script is missing**.
+
+Resolution order for a bare identifier follows Godot's analyzer: global
+`class_name`s, then autoloads, then preload aliases in scope, then classes in
+the enclosing and inherited scopes. Godot searches globals and natives *before*
+current-scope classes, and rejects an inner class that hides a global rather
+than preferring it.
+
+**Autoloads are indexed, not excluded.** Godot resolves an autoload identifier
+as a project global during base-class analysis, so `extends SomeAutoload` is a
+real inheritance edge. Declaring it out of scope would not make it sound — a
+field-bearing subclass reached that way would simply be absent from the
+descendant analysis. `project` therefore reads the `[autoload]` section of
+`project.godot` and exposes `Snapshot.Autoloads`, mapping each name to the
+script it names. This is the only fact `generate` needs that is not in a `.gd`
+file, and `project` stays the only package that reads from disk.
+
+The third state is what keeps the tool usable. Without a native class
+catalogue — roughly 800 versioned names, and out of scope — `extends Control`
+cannot be told from a typo, so an unrecognised bare identifier is read as an
+engine type. That is sound for the descendant rule, which only ever asks "does
+any class name *me* as its base" and matches a name exactly; a typo there is a
+project Godot will not load either.
+
+A preload alias is recorded from `const Name = preload("res://path.gd")` and
+from a relative `preload("path.gd")`, resolved against the declaring script's
+directory, because both are valid GDScript and both are how a script names
+another script as a base without a `class_name`.
+
 ### Capabilities
 
 `provider(C, S)` is found by walking `C`'s ancestry, including `C` itself, and
@@ -905,7 +954,6 @@ marker forms.
 - **Rewriting a hand-written `_to_string`.** `generate.conflict` reports it;
   nothing migrates it.
 - **A `_to_string` format option.** One documented format.
-- **Autoloads as base classes.** `extends SomeAutoload` is not resolved,
-  because the autoload table lives in `project.godot`, which `project` does not
-  read. A `const Base = preload(…)` alias *is* resolved, since that is the
-  common way a script names another script as a base without a `class_name`.
+- **A native class catalogue.** Roughly 800 versioned names. Its absence is
+  why an unrecognised bare identifier is read as an engine type rather than
+  refused; Base-class resolution says why that is sound.
