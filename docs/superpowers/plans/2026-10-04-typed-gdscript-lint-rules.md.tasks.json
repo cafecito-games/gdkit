@@ -37,7 +37,7 @@
     {
       "id": 4,
       "subject": "Task 5: require-variable-type, require-typed-collection",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         3
       ],

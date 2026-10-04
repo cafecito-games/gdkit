@@ -1502,6 +1502,19 @@ var x := [] infers an untyped Array that this rule deliberately misses."
 
 ---
 
+> **Inherited from Task 5, verified in review.** `parameters` already runs
+> `collection` on every parameter annotation, so reusing it for a signal gives
+> signal parameters the bare-collection check for free — which means a bare
+> `Array` in a signal payload reports `require-typed-collection` under the
+> *signal's* name. `lint/config.go`'s comment currently promises the signal name
+> only for `require-signal-argument-type`, so that comment needs one more line.
+>
+> `collection` takes a type name and a span, so the `for` header's `Type` and
+> `TypeSpan` work with it unchanged.
+>
+> Do not call `inspect` on a class-scope `VariableDeclaration` node; the
+> no-double-record invariant depends on it, and `classVariable` now documents why.
+
 ### Task 6: `require-signal-argument-type` and `require-typed-loop-variable`
 
 **Goal:** The last two sites: a signal's payload and a `for` header.
@@ -1880,7 +1893,9 @@ rules."
 - [ ] Each of the six rules appears with what it reports, what satisfies it, its exempt key, and its version floor
 - [ ] `godot_version` appears in the lint configuration table with its default and the reason the default is the newest version
 - [ ] The README states that the six rules ship inert and how to enable them
-- [ ] The `require-typed-collection` blind spot (`var x := []`) is documented
+- [ ] The `require-typed-collection` blind spot (`var x := []`) is documented, and stated as a real gap rather than a footnote: `var items := []` is the commoner way to write an untyped collection, so a project that sees this rule pass must not conclude its collections are typed
+- [ ] The per-type version floors are documented on the rule: `Array` from 4.0, `Dictionary` from 4.4, and a bare `Dictionary` is **silently** not reported below 4.4
+- [ ] A class-scope declaration cannot be exempted by a list — only by a `# gdkit:ignore` comment — and that is stated where a user configuring the rules will read it
 
 **Verify:** `grep -c "require-return-type" README.md` → at least 1, and `grep "30 naming" README.md` → no output
 
