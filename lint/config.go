@@ -97,13 +97,16 @@ type Config struct {
 	// turns that rule off, because it predates PendingRule.
 	//
 	// What the pattern matches depends on the rule. For require-return-type and
-	// require-argument-type it is the function being declared. For
+	// require-argument-type it is the function being declared; for a lambda's
+	// parameter it is the enclosing function, not the lambda. For
 	// require-variable-type, require-typed-collection, and
 	// require-typed-loop-variable it is the enclosing function, so ["_process"]
 	// quiets a hot loop's locals without quieting the file; a class-scope
 	// declaration has no enclosing function, and a rule passes no name for one, so
 	// no list can exempt it — it is suppressed with a # gdkit:ignore comment
-	// instead.
+	// instead. Code inside a property accessor is named for the property, which
+	// is the only name a reader could write a pattern for.
+	//
 	// For require-signal-argument-type it is the signal's own name.
 	RequireReturnType         []string `json:"require-return-type,omitempty"`
 	RequireArgumentType       []string `json:"require-argument-type,omitempty"`

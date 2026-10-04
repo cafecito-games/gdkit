@@ -245,10 +245,37 @@ func TestDocstringFixtureDiagnostics(t *testing.T) {
 	checkFixtures(t, lintFixtures(t, "docstrings", docstringFixtureConfig()), docstringFixtureExpectations)
 }
 
+// typingFixtureConfig enables every typing rule. They ship inert, so they need
+// a fixture group of their own. It reuses typingConfig so the fixture group and
+// the per-rule tests cannot drift into enabling different sets.
+func typingFixtureConfig() Config {
+	return typingConfig()
+}
+
+// typingFixtureExpectations is the complete set of diagnostics the files in
+// testdata/typing must produce once the typing rules are enabled.
+var typingFixtureExpectations = map[string][]fixtureFinding{
+	"signatures.gd": {
+		// A class-scope lambda: no function body reaches it.
+		{3, "require-argument-type"},
+		{6, "require-return-type"},
+		// "first" only: "second" is annotated.
+		{11, "require-argument-type"},
+		// The lambda's parameter, not its missing return type.
+		{16, "require-argument-type"},
+	},
+}
+
 // TestLoggingFixtureDiagnostics is TestFixtureDiagnostics for the fixtures that
 // only produce diagnostics once no-engine-logging is enabled.
 func TestLoggingFixtureDiagnostics(t *testing.T) {
 	checkFixtures(t, lintFixtures(t, "logging", loggingFixtureConfig()), loggingFixtureExpectations)
+}
+
+// TestTypingFixtureDiagnostics is TestFixtureDiagnostics for the fixtures that
+// only produce diagnostics once the typing rules are enabled.
+func TestTypingFixtureDiagnostics(t *testing.T) {
+	checkFixtures(t, lintFixtures(t, "typing", typingFixtureConfig()), typingFixtureExpectations)
 }
 
 func checkFixtures(t *testing.T, found map[string][]fixtureFinding, expectations map[string][]fixtureFinding) {
@@ -290,7 +317,10 @@ func TestFixturesExerciseEveryRule(t *testing.T) {
 	driverReported := map[string]bool{"source-parse": true, "unknown-ignore": true}
 
 	exercised := make(map[string]bool)
-	for _, group := range []map[string][]fixtureFinding{fixtureExpectations, docstringFixtureExpectations, loggingFixtureExpectations} {
+	for _, group := range []map[string][]fixtureFinding{
+		fixtureExpectations, docstringFixtureExpectations,
+		loggingFixtureExpectations, typingFixtureExpectations,
+	} {
 		for _, findings := range group {
 			for _, finding := range findings {
 				exercised[finding.rule] = true
