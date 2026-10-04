@@ -264,6 +264,22 @@ paths listed in [`.gdkitignore`](#ignoring-files-with-gdkitignore).
 `tab-characters` is a setting and not a rule. `max-line-length` expands each
 tab to that many spaces before measuring a line.
 
+`max-line-length` reports a long line only when a shorter form of it exists, so
+it asks only for break points the code already has. GDScript continues a line
+implicitly inside an unclosed `(`, `[`, or `{`, so a bracketed construct offers
+somewhere to break and the rule asks the reader to use it. The narrowest the
+line can then be is its indentation plus the widest stretch of it holding no such
+break point, and a line already over the limit by that measure is left alone. A
+comment is measured by its longest word, because prose wraps.
+
+So a reference to a long class name from generated code or an addon, a deep
+`res://` path, and a URL in a documentation comment are not reported and need no
+suppression comment. Neither is a long expression that brackets nothing, since
+breaking one means introducing parentheses or a backslash, and a width limit is
+not a reason to add syntax. Only breaking the line counts as shortening it:
+binding a long name to a shorter local and extracting a function do not, because
+every line is reducible under those and the rule would never report anything.
+
 Each name rule has a key of the same name holding a regular expression that must
 match the whole identifier, for example:
 

@@ -11,6 +11,8 @@ import (
 	"unicode"
 
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/cafecito-games/gdparser/lexer"
+	"github.com/cafecito-games/gdparser/token"
 )
 
 func init() {
@@ -74,9 +76,139 @@ func (maxFileLinesRule) Check(context *Context, script *project.Script) []Diagno
 	}}
 }
 
+// displayWidth is the width of text in runes, so that non-ASCII source is not
+// penalized, counting each tab as the configured tab-characters width.
+func displayWidth(text string, tabWidth int) int {
+	return len([]rune(strings.ReplaceAll(text, "\t", strings.Repeat(" ", tabWidth))))
+}
+
+// indentWidth is the display width of a line's leading whitespace. A line that
+// is nothing but whitespace has no indentation, because none of it is there to
+// place anything: it is width a rewrite can simply drop.
+func indentWidth(text string, tabWidth int) int {
+	content := strings.TrimLeftFunc(text, unicode.IsSpace)
+	if content == "" {
+		return 0
+	}
+	return displayWidth(text[:len(text)-len(content)], tabWidth)
+}
+
+// lineByteRange is the half-open byte range of the one-based line number
+// within the script's source, including the line terminator.
+func lineByteRange(script *project.Script, number int) (start, end int) {
+	if number < 1 || number > len(script.Lines) {
+		return 0, 0
+	}
+	start = script.Lines[number-1]
+	end = len(script.Source)
+	if number < len(script.Lines) {
+		end = script.Lines[number]
+	}
+	return start, end
+}
+
+// atomsOnLine maps a one-based line number to the display width of the widest
+// run on that line that holds no place to break it. A run ends wherever a line
+// break is already legal, which in GDScript is inside an unclosed "(", "[", or
+// "{": a construct the code already brackets offers a break point, and the rule
+// asks the reader to use it. Nowhere else does, because breaking a line that
+// brackets nothing means introducing parentheses or a backslash, and a width
+// limit is not a reason to add syntax. A long bracket-free expression is
+// therefore not reported.
+//
+// A comment is a run of its own, measured by its longest whitespace-free word,
+// because prose wraps and a trailing comment can move to the line above. A URL
+// or a res:// path in a comment is one word.
+//
+// Widths come from each token's span rather than from its lexeme, because an
+// operator token carries no lexeme, and because a string literal spanning
+// several lines must contribute to each line only the part that lies on it.
+func atomsOnLine(script *project.Script, tabWidth int) (map[int]int, error) {
+	tokens, err := lexer.Lex(script.Source)
+	if err != nil {
+		return nil, err
+	}
+	widest := make(map[int]int)
+	consider := func(line, from, to int) {
+		if line < 1 || from >= to {
+			return
+		}
+		text := strings.TrimRight(string(script.Source[from:to]), "\r\n")
+		widest[line] = max(widest[line], displayWidth(text, tabWidth))
+	}
+
+	// The run in progress, as the line it lies on and the byte range it covers
+	// so far. Line 0 means there is none.
+	runLine, runFrom, runTo := 0, 0, 0
+	flush := func() {
+		consider(runLine, runFrom, runTo)
+		runLine = 0
+	}
+	depth := 0
+	for _, current := range tokens {
+		switch current.Type {
+		case token.Newline, token.Indent, token.Dedent, token.EOF:
+			// Layout, not content: a rewrite is free to move all of it.
+			flush()
+			continue
+		}
+		last := current.Span.End.Line
+		for line := current.Span.Start.Line; line <= last; line++ {
+			start, end := lineByteRange(script, line)
+			from, to := max(start, current.Span.Start.Offset), min(end, current.Span.End.Offset)
+			if from >= to {
+				continue
+			}
+			if current.Type == token.Comment {
+				flush()
+				text := strings.TrimRight(string(script.Source[from:to]), "\r\n")
+				width := 0
+				for _, word := range strings.FieldsFunc(text, unicode.IsSpace) {
+					width = max(width, displayWidth(word, tabWidth))
+				}
+				widest[line] = max(widest[line], width)
+				continue
+			}
+			if line != runLine {
+				flush()
+				runLine, runFrom = line, from
+			}
+			runTo = to
+			if line != last {
+				// The token runs on past this line, so nothing else can join
+				// what it covers here.
+				flush()
+			}
+		}
+		switch current.Type {
+		case token.LParen, token.LBracket, token.LBrace:
+			depth++
+		case token.RParen, token.RBracket, token.RBrace:
+			depth = max(depth-1, 0)
+		}
+		if depth > 0 {
+			flush()
+		}
+	}
+	flush()
+	return widest, nil
+}
+
 // maxLineLengthRule reports lines longer than the configured limit, measured
 // in runes so that non-ASCII source is not penalized. Each tab counts as the
 // configured tab-characters width.
+//
+// A line is only reported when a shorter form of it exists. The narrowest a
+// line can be rewritten to is its indentation plus the widest run on it that
+// holds no place to break, so a line already over the limit by that measure is
+// left alone: a reference to a long class name from generated code or an addon,
+// a deep res:// path, or a URL in a documentation comment cannot be shortened,
+// and reporting one only asks the reader to suppress it.
+//
+// Only breaking the line counts as shortening it. Binding a long name to a
+// shorter local, extracting a function, and wrapping an expression in
+// parentheses to gain a break point deliberately do not, because every line is
+// reducible under those and the rule would say nothing at all.
 type maxLineLengthRule struct{}
 
 func (maxLineLengthRule) Name() string { return "max-line-length" }
@@ -90,11 +222,17 @@ func (maxLineLengthRule) Check(context *Context, script *project.Script) []Diagn
 	if tabWidth < 0 {
 		tabWidth = 0
 	}
+	// Lexing cannot fail here, because the linter runs no rule over a script
+	// that did not parse. If it ever did, no atom is irreducible and every
+	// long line is reported, which is the plain width measurement.
+	atoms, _ := atomsOnLine(script, tabWidth)
 	var found []Diagnostic
 	for number := 1; number <= script.LineCount(); number++ {
-		text := strings.ReplaceAll(script.Line(number), "\t", strings.Repeat(" ", tabWidth))
-		length := len([]rune(text))
-		if length <= limit {
+		text := script.Line(number)
+		if displayWidth(text, tabWidth) <= limit {
+			continue
+		}
+		if indentWidth(text, tabWidth)+atoms[number] > limit {
 			continue
 		}
 		found = append(found, Diagnostic{
