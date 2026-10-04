@@ -486,6 +486,12 @@ var setup = func():
 // rule that reports on both engines, which is why the findings are compared by
 // rule and line rather than by rule alone.
 //
+// Comparing by line pins that the Dictionary is gated and the Array is not. It
+// does not pin where the Dictionary's boundary sits: moving it to 4.2 leaves
+// this test green, because both versions in the table fall on the same side of
+// it. TestRequireTypedCollectionGatesDictionarySeparately is what holds it at
+// 4.4.
+//
 // The report is not filtered to the typing rules. DefaultConfig() reports
 // nothing on this source, so the whole report is the typing rules' findings,
 // and an unrelated rule that starts firing here is worth a failure rather than
@@ -537,8 +543,10 @@ func tally(start) -> int:
 		config := typingConfig()
 		config.GodotVersion = test.version
 		report := lintProject(t, config, map[string]string{"a.gd": source})
-		// Report.sort() orders by path, line, column and rule, so the findings
-		// of a one-file project already arrive in the order the table lists.
+		// Report.sort() orders by path, line, column and rule. No two findings
+		// in this source share a line, so column and rule never tiebreak and
+		// the findings arrive in the order the table lists. A second finding on
+		// one line would make that order depend on the column.
 		var got []string
 		for _, diagnostic := range report.Diagnostics {
 			got = append(got, fmt.Sprintf("%s:%d", diagnostic.Rule, diagnostic.Line))
