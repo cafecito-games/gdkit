@@ -1,10 +1,11 @@
 # GDScript code generation
 
 A fifth gdkit tool, `gdkit gen`, that writes boilerplate value-object methods
-into a class the project has opted in: `_to_string`, `equals`, and
-`deep_equals`. It reports only on classes that opted in and on the types those
-classes require, with one stated exception for parse failures, and it never
-rewrites anything outside the region it owns.
+into a class the project has opted in. This spec covers two generators,
+`to_string` and `equals`, and the machinery they share. A third,
+`deep_equals`, is specified separately in
+[the deep_equals design](2026-10-04-gdscript-deep-equals-design.md) and adds no
+new concepts to this one — a generator is an `emit_*.go` and a registry entry.
 
 GDScript has no partial classes, no mixins, and no user-defined annotations — an
 `@gdkit_value` is a compile error in Godot, not an extension point. Generated
@@ -12,6 +13,9 @@ methods therefore have to land inside the user's own script. That single languag
 fact is what makes this tool shaped like `format` (a verified in-place rewriter)
 rather than like a conventional out-of-band generator, and it decides most of
 what follows.
+
+It reports only on classes that opted in, with one stated exception for parse
+failures, and it never rewrites anything outside the region it owns.
 
 ## The marker
 
@@ -66,9 +70,9 @@ seriously rather than dismissed: `hex.gd` declares
 methods and extends what `Hex` used to. It would delete the region extent rules,
 byte-identity verification, the format oracle, `generate.unsafe`, the orphan
 lifecycle and `--prune`, and most of `generate.conflict` — a hand-written
-`equals` would simply override the generated one. It would also fix inherited
-fields and thread the inheritance slot through rather than spending it, since
-each generated base extends the real one.
+`equals` would simply override the generated one. It would also thread the
+inheritance slot through rather than spending it, since each generated base
+extends the real one.
 
 It was rejected for what the generated bodies would have to look like. A base
 class cannot statically reference a member declared in its subclass — GDScript
@@ -81,12 +85,11 @@ in Godot until `gen write` had run, and each new `.gd` file needs a `.uid`
 sidecar, putting `gen` and `uid` in each other's way.
 
 The in-file region keeps `self.q`: type-checked, direct, and adding nothing to
-the filesystem or to Godot's global class list. The cost is this document's
-length, which is paid once.
+the filesystem or to Godot's global class list.
 
-A free-function helper (`HexEquality.equals(a, b)`) would keep full static typing
-in a wholly owned file, but `_to_string` must be a method on the class for
-`str()` and `print()` to use it, so that model cannot deliver one of the three
+A free-function helper (`HexEquality.equals(a, b)`) would keep full static
+typing in a wholly owned file, but `_to_string` must be a method on the class
+for `str()` and `print()` to use it, so that model cannot deliver one of the two
 generators at all.
 
 ### Grammar
@@ -110,7 +113,7 @@ found *inside* a recognised list, passes over them silently. A test pins this,
 because a future change to that regex could quietly turn every marker in every
 adopting project into an `unknown-ignore` finding.
 
-### The region
+## The region
 
 Generated methods live between sentinels:
 
@@ -135,7 +138,7 @@ region that refused to be clobbered was considered and rejected: it puts a hash
 comment in every generated region, churning the diff on metadata, to protect
 against editing code whose own first line says it is generated.
 
-#### Region extent
+### Region extent
 
 The region is a byte span, and it must be defined exactly, because whether a
 canonical file stays canonical turns on it. The span runs from the first byte of
@@ -165,10 +168,10 @@ precedes it. The clamp to `blank_lines.nested` applies only between statements
 that are not major declarations, which the region never is.
 
 This is why owning the *leading* gap and not the trailing one is correct rather
-than arbitrary: the leading gap is attributed to the region by the formatter, and
-the trailing gap is attributed to the statement after it.
+than arbitrary: the leading gap is attributed to the region by the formatter,
+and the trailing gap is attributed to the statement after it.
 
-#### Orphaned regions
+### Orphaned regions
 
 A region whose class no longer opts in — it gained an `ignore`, stopped matching
 configuration, or dropped its last generator — is **retained**, and reported as
@@ -186,25 +189,16 @@ adding a path to `exclude` would make its region invisible to both the
 diagnostic and `--prune`, so the most likely way to orphan a region would also
 be the way to hide it. `--prune` will not write to a file outside the selection,
 and says so: the diagnostic names the file and states that it must re-enter the
-selection to be pruned. Abandoning ownership silently is the thing being avoided.
+selection to be pruned.
 
-## Pipeline
+## Universe and selection
 
-`generate` is a whole-project analysis, closer to `architecture` than to `lint`.
-This is not a stylistic choice. To emit `origin.deep_equals(p_other.origin)` for
-`var origin: Coordinate`, the generator must know that `Coordinate` is a project
-class rather than an engine type, and that `Coordinate` will *actually* have a
-`deep_equals` — without the second fact the emitted call is a runtime crash.
-
-### Universe and selection
-
-The semantic index must span the whole project while generation targets are
+`generate` is a whole-project analysis, closer to `architecture` than to `lint`,
+because `equals` is only sound if the whole inheritance graph is visible. The
+semantic index must span the whole project while generation targets are
 filtered, and `architecture` already carries the comment explaining why
 (`architecture/analyzer.go:61`): a file hidden from the walk takes its
 `class_name` out of the index, and references to it then produce false results.
-For `generate` the failure is worse — absence from the index is
-indistinguishable from "engine-owned", so a field typed as a hidden project
-class would get identity comparison.
 
 `generate` must not implement this filtering itself. `project` is documented as
 the only package that reads a project from disk, and `.gdkitignore` is read from
@@ -249,54 +243,7 @@ no second package reading the project. The existing four tools pass
 Only a selected script may opt in, and only a selected script may carry a
 diagnostic — with the parse-failure exception below.
 
-### Type resolution needs a builtin catalogue
-
-"Not in the project `class_name` index" does not mean "engine-owned", and it
-does not mean "project class" either: engine types are absent from that index
-too, so `Vector2` and a misspelled `Coordinat` are indistinguishable by it
-alone. Resolution is therefore against two catalogues in order:
-
-1. **Builtin Variant value types** — an embedded list in `generate/builtin.go`.
-   A field of one compares with `==`, which is correct including for `Array` and
-   `Dictionary`, since Godot 4 compares those by value.
-2. **The project `class_name` index.**
-
-The builtin set is **not** stable across Godot 4, and an earlier draft of this
-spec asserted that it was. `PackedVector4Array` is absent from the Godot 4.0
-`Variant.Type` enum and present by 4.6. The list is therefore the **union** of
-every builtin introduced anywhere in Godot 4, which needs no version
-configuration to be sound: a type that does not exist in the engine version a
-project targets cannot appear in that project's source, so a union can only be
-over-permissive about names that nobody can write. A per-version list would buy
-nothing and would need a `godot_version` key to consult.
-
-`Object` and `Variant` are in the enum but are **not** in this list. `Object` is
-the very thing whose reference semantics justify refusing a `Node`-typed field,
-so classifying it as a comparable builtin would contradict that rule; a field
-declared `Object` has no value equality to generate. `Variant` is handled by the
-untyped row of the dispatch table, since that is what it means.
-
-A type in neither is **refused** with `generate.unsupported` naming it. That
-rejects a field typed as a native engine class, such as `Node` or `Texture2D`:
-a native engine object has reference semantics and no value equality to
-generate, so a class holding one is not the kind of class this tool can compare
-structurally. The field-level opt-out is the escape hatch, and the diagnostic
-names it.
-
-**This applies to `deep_equals` alone.** Resolution exists to decide whether to
-recurse, and only `deep_equals` recurses. `_to_string` formats any value with
-`%s`, and `equals` compares any value with `==`; neither needs to know what a
-field's type is, so neither refuses a field for having an unresolvable one. A
-class holding a `Node` can still generate `_to_string` and `equals` — the
-`equals` will compare that field by reference, which is the correct semantic for
-a node. Only a generator that claims to compare *structurally* owes the reader a
-refusal when it cannot.
-
-A full native-class catalogue — roughly 800 names, versioned per Godot release —
-is what it would take to distinguish `Texture2D` from a typo, and it buys only a
-better *message* for a field that is refused either way. It is out of scope.
-
-### Order
+## Pipeline
 
 `Check` runs a fixed sequence, and everything downstream depends on the
 ordering:
@@ -307,80 +254,51 @@ ordering:
    (script, class, generators).
 3. **Index** — over the whole universe: `class_name` to script, the inheritance
    edge each class declares, each class's declared methods with their staticness
-   and arity, and **each class's selectable fields**.
-4. **Resolve capabilities** — compute, to a fixed point, which
-   (class, signature) pairs are *realizable*.
+   and arity, and each class's selectable fields.
+4. **Resolve capabilities** — walk the inheritance forest parents-first and
+   decide which (class, signature) pairs are *realizable*.
 5. **Emit and canonicalise** — each requested generator produces its method
-   text, consulting step 4. The region, including the leading gap it owns, is
-   formatted in isolation with the project's `format` configuration and spliced
-   into the file.
+   text. The region, including the leading gap it owns, is formatted in
+   isolation with the project's `format` configuration and spliced into the
+   file.
 6. **Verify** — the candidate must reparse, and every byte outside the region
    must be identical to the source.
 7. **Sort** — by path, then line, column, rule.
 
 **Field selection is part of indexing, not a later step for requested classes
-only.** Capability resolution and both inheritance rules ask whether some
-*other* class — an ancestor, or an unrequested descendant — declares a
-selectable field, so that question has to be answerable for every parsed class
-before step 4 runs. An earlier draft selected fields after resolving
-capabilities and only for requested classes, which made the fixed point depend
-on information the pipeline had not computed yet. `# gdkit:generate:ignore-field`
-is therefore read for every class in the universe, including classes that never
-opt in.
+only.** Both inheritance rules ask whether some *other* class — an ancestor, or
+an unrequested descendant — declares a selectable field, so that question has to
+be answerable for every parsed class before step 4 runs.
+`# gdkit:generate:ignore-field` is therefore read for every class in the
+universe, including classes that never opt in.
 
-### Realizable, not merely planned
+### Capabilities
 
-A method a class *requested* is not a method it will *have*. If `B` requests
-`deep_equals` and then loses its candidate — a conflict, an unsupported field,
-a refused inheritance — then a `deep_equals` in `A` that called `B.deep_equals`
-would compile and crash. "Requested" is an intention; emission may only depend
-on a capability that survives every blocker.
+For a class `C` and a signature `S`, `provider(C, S)` is the nearest class in
+`C`'s ancestry, including `C` itself, that declares a compatible `S` or has `S`
+realizable. `realizable(C, S)` holds when `C` declares a compatible `S`, or
+requested `S` and carries no blocking diagnostic.
 
-So step 4 computes `realizable(class, signature)` as a **greatest** fixed point:
+A declared, compatible method is **immutable**: it already exists in the file
+and nothing this run can do takes it away. Only a generated realization can be
+withdrawn, so the set tracks provenance and a blocked generator can never erase
+a hand-written provider that something else was relying on.
 
-- seed it optimistically — every declared-and-compatible method, plus every
-  requested generator, is assumed realizable;
-- repeatedly demote any **generated** pair whose own emission needs a provider
-  that is not realizable, or whose class carries a blocking diagnostic;
-- stop when a pass demotes nothing.
+No fixed-point iteration is needed, and it is worth being precise about why.
+A generated `equals` depends on exactly one other capability — its parent's —
+and GDScript inheritance is acyclic, so resolving the forest parents-first
+settles every class in one pass. Iteration becomes necessary only when a
+capability can depend on a *field's* type, which can cycle; that is a
+`deep_equals` concern and is specified in its own document.
 
-A declared, compatible method is **immutable** and can never be demoted. It
-already exists in the file; nothing this run does can take it away. Conflating
-the two would let a blocked generator erase a perfectly good hand-written
-provider and collapse every dependent that was relying on it, so the set tracks
-provenance — `declared` or `generated` — and only the latter is demotable.
+### Composing with the ancestor
 
-The set only ever shrinks, so this terminates. Starting optimistically rather
-than pessimistically is what makes a cycle work: `A` and `B` holding each other
-and both newly requesting `deep_equals` are realizable together, because neither
-is demoted by anything other than the other's absence. A cycle survives exactly
-when every member survives on its own merits — which is the correct answer, and
-the one a least fixed point would get wrong by refusing both.
-
-This supersedes an earlier draft of this spec that computed a single union of
-declared and requested methods. The union is right about opt-in, which never
-cascades, and wrong about failure, which does.
-
-### Effective providers, not nearest requests
-
-Both inheritance questions are answered by one operation. For a class `C` and a
-signature `S`, `provider(C, S)` is the nearest class in `C`'s ancestry,
-including `C` itself, that declares a compatible `S` or has `S` realizable.
-
-**Dispatching a field.** A field typed `C` recurses when `provider(C, S)`
-exists, not when `C` itself provides `S`. This is what makes a zero-field
-subclass work: `C extends B`, `C` adds nothing, `B` generates `deep_equals`, so
-`provider(C, deep_equals)` is `B` and a field typed `C` recurses correctly. An
-earlier draft refused that case while calling it harmless.
-
-**Composing with the ancestor.** A generated comparison that looked only at the
-fields its own class declares would be unsound in both directions, and script
-identity does not save it. Two `SubHex` instances answer the same
-`get_script()`, so a `SubHex` inheriting `Hex.equals` passes the guard and
-ignores every field `SubHex` added; and a `SubHex` that generates its *own*
-`equals` would compare only `r` and ignore the `q` it inherited. An earlier
-draft of this spec claimed that opting the subclass in cleared the problem,
-which was simply wrong — it relocates it.
+A generated comparison that looked only at the fields its own class declares
+would be unsound in both directions, and script identity does not save it. Two
+`SubHex` instances answer the same `get_script()`, so a `SubHex` inheriting
+`Hex.equals` passes the guard and ignores every field `SubHex` added; and a
+`SubHex` that generates its *own* `equals` would compare only `r` and ignore the
+`q` it inherited.
 
 A generated method therefore **composes with its ancestor's provider** before
 comparing its own fields:
@@ -397,9 +315,9 @@ func equals(p_other: Variant) -> bool:
 ```
 
 `super.equals` is emitted only when `provider(parent, S)` exists. The ancestor's
-own guard passes, because both operands really are the same script. This closes
-inherited fields rather than declaring them out of scope: every field in the
-ancestry is compared, each by the class that declares it.
+own guard passes, because both operands really are the same script. This is also
+what makes inherited fields work: every field in the ancestry is compared, each
+by the class that declares it.
 
 What remains is the case with no ancestor to compose with:
 
@@ -439,19 +357,20 @@ information — it looks like a clean project. The refusal rule above would
 silently fail to fire.
 
 So: when any generator whose soundness depends on the inheritance graph is
-requested — `equals` and `deep_equals` both do — **every** parse failure in the
-universe is a blocking `source-parse` diagnostic for the run, selected or not.
+requested, **every** parse failure in the universe is a blocking `source-parse`
+diagnostic for the run, selected or not. `equals` is such a generator;
+`to_string` is not, and a project generating only `_to_string` is unaffected.
 
 The consequence is real and worth stating plainly: a project with one
-unparseable script anywhere cannot generate equality methods until it parses.
-The alternative is generating a method that is quietly wrong whenever the file
-that would have proved it wrong is also the file that cannot be read.
+unparseable script anywhere cannot generate `equals` until it parses. The
+alternative is generating a method that is quietly wrong whenever the file that
+would have proved it wrong is also the file that cannot be read.
 
 ### Formatting and the full-file invariant
 
-Step 6 formats the region alone rather than the spliced file. Formatting the
+Step 5 formats the region alone rather than the spliced file. Formatting the
 whole file would let gdparser reformat code *outside* the region whenever the
-file was not already canonical, which breaks step 7 and silently turns
+file was not already canonical, which breaks step 6 and silently turns
 `gen write` into a partial `format write`. Formatting the region alone is only
 sound because the region sits at indent 0, which is the honest reason v1 is
 limited to top-level classes: an inner class's region would need re-indentation
@@ -487,7 +406,7 @@ under Region extent:
 
 - `S[:a]` equals `C[:a']`, and `S[b:]` equals `C[b':]`;
 - `C` reparses;
-- the region in `C` is byte-for-byte what step 6 produced;
+- the region in `C` is byte-for-byte what step 5 produced;
 - if `S` was format-clean, the oracle reports no change on `C`.
 
 A candidate failing any of these is refused with `generate.unsafe` and the file
@@ -527,8 +446,8 @@ type Plan struct {
   way.
 
 A blocking diagnostic suppresses its own class's candidate, and — through step 4
-— the candidate of anything that depended on the capability it cost. It does not
-stop unrelated classes from being generated.
+— the candidate of any descendant that was composing with the capability it
+cost. It does not stop unrelated classes from being generated.
 
 ## Package shape
 
@@ -538,11 +457,11 @@ generate/
   marker.go      the directive grammar and the region sentinels
   region.go      region extent and the owned leading gap
   fields.go      member var selection
-  builtin.go     the 39 builtin Variant type names
-  index.go       class_name, inheritance, declared method signatures
-  capability.go  provider() and the realizable fixed point
+  index.go       class_name, inheritance, declared signatures, selectable fields
+  capability.go  provider() and parents-first capability resolution
   generator.go   the registry and the Generator interface
-  emit_*.go      one file per generator
+  emit_to_string.go
+  emit_equals.go
   check.go       New, Check — pure, no I/O
   verify.go      the outside-the-region invariant and the format oracle
   apply.go       Apply(snapshot, plan) ([]string, error) — the only writer
@@ -587,6 +506,12 @@ reading one before `_ready` is a null dereference. A field carrying
 A property with accessors is included by name. The generated code reads
 `self.q`, which runs the getter, as hand-written code would.
 
+Neither generator resolves a field's declared type. `_to_string` formats any
+value with `%s` and `equals` compares any value with `==`, so a field typed as a
+native engine class such as `Node` is included and compared by reference, which
+is the correct semantic for a node. Type resolution exists only to decide
+whether to recurse, and only `deep_equals` recurses.
+
 ### Identifiers in emitted code
 
 Every field reference is written `self.<name>`, and every generated local is
@@ -594,7 +519,7 @@ prefixed `__gdkit_`. Both are collision avoidance, and neither is optional:
 
 - a field named `p_other` is shadowed by the parameter, so an unqualified
   `p_other` in the body would read the argument rather than the field;
-- a field named `i` collides with a loop variable.
+- a field named `i` would collide with a loop variable.
 
 `self.p_other` and `p_other.p_other` are unambiguous, so the parameter keeps the
 name the public signature wants. The repository already resolves shadowing
@@ -611,11 +536,11 @@ func _to_string() -> String:
 The name is the `class_name` when the script declares one, otherwise the file's
 base name without `.gd`. A class with no selected fields emits `"Hex()"`.
 
-`to_string` does not depend on the inheritance graph: an inherited `_to_string`
-that names too few fields prints an incomplete value, which is wrong output and
-not a wrong answer, and Godot's own `str()` on a subclass is no better. It
-therefore does not make universe-wide parse failures blocking, and
-`NeedsInheritanceGraph` returns false for it.
+`to_string` does not depend on the inheritance graph, so
+`NeedsInheritanceGraph` returns false for it and it does not compose with an
+ancestor. An inherited `_to_string` that names too few fields prints an
+incomplete value, which is wrong output rather than a wrong answer, and Godot's
+own `str()` on a subclass is no better.
 
 There is no configuration for this format. A project that wants a different one
 hand-writes `_to_string` and does not opt into the `to_string` generator, which
@@ -633,110 +558,22 @@ func equals(p_other: Variant) -> bool:
 	return self.q == p_other.q and self.r == p_other.r
 ```
 
-Field-wise `==` behind a script-identity guard. `is <ClassName>` was rejected on
-two counts: it cannot name a class that declares no `class_name`, nor an inner
-class, so those classes could not opt in at all; and it makes equality
-asymmetric across a subclass — `Hex.new().equals(SubHex.new())` is true while
-the reverse is false. Script identity is symmetric, which is the property a
-value object needs. It is not sufficient on its own, which is what the
-descendant refusal rule above exists for.
+Field-wise `==` behind a script-identity guard, with the `super.equals`
+composition above inserted when the parent provides one. `is <ClassName>` was
+rejected on two counts: it cannot name a class that declares no `class_name`,
+nor an inner class, so those classes could not opt in at all; and it makes
+equality asymmetric across a subclass — `Hex.new().equals(SubHex.new())` is true
+while the reverse is false. Script identity is symmetric, which is the property
+a value object needs. It is not sufficient on its own, which is what the
+composition and refusal rules exist for.
 
-The long `and` chain is emitted on one line and wrapped by step 6 to the
+The long `and` chain is emitted on one line and wrapped by step 5 to the
 project's `line_width`.
 
-### `deep_equals`
-
-`equals` is enough for every field except an object-valued one. Godot 4 compares
-`Array` and `Dictionary` **by value**, not by reference, so a field-wise `==`
-already handles containers of builtins correctly. Objects still compare by
-reference, which means a plain `==` on `var origin: Coordinate` silently
-compares identity — the exact bug a value object exists to prevent. gdkit is
-Godot 4 only, so this holds for every supported version and nothing here is
-version-gated.
-
-Dispatch per field:
-
-| Declared type | Emitted | Diagnostic |
-| --- | --- | --- |
-| a builtin Variant type | `self.q != p_other.q` | — |
-| project class with `provider(C, deep_equals)` | null-aware recursion | — |
-| project class with no provider | nothing; the class is refused | `generate.unsupported` |
-| `Array[T]`, `T` a project class with a provider | size check, then null-aware element-wise recursion | — |
-| `Dictionary`, or an untyped container | `==` | `generate.untyped` |
-| a type in neither catalogue | nothing; the class is refused | `generate.unsupported` |
-| absent, `Variant`, or `:=` inferred | runtime `has_method` fallback | `generate.untyped` |
-
-An object-valued field can be `null`, and `null.deep_equals(…)` is a runtime
-error, so every recursion is null-aware. A recursion can also **not terminate**,
-which is a separate and worse problem: a self-referential field, or a live
-`A → B → A` object graph, makes a naive structural comparison descend forever.
-The realizability fixed point does not help — it proves the method exists, not
-that the walk it performs is finite.
-
-So the generator emits **two** methods. `deep_equals` is the public entry point
-and holds the visited set; `_gdkit_deep_equals` does the work and is what
-recursion calls. Keeping the set out of the public signature is what lets
-`a.deep_equals(b)` stay a one-argument call:
-
-```gdscript
-func deep_equals(p_other: Variant) -> bool:
-	return _gdkit_deep_equals(p_other, {})
-
-
-func _gdkit_deep_equals(p_other: Variant, __gdkit_seen: Dictionary) -> bool:
-	if not (p_other is Object):
-		return false
-	if p_other.get_script() != get_script():
-		return false
-	var __gdkit_key := [get_instance_id(), p_other.get_instance_id()]
-	if __gdkit_seen.has(__gdkit_key):
-		return true
-	__gdkit_seen[__gdkit_key] = true
-	if not super._gdkit_deep_equals(p_other, __gdkit_seen):
-		return false
-	if self.q != p_other.q:
-		return false
-	if (self.origin == null) != (p_other.origin == null):
-		return false
-	if self.origin != null and not self.origin._gdkit_deep_equals(p_other.origin, __gdkit_seen):
-		return false
-	if self.tags.size() != p_other.tags.size():
-		return false
-	for __gdkit_index in self.tags.size():
-		var __gdkit_left: Variant = self.tags[__gdkit_index]
-		var __gdkit_right: Variant = p_other.tags[__gdkit_index]
-		if (__gdkit_left == null) != (__gdkit_right == null):
-			return false
-		if __gdkit_left != null and not __gdkit_left._gdkit_deep_equals(__gdkit_right, __gdkit_seen):
-			return false
-	return true
-```
-
-Returning `true` on a revisited pair is the coinductive answer — a pair already
-under comparison is assumed equal unless something else proves it unequal —
-which is the standard treatment for bisimulation on cyclic structures and the
-only one that terminates without declaring every cyclic graph unequal.
-
-The visited set is keyed on the pair of instance IDs, so an `Array` is used as a
-`Dictionary` key, which Godot 4 hashes by value. The `super` call participates
-in the recursion, so the set threads through the ancestry too.
-
-One consequence for the provider rules: recursion requires
-`_gdkit_deep_equals`, not `deep_equals`. A hand-written `deep_equals` therefore
-satisfies a top-level call but **cannot** be a provider for a field's recursion,
-and a class holding a field of that type is refused with
-`generate.unsupported`. The signature a provider must offer is named in the
-diagnostic, because the fix is to let gdkit generate the pair.
-
-One `if` per field rather than an `and` chain, because the comparison differs
-per field and a chain of mixed call and operator forms is unreadable at any
-width.
-
-The last row of the table is the one to expect in practice. `var origin :=
-Coordinate.new()` is statically typed as far as Godot is concerned, but
-`ast.VariableDeclaration.Type` is empty and the node carries only
-`Inferred: true` — the inferred type is not in the tree. So the ergonomic `:=`,
-a natural way to write exactly these classes, lands in the runtime fallback.
+`equals` compares object-valued fields **by reference**, because that is what
+`==` does to an `Object` in Godot 4. `Array` and `Dictionary` fields are
+compared by value, because that is what `==` does to those. A project that needs
+structural comparison of a nested value object wants `deep_equals`.
 
 ## Diagnostics
 
@@ -752,27 +589,21 @@ belongs to the former family — and `class_name.duplicate`, from `architecture`
 | `generate.stale` | a region that is missing or out of date (`check` only) | error |
 | `generate.marker` | a malformed directive, an unknown generator name, or a second region in one class | error |
 | `generate.conflict` | the class declares, outside the region, a method with the same name as one a requested generator emits, in a shape that is not compatible with it | error |
-| `generate.unsupported` | an inner class; a field type in neither catalogue; a field type with no provider for the signature; or a class whose descendant would inherit an unsound method | error |
+| `generate.unsupported` | an inner class; a requested class whose ancestry has fields but no provider; or a class whose descendant would inherit an unsound method | error |
 | `generate.orphaned` | a region whose class no longer opts in, anywhere in the universe | error |
 | `generate.unsafe` | verification or the format oracle refused the splice | error |
-| `generate.untyped` | `deep_equals` fell back to a runtime dispatch | warning |
+
+Every rule in this spec is an error. `deep_equals` introduces the first warning,
+and with it the severity field on `Diagnostic`; until then `Report.HasErrors()`
+and `HasDiagnostics()` would be the same predicate, so only the latter exists.
 
 **`generate.conflict` fires on the name, and compatibility only decides
 satisfaction.** GDScript has no overloading: a `static func equals(a, b)` in a
-class that requests `equals` cannot coexist with a generated `func equals(
-p_other: Variant) -> bool`, because the second declaration is a duplicate and
-the file will not compile. So an existing method whose signature is compatible
-*satisfies* the request and nothing is emitted; an existing method with the same
-name and an incompatible signature is a conflict. An earlier draft of this spec
-said signature matching would keep a `static func equals(a, b)` from being
-reported, which was wrong in the only way that matters — it would have emitted a
-file Godot refuses to load.
-
-`generate.untyped` is the only warning, so `Diagnostic` carries a severity and
-`Report` grows `HasErrors()` alongside `HasDiagnostics()`: a warning prints but
-does not take the run to exit 1. It is hardcoded, because a project able to
-downgrade `generate.unsupported` to a warning would be asking for code that does
-not compile.
+class that requests `equals` cannot coexist with a generated
+`func equals(p_other: Variant) -> bool`, because the second declaration is a
+duplicate and the file will not compile. So an existing method whose signature
+is compatible *satisfies* the request and nothing is emitted; an existing method
+with the same name and an incompatible signature is a conflict.
 
 ## Configuration
 
@@ -796,10 +627,7 @@ A `generate` entry names path globs and the generators they opt in:
 ```json
 {
   "generate": [
-    {
-      "paths": ["**/domain/value/*.gd"],
-      "generators": ["to_string", "equals", "deep_equals"]
-    }
+    { "paths": ["**/domain/value/*.gd"], "generators": ["to_string", "equals"] }
   ]
 }
 ```
@@ -810,10 +638,8 @@ rules, where capability is added by adding a rule. Union is also
 order-independent, so reordering the list cannot change the output.
 
 `source_roots`, `exclude`, and `.gdkitignore` populate `project.Selection`. None
-narrows the universe. There is no `godot_version` key. The builtin catalogue is a
-union over all of Godot 4 rather than a per-version list, for the reason given
-under Type resolution, and every other semantic this design relies on is
-constant across Godot 4.
+narrows the universe. There is no `godot_version` key: every semantic this spec
+relies on is constant across Godot 4.
 
 Unknown keys are rejected at every depth, naming the offending key's full JSON
 path, as `architecture` does. `minimum_gdkit_version` is supported and checked
@@ -859,35 +685,23 @@ Invariants, each over the full fixture corpus:
 Cases that exist because an earlier draft of this design got them wrong, each
 with a named test:
 
-- two classes holding each other, both newly requesting `deep_equals`, which
-  must generate rather than deadlock;
-- the same pair where one is separately blocked, where **both** must be refused
-  rather than one emitting a call to a method that will not exist;
-- a field named `p_other`, and an `Array` field named `i`;
-- a field typed as a class `.gdkitignore` hides, which must still resolve;
-- a `null` object field, and a typed array holding a `null`;
+- a field named `p_other`;
+- a subclass that generates `equals` while its base owns fields, which must
+  compose via `super` and compare both;
+- a requested subclass whose base has no provider, which must be refused;
 - a base class with a field-adding **grandchild** that does not opt in, refused;
 - the same graph with an intermediate class that overrides, **not** refused;
-- a zero-field subclass used as a field type, which must recurse via its
-  ancestor's provider rather than being refused;
+- a zero-field subclass, which must not cause a refusal;
 - a `static func equals(a, b)` in a requested class, which must be a conflict;
+- a blocked generator alongside a hand-written provider of the same signature,
+  where the hand-written one must survive and its dependents must still
+  generate;
 - a class that stops opting in while its region remains;
 - an orphaned region in an excluded file, which must still be reported;
 - an unparseable file outside the selection, which must block `equals` but not
   `to_string`;
-- a field typed `Vector2`, which must compare rather than be refused; one
-  typed `PackedVector4Array`, which must compare although it postdates 4.0; one
-  typed `Object`, which must be refused; and one typed `Coordinat`, which must
-  be refused;
-- a self-referential field, and a live `A` to `B` to `A` graph, which must
-  terminate and compare equal;
-- a subclass that generates `equals` while its base owns fields, which must
-  compose via `super` and compare both;
-- a requested subclass whose base has no provider, which must be refused;
-- a class with a hand-written `deep_equals` used as another class's field type,
-  which must be refused for lacking `_gdkit_deep_equals`;
-- a blocked generator alongside a hand-written provider of the same signature,
-  where the hand-written one must survive.
+- a field typed `Node`, which `equals` must compare by reference rather than
+  refuse.
 
 A test pins that `lint` reports nothing on a file carrying any of the three
 marker forms.
@@ -895,9 +709,11 @@ marker forms.
 ## Explicitly out of scope
 
 - **Inner classes.** A marker on an inner `class` is `generate.unsupported`.
-- **A full native-class catalogue.** Roughly 800 versioned names, to improve a
-  message for a field that is refused either way.
-- **A `hash` generator.** The obvious fourth member of this family and the one
+- **`deep_equals`.** Its own spec, which adds structural recursion, a builtin
+  type catalogue, fixed-point capability resolution, and cycle detection in the
+  generated code. Every critical finding across three review passes of the
+  combined design was in that tier, which is why it ships separately.
+- **A `hash` generator.** The obvious next member of this family and the one
   with real subtlety: Godot's `hash()` on an object is identity-based, so a
   value-object hash must be composed by hand and must agree with `equals` or a
   `Dictionary` keyed on these objects breaks. Its own spec.
