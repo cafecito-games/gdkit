@@ -1173,7 +1173,8 @@ git commit -m "Select the member vars a generated method reads"
 
 **Acceptance Criteria:**
 - [ ] `class_name` maps to its script; a duplicate is recorded
-- [ ] The `extends` edge is recorded, resolved to a path when it names a project class
+- [ ] **Inner classes are indexed**, with a composite identity, although they can never be generation targets
+- [ ] The `extends` edge is resolved for **every** project form: a `class_name`, a `res://` path, and a `uid://` identifier
 - [ ] Declared methods are recorded with name, staticness, arity, and whether they sit inside the region
 - [ ] Selectable fields are recorded **for every class in the universe**, not only requested ones
 - [ ] Inheritance SCCs are detected, and `ReachesCycle` is true for a class whose ancestry enters one
@@ -1196,8 +1197,8 @@ func TestIndexRecordsMethodsFieldsAndInheritance(t *testing.T) {
 	if base == nil || sub == nil {
 		t.Fatal("class_name index is incomplete")
 	}
-	if sub.ParentPath != "base.gd" {
-		t.Errorf("Sub.ParentPath = %q, want base.gd", sub.ParentPath)
+	if sub.ParentID != "base.gd" {
+		t.Errorf("Sub.ParentID = %q, want base.gd", sub.ParentID)
 	}
 	if len(sub.Fields) != 1 || sub.Fields[0].Name != "r" {
 		t.Errorf("Sub.Fields = %+v", sub.Fields)
@@ -1240,6 +1241,64 @@ func TestIndexDetectsInheritanceCyclesAndTerminates(t *testing.T) {
 	if got := index.Ancestry("c.gd"); len(got) == 0 {
 		t.Error("Ancestry returned nothing")
 	}
+}
+
+// An unrequested inner class can extend a generated base and add fields,
+// which is exactly what the descendant rule exists to catch. Leaving inner
+// classes out of the graph would defeat it silently.
+func TestIndexRecordsInnerClasses(t *testing.T) {
+	index := indexOf(t, map[string]string{
+		"base.gd": "class_name Base\nextends RefCounted\n\nvar q: int\n",
+		"holder.gd": "class_name Holder\nextends RefCounted\n\n" +
+			"class Nested extends Base:\n\tvar r: int\n",
+	})
+	nested := index.Classes["holder.gd#Nested"]
+	if nested == nil {
+		t.Fatal("the inner class was not indexed")
+	}
+	if !nested.Inner {
+		t.Error("the inner class is not marked Inner")
+	}
+	if nested.ParentID != "base.gd" {
+		t.Errorf("Nested.ParentID = %q, want base.gd", nested.ParentID)
+	}
+	if len(nested.Fields) != 1 || nested.Fields[0].Name != "r" {
+		t.Errorf("Nested.Fields = %+v, want [r]", nested.Fields)
+	}
+	if index.TopLevel["holder.gd"].Inner {
+		t.Error("the file's top-level class was marked Inner")
+	}
+	// The inner class is a descendant of Base for the refusal rule.
+	if got := index.Descendants("base.gd"); !slices.Contains(got, "holder.gd#Nested") {
+		t.Errorf("Descendants(base) = %v, want the inner class", got)
+	}
+}
+
+// A subclass written with a path or uid form would otherwise look parentless,
+// which skips the super composition and both refusal rules without saying so.
+func TestIndexResolvesEveryInheritanceForm(t *testing.T) {
+	index := indexOf(t, map[string]string{
+		"base.gd":     "class_name Base\nextends RefCounted\n\nvar q: int\n",
+		"base.gd.uid": "uid://ckb1n0mqp2v7x",
+		"by_name.gd":  "class_name ByName\nextends Base\n",
+		"by_path.gd":  "class_name ByPath\nextends \"res://base.gd\"\n",
+		"by_uid.gd":   "class_name ByUID\nextends \"uid://ckb1n0mqp2v7x\"\n",
+	})
+	for _, path := range []string{"by_name.gd", "by_path.gd", "by_uid.gd"} {
+		if got := index.TopLevel[path].ParentID; got != "base.gd" {
+			t.Errorf("%s ParentID = %q, want base.gd", path, got)
+		}
+	}
+}
+
+// An inner class cannot be a generation target, and a marker on one must be
+// reported rather than quietly doing nothing.
+func TestAMarkerOnAnInnerClassIsRefused(t *testing.T) {
+	report, _ := checkProject(t, DefaultConfig(), map[string]string{
+		"a.gd": "class_name Holder\nextends RefCounted\n\n" +
+			"class Nested extends RefCounted:\n\t# gdkit:generate = to_string\n\tvar q: int\n",
+	})
+	assertDiagnostic(t, report, ruleUnsupported)
 }
 
 func TestIndexRecordsDuplicateClassNames(t *testing.T) {
@@ -1295,10 +1354,25 @@ type Method struct {
 	Line     int
 }
 
-// Class is one top-level class in the universe.
+// Class is one class in the universe, top-level or inner.
+//
+// Inner classes are indexed even though they can never be generation targets.
+// An unrequested inner class can extend a generated base and add fields, which
+// is exactly what the descendant refusal rule exists to catch, so leaving them
+// out of the graph would defeat it. Indexing them is also what lets an inner
+// class carrying a marker be reported as generate.unsupported rather than
+// silently ignored.
 type Class struct {
-	// Path is project-relative and slash-separated.
+	// ID identifies the class across the universe: the path for a top-level
+	// class, and path + "#" + name for an inner one. Every map and every
+	// traversal in Index is keyed on this, not on Path.
+	ID string
+	// Path is project-relative and slash-separated. An inner class shares its
+	// file's path with the class that encloses it.
 	Path string
+	// Inner reports a class declared with "class" inside another. It can carry
+	// a marker, which is refused, and it can be a descendant, which matters.
+	Inner bool
 	// Name is the class_name, or the file's base name without .gd. It is what
 	// _to_string prints.
 	Name string
@@ -1307,9 +1381,9 @@ type Class struct {
 	// Extends is the base as written, which may be a class name, a res:// or
 	// uid:// path, or an engine type.
 	Extends string
-	// ParentPath is Extends resolved to a project script, empty when it names
-	// an engine type or could not be resolved.
-	ParentPath string
+	// ParentID is Extends resolved to another indexed class's ID, empty when
+	// it names an engine type or could not be resolved.
+	ParentID string
 	Fields     []Field
 	Methods    map[string]Method
 	// Region is the generated region's span, zero when there is none.
@@ -1324,10 +1398,14 @@ type Class struct {
 
 // Index is every fact the capability rules need, over the whole universe.
 type Index struct {
-	Classes             map[string]*Class
+	// Classes is keyed by Class.ID, so it holds inner classes too.
+	Classes map[string]*Class
+	// TopLevel is keyed by path and holds only the file's outermost class,
+	// which is the only kind that can be a generation target.
+	TopLevel            map[string]*Class
 	ByClassName         map[string]*Class
 	DuplicateClassNames map[string][]string
-	// Children maps a path to the paths that extend it directly.
+	// Children maps a class ID to the IDs that extend it directly.
 	Children map[string][]string
 	// InCycle marks a class that sits in an inheritance cycle. project.Load
 	// parses syntactically and does not check that extends edges are acyclic,
@@ -1345,6 +1423,7 @@ type Index struct {
 func BuildIndex(snapshot *project.Snapshot) *Index {
 	index := &Index{
 		Classes:             map[string]*Class{},
+		TopLevel:            map[string]*Class{},
 		ByClassName:         map[string]*Class{},
 		DuplicateClassNames: map[string][]string{},
 		Children:            map[string][]string{},
@@ -1357,7 +1436,12 @@ func BuildIndex(snapshot *project.Snapshot) *Index {
 			index.ParseFailures = append(index.ParseFailures, path)
 			continue
 		}
-		index.Classes[path] = buildClass(path, script)
+		top := buildClass(path, path, false, script, script.File.Statements)
+		index.Classes[top.ID] = top
+		index.TopLevel[path] = top
+		for _, inner := range buildInnerClasses(path, script, script.File.Statements) {
+			index.Classes[inner.ID] = inner
+		}
 	}
 	for _, path := range sortedKeys(index.Classes) {
 		class := index.Classes[path]
@@ -1374,11 +1458,11 @@ func BuildIndex(snapshot *project.Snapshot) *Index {
 		}
 		index.ByClassName[class.Name] = class
 	}
-	for _, path := range sortedKeys(index.Classes) {
-		class := index.Classes[path]
-		if parent, ok := index.ByClassName[class.Extends]; ok {
-			class.ParentPath = parent.Path
-			index.Children[parent.Path] = append(index.Children[parent.Path], path)
+	for _, id := range sortedKeys(index.Classes) {
+		class := index.Classes[id]
+		if parent, ok := index.resolveExtends(snapshot, class); ok {
+			class.ParentID = parent.ID
+			index.Children[parent.ID] = append(index.Children[parent.ID], id)
 		}
 	}
 	index.findCycles()
@@ -1386,11 +1470,20 @@ func BuildIndex(snapshot *project.Snapshot) *Index {
 	return index
 }
 
-func buildClass(path string, script *project.Script) *Class {
-	class := &Class{Path: path, Name: baseName(path), Methods: map[string]Method{}, Line: 1, Column: 1}
+// buildClass records one class from the statements of its body.
+func buildClass(id, path string, inner bool, script *project.Script, statements []ast.Statement) *Class {
+	class := &Class{
+		ID:      id,
+		Path:    path,
+		Inner:   inner,
+		Name:    baseName(path),
+		Methods: map[string]Method{},
+		Line:    1,
+		Column:  1,
+	}
 	region, found, err := FindRegion(script.Source)
 	class.Region, class.HasRegion, class.RegionError = region, found, err
-	for _, statement := range script.File.Statements {
+	for _, statement := range statements {
 		switch node := statement.(type) {
 		case *ast.ClassNameDeclaration:
 			class.Name, class.HasClassName = node.Name, true
@@ -1406,11 +1499,78 @@ func buildClass(path string, script *project.Script) *Class {
 			}
 		}
 	}
-	class.Fields = SelectFields(script.File.Statements, script, region)
+	class.Fields = SelectFields(statements, script, region)
 	return class
 }
 
-// Ancestry returns path and every ancestor above it, nearest first. It carries
+// buildInnerClasses records every class declared inside statements,
+// recursively. Their identities are path + "#" + name, nested names joined by
+// further "#", so an inner class is addressable without colliding with the
+// file's top-level class.
+func buildInnerClasses(path string, script *project.Script, statements []ast.Statement) []*Class {
+	found := []*Class{}
+	for _, statement := range statements {
+		declaration, ok := statement.(*ast.ClassDeclaration)
+		if !ok {
+			continue
+		}
+		id := path + "#" + declaration.Name
+		class := buildClass(id, path, true, script, declaration.Body)
+		class.Name = declaration.Name
+		class.Extends = declaration.Extends
+		class.Line = lineAt(script, declaration.Span().Start.Offset)
+		found = append(found, class)
+		for _, nested := range buildInnerClasses(path, script, declaration.Body) {
+			nested.ID = id + "#" + nested.Name
+			found = append(found, nested)
+		}
+	}
+	return found
+}
+
+// resolveExtends resolves a class's extends target to another indexed class.
+//
+// Every form a project script can use has to resolve, not just a class_name.
+// A subclass written "extends \"res://base.gd\"" would otherwise look
+// parentless, which silently skips the super composition and both refusal
+// rules — the subclass would compare only its own fields and nothing would say
+// so. uid:// goes through Snapshot.UIDs, which already resolves every place
+// Godot declares an identifier.
+func (i *Index) resolveExtends(snapshot *project.Snapshot, class *Class) (*Class, bool) {
+	target := strings.Trim(class.Extends, `"'`)
+	if target == "" {
+		return nil, false
+	}
+	switch {
+	case strings.HasPrefix(target, "res://"):
+		if parent, ok := i.TopLevel[strings.TrimPrefix(target, "res://")]; ok {
+			return parent, true
+		}
+	case strings.HasPrefix(target, "uid://"):
+		if path, ok := snapshot.UIDs[target]; ok {
+			if parent, ok := i.TopLevel[path]; ok {
+				return parent, true
+			}
+		}
+	default:
+		// A dotted target names an inner class of a global class, as in
+		// "extends Outer.Inner".
+		if outer, inner, found := strings.Cut(target, "."); found {
+			if enclosing, ok := i.ByClassName[outer]; ok {
+				if parent, ok := i.Classes[enclosing.Path+"#"+inner]; ok {
+					return parent, true
+				}
+			}
+			return nil, false
+		}
+		if parent, ok := i.ByClassName[target]; ok {
+			return parent, true
+		}
+	}
+	return nil, false
+}
+
+// Ancestry returns id and every ancestor above it, nearest first. It carries
 // a visited set, so a cycle truncates the walk rather than hanging it.
 func (i *Index) Ancestry(path string) []string {
 	ancestry := []string{}
@@ -1422,7 +1582,7 @@ func (i *Index) Ancestry(path string) []string {
 		if class == nil {
 			break
 		}
-		current = class.ParentPath
+		current = class.ParentID
 	}
 	return ancestry
 }
@@ -1490,7 +1650,7 @@ func (i *Index) findCycles() {
 			if class == nil {
 				break
 			}
-			current = class.ParentPath
+			current = class.ParentID
 		}
 		for _, member := range walk {
 			state[member] = done
@@ -1622,6 +1782,28 @@ func TestDemotionCascadesUpTheHierarchy(t *testing.T) {
 	}
 }
 
+// A conflicted parent must not look like a provider on the first pass, or its
+// child composes with a method that is never emitted. This is why local
+// blockers are computed before the first Resolve rather than discovered after.
+func TestAConflictedParentDoesNotProvideForItsChild(t *testing.T) {
+	report, _ := checkProject(t, DefaultConfig(), map[string]string{
+		"base.gd": "class_name Base\nextends RefCounted\n\n# gdkit:generate = equals\nvar q: int\n\n" +
+			"static func equals(a, b) -> bool:\n\treturn true\n",
+		"sub.gd": "class_name Sub\nextends Base\n\n# gdkit:generate = equals\nvar r: int\n",
+	})
+	refused := map[string]string{}
+	for _, diagnostic := range report.Diagnostics {
+		refused[diagnostic.Path] = diagnostic.Rule
+	}
+	if refused["base.gd"] != ruleConflict {
+		t.Errorf("base.gd = %q, want %s", refused["base.gd"], ruleConflict)
+	}
+	if refused["sub.gd"] != ruleUnsupported {
+		t.Errorf("sub.gd = %q, want %s: it composed with a conflicted parent",
+			refused["sub.gd"], ruleUnsupported)
+	}
+}
+
 // A blocked generator must not erase a hand-written provider something else
 // relies on.
 func TestAHandwrittenProviderSurvivesABlockedGenerator(t *testing.T) {
@@ -1742,6 +1924,9 @@ type Capabilities struct {
 	realizable  map[pair]bool
 	handwritten map[pair]bool
 	orphaned    map[string]bool
+	// inheritanceSensitive is the generator's NeedsInheritanceGraph, recorded
+	// per generated pair at seed time.
+	inheritanceSensitive map[pair]bool
 }
 
 // Realizable reports that the class will have a callable implementation of
@@ -1819,9 +2004,10 @@ func Resolve(index *Index, requested map[string][]string, blockers map[string]bo
 	// here it would write the unsound method anyway.
 	universeUnreadable := len(index.ParseFailures) > 0
 	capabilities := &Capabilities{
-		realizable:  map[pair]bool{},
-		handwritten: map[pair]bool{},
-		orphaned:    map[string]bool{},
+		realizable:           map[pair]bool{},
+		handwritten:          map[pair]bool{},
+		orphaned:             map[string]bool{},
+		inheritanceSensitive: map[pair]bool{},
 	}
 	for path, class := range index.Classes {
 		if class.HasRegion && len(requested[path]) == 0 {
@@ -1842,8 +2028,10 @@ func Resolve(index *Index, requested map[string][]string, blockers map[string]bo
 	}
 	for path, names := range requested {
 		for _, name := range names {
-			for _, signature := range generatorByName(name).Signatures() {
+			generator := generatorByName(name)
+			for _, signature := range generator.Signatures() {
 				key := pair{path, signature}
+				capabilities.inheritanceSensitive[key] = generator.NeedsInheritanceGraph()
 				if capabilities.handwritten[key] {
 					continue
 				}
@@ -1884,7 +2072,7 @@ func (c *Capabilities) demote(index *Index, key pair, blockers map[string]bool, 
 	if class == nil || blockers[key.path] || class.RegionError != nil {
 		return true
 	}
-	if !needsInheritanceGraph(key.signature) {
+	if !c.sensitive(key) {
 		return false
 	}
 	if universeUnreadable || index.ReachesCycle(key.path) {
@@ -1901,7 +2089,7 @@ func (c *Capabilities) demote(index *Index, key pair, blockers map[string]bool, 
 	// Ancestry rule: a strict ancestor declares a selectable field and the
 	// parent has no provider to compose with.
 	if ancestryHasFields(index, key.path) {
-		if _, ok := c.Provider(index, class.ParentPath, key.signature); !ok {
+		if _, ok := c.Provider(index, class.ParentID, key.signature); !ok {
 			return true
 		}
 	}
@@ -1945,13 +2133,12 @@ func pathBetweenHasFields(index *Index, base, descendant string) bool {
 	return false
 }
 
-// needsInheritanceGraph reports that a signature's soundness depends on the
-// inheritance graph. _to_string's does not: an inherited one that names too
-// few fields prints an incomplete value, which is wrong output rather than a
-// wrong answer, and Godot's own str() on a subclass is no better.
-func needsInheritanceGraph(signature Signature) bool {
-	return signature != toStringSignature
-}
+// sensitive reports whether this pair is subject to the inheritance-sensitive
+// demotion conditions. It is recorded per pair when the set is seeded, from the
+// generator's own NeedsInheritanceGraph, rather than inferred from the
+// signature: a future generator may emit several methods whose sensitivity
+// differs, and deriving it from the shape would silently get that wrong.
+func (c *Capabilities) sensitive(key pair) bool { return c.inheritanceSensitive[key] }
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -2063,6 +2250,13 @@ type Generator interface {
 	// incompatible shape is a generate.conflict, because GDScript has no
 	// overloading and emitting ours would not compile.
 	Signatures() []Signature
+	// NeedsInheritanceGraph reports that soundness depends on the inheritance
+	// graph, which is what subjects a pair to the cycle, universe-parse,
+	// duplicate-class_name, ancestry, and descendant demotion conditions, and
+	// what makes a universe-wide parse failure blocking. It belongs on the
+	// generator rather than being inferred from a signature, because a future
+	// generator may emit several methods with mixed sensitivity.
+	NeedsInheritanceGraph() bool
 	// Emit returns the method text, unformatted and at indent 0.
 	Emit(class *Class, index *Index, capabilities *Capabilities) (string, []Diagnostic)
 }
@@ -2134,6 +2328,14 @@ type toStringGenerator struct{}
 func (toStringGenerator) Name() string { return "to_string" }
 
 func (toStringGenerator) Signatures() []Signature { return []Signature{toStringSignature} }
+
+// NeedsInheritanceGraph is false: _to_string neither composes with an ancestor
+// nor walks one. An inherited one naming too few fields prints an incomplete
+// value, which is wrong output rather than a wrong answer, and Godot's own
+// str() on a subclass is no better. So a fieldful ancestor without a
+// _to_string, a cycle elsewhere, and an unparseable unrelated file are all
+// irrelevant to it.
+func (toStringGenerator) NeedsInheritanceGraph() bool { return false }
 
 // Emit renders the class name and every selected field.
 //
@@ -2286,6 +2488,11 @@ func (equalsGenerator) Name() string { return "equals" }
 
 func (equalsGenerator) Signatures() []Signature { return []Signature{equalsSignature} }
 
+// NeedsInheritanceGraph is true: equals composes with its ancestor's provider
+// and is refused when a descendant would inherit an unsound implementation, so
+// both answers need the whole graph to be visible and trustworthy.
+func (equalsGenerator) NeedsInheritanceGraph() bool { return true }
+
 // Emit renders the guard, the ancestor composition, and the field comparison.
 //
 // The guard is script identity rather than "is <ClassName>" for two reasons.
@@ -2310,7 +2517,7 @@ func (equalsGenerator) Emit(class *Class, index *Index, capabilities *Capabiliti
 	body.WriteString("func equals(p_other: Variant) -> bool:\n")
 	body.WriteString("\tif not (p_other is Object):\n\t\treturn false\n")
 	body.WriteString("\tif p_other.get_script() != get_script():\n\t\treturn false\n")
-	if _, ok := capabilities.Provider(index, class.ParentPath, equalsSignature); ok {
+	if _, ok := capabilities.Provider(index, class.ParentID, equalsSignature); ok {
 		body.WriteString("\tif not super.equals(p_other):\n\t\treturn false\n")
 	}
 	if len(class.Fields) == 0 {
@@ -2904,15 +3111,52 @@ func (p Plan) Report() Report {
 // withdraws a capability a descendant may already have composed with. Blockers
 // only accumulate and are bounded by the number of classes, so this
 // terminates.
+// localBlockers marks every requested class carrying a blocking condition that
+// is knowable before emission: a malformed marker or region, an inner class,
+// or a method declared outside the region whose name collides with one a
+// requested generator emits in an incompatible shape.
+func (g *Generator) localBlockers(index *Index, requested map[string][]string, markers []Diagnostic) map[string]bool {
+	blockers := map[string]bool{}
+	for _, diagnostic := range markers {
+		if diagnostic.Rule == ruleMarker {
+			blockers[diagnostic.Path] = true
+		}
+	}
+	for path, names := range requested {
+		class := index.TopLevel[path]
+		if class == nil || class.Inner || class.RegionError != nil {
+			blockers[path] = true
+			continue
+		}
+		for _, generator := range inRegistryOrder(names) {
+			for _, signature := range generator.Signatures() {
+				declared, ok := class.Methods[signature.Name]
+				if !ok || declared.InRegion {
+					continue
+				}
+				if declared.Signature != signature {
+					blockers[path] = true
+				}
+			}
+		}
+	}
+	return blockers
+}
+
 func (g *Generator) Check(snapshot *project.Snapshot) Plan {
 	index := BuildIndex(snapshot)
 	requested, markerDiagnostics := g.resolveOptIn(snapshot, index)
 	plan := Plan{Candidates: []Candidate{}, Diagnostics: markerDiagnostics, Orphans: []string{}}
 
-	blockers := map[string]bool{}
-	for path := range requested {
-		blockers[path] = false
-	}
+	// Local blockers are computed before the first Resolve, not discovered
+	// after it. The transfer function lists marker, conflict, and inner-class
+	// as conditions that demote a pair, so resolution cannot be correct on a
+	// pass that has not seen them yet: a conflicted parent would look like a
+	// provider and its child would compose with a method that is never
+	// emitted. Only generate.unsafe is genuinely late, because it cannot be
+	// known until the candidate exists, and that is what the outer loop is
+	// for.
+	blockers := g.localBlockers(index, requested, markerDiagnostics)
 	for {
 		capabilities := Resolve(index, requested, blockers)
 		attempt := g.buildPlan(snapshot, index, requested, capabilities, blockers)
