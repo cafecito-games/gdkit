@@ -244,8 +244,10 @@ type Snapshot struct {
 no second package reading the project. The existing four tools pass
 `Selection: nil` and are unaffected.
 
-Only a selected script may opt in, and only a selected script may carry a
-diagnostic — with the parse-failure exception below.
+Only a selected script may opt in. Only a selected script may carry a
+diagnostic, with **two** exceptions, both universe-wide and both argued for
+where they are specified: a parse failure when an inheritance-sensitive
+generator is requested, and an orphaned region.
 
 ## Pipeline
 
@@ -300,24 +302,57 @@ declaring `equals(a, b)`, and `C extends B` emitting `super.equals(p_other)`,
 the call resolves to `B.equals` and fails. Nearest-compatible-ancestor would
 have reported `A` as the provider and emitted that call anyway.
 
-A method declared **inside a generated region** is never an immutable provider.
-Its existence is contingent on this run: an orphaned region's methods are
-scheduled for removal by `gen write --prune`, so treating them as declared
-would let a child compose with a parent method that pruning then deletes. **An
-orphaned region provides no capability.**
+What the walk finds at that nearest declaration decides the outcome, and the
+four cases are not interchangeable:
 
-A hand-written method outside any region *is* immutable: it already exists in
-the file and nothing this run can do takes it away. Only a generated
-realization can be withdrawn, so the set tracks provenance and a blocked
-generator can never erase a hand-written provider something else relies on.
+| Nearest declaration of `S`'s name | Outcome |
+| --- | --- |
+| compatible, hand-written outside any region | **provider** |
+| incompatible, hand-written | **barrier** — no provider |
+| inside a generated region, that pair realizable | **provider** |
+| inside a generated region, that pair not realizable, or the region orphaned | **barrier** — no provider |
+
+The last row is the one that needs the argument. An orphaned region's method
+physically exists, so runtime dispatch reaches it and the walk must not fall
+through to an ancestor as though it were absent — that would emit a `super`
+call that lands somewhere else. But it is also scheduled for deletion by
+`gen write --prune`, so nothing may compose with it either. Barrier is the only
+answer that is safe both before and after pruning, and it makes the ancestry
+refusal rule fire, which is the correct outcome: the child is refused until its
+parent opts back in.
+
+A hand-written method outside any region *is* immutable: it already exists and
+nothing this run can do takes it away. Only a generated realization can be
+withdrawn, so the set tracks provenance and a blocked generator can never erase
+a hand-written provider something else relies on.
 
 ### Resolution is a fixed point, not a single pass
 
-`realizable(C, S)` holds when `C` declares a compatible `S` outside a region,
-or requested `S` and carries no blocking diagnostic. It is computed by
-**monotone demotion to stability**: seed optimistically, then repeatedly demote
-any generated pair whose provider is not realizable or whose class has acquired
-a blocker, until a pass demotes nothing.
+The transfer function has to be stated literally, because the obvious phrasing
+is circular: optimistic seeding makes a requested `(C, S)` realizable, so
+`provider(C, S)` is `C` itself, and "demote when the provider is not
+realizable" can never detect a *missing parent* provider.
+
+Seed:
+
+```
+realizable₀(C, S) = compatibleHandwritten(C, S) ∨ requested(C, S)
+```
+
+Then iterate, recomputing `provider` against the current set on every pass. A
+**generated** pair is demoted when any of three conditions holds:
+
+- **local blocker** — `C` has a `generate.marker`, `generate.conflict`, or
+  `generate.unsafe` diagnostic, is an inner class, or its ancestry reaches an
+  inheritance cycle;
+- **ancestry rule fails** — `C`'s strict ancestry declares a selectable field
+  and `providerₙ(parent(C), S)` does not exist;
+- **descendant rule fails** — some descendant `D` has `providerₙ(D, S) == C`
+  and at least one class on the path from `C` (exclusive) to `D` (inclusive)
+  declares a selectable field.
+
+A pair satisfying `compatibleHandwritten` is never demoted. The set only
+shrinks, so iteration stops when a pass demotes nothing.
 
 An earlier draft of this spec claimed a parents-first walk in one pass would do,
 on the grounds that a generated `equals` depends only on its parent's capability
@@ -336,10 +371,16 @@ acyclic, and cycle detection lives in `architecture`, not in `project`. Two
 parseable scripts can therefore name each other, and an unguarded parent walk
 would not terminate.
 
-Indexing detects inheritance SCCs and refuses every requested class in one with
-`generate.unsupported`, naming the cycle in a deterministic order. Godot would
-reject such a project too, but `gen` must not hang on it before Godot gets the
-chance.
+Indexing detects strongly connected components over the `extends` edges, and
+two things follow. **Every ancestry traversal carries a visited set**, so no
+walk can loop regardless of what the graph turns out to be. And a requested
+class is refused with `generate.unsupported` when its ancestry **reaches** a
+cycle, not merely when it sits in one: an unrequested `A ↔ B` pair with a
+requested `C extends A` is just as unresolvable, because `provider(parent(C), S)`
+has no answer. The diagnostic names the cycle in a deterministic order.
+
+Godot would reject such a project too, but `gen` must not hang on it before
+Godot gets the chance.
 
 ### Composing with the ancestor
 
