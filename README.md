@@ -251,7 +251,7 @@ all.
 | `require-return-type` | `func f():` with no `->` | the function being declared | 4.0 |
 | `require-argument-type` | a parameter with no `: Type` and no `:=` default | the function being declared; for a lambda's parameter, the enclosing function | 4.0 |
 | `require-variable-type` | `var x` or `var x = v`, at class or function scope, `@export` included | the enclosing function | 4.0 |
-| `require-typed-collection` | an annotation of bare `Array` or `Dictionary` | the enclosing function | `Array[T]` 4.0, `Dictionary[K, V]` 4.4 |
+| `require-typed-collection` | an annotation of bare `Array` or `Dictionary`, and an empty `[]` or `{}` initializer on a declaration with no written type | the enclosing function | `Array[T]` 4.0, `Dictionary[K, V]` 4.4 |
 | `require-signal-argument-type` | `signal s(arg)` with an untyped parameter | the signal's own name | 4.0 |
 | `require-typed-loop-variable` | `for item in …` with no `: Type` | the enclosing function | 4.2 |
 
@@ -259,15 +259,17 @@ Three things satisfy every one of them, and all three are deliberate: an
 explicit annotation; `:=` inference, which *is* static typing; and an explicit
 `: Variant`, which is how a declaration opts out on purpose.
 
-Four declarations are never reported. A `const` carries no annotation because
-GDScript types it from its value. A variadic `...args` parameter collects
-whatever is passed into an `Array`, so "untyped" is not a missing type. A
-lambda's return type is consumed where the lambda is written, where an
-annotation is noise — a lambda's *parameters* are still checked, because they
-are a contract its caller satisfies. And a property setter's parameter cannot be
-checked at all: the parser exposes its name but no type, and `set(value: int):`
-is itself a parse error, so there is nothing to report and nothing a project
-asked to fix one could write.
+Four declarations are never reported as missing a *type*. A `const` carries no
+annotation because GDScript types it from its value — its *element* type is
+still reported, because typing a const from its value supplies no element type,
+so `const ITEMS := []` is a bare `Array` like any other. A variadic `...args`
+parameter collects whatever is passed into an `Array`, so "untyped" is not a
+missing type. A lambda's return type is consumed where the lambda is written,
+where an annotation is noise — a lambda's *parameters* are still checked,
+because they are a contract its caller satisfies. And a property setter's
+parameter cannot be checked at all: the parser exposes its name but no type,
+and `set(value: int):` is itself a parse error, so there is nothing to report
+and nothing a project asked to fix one could write.
 
 Matching on the enclosing function is what makes `["_process"]` quiet a hot
 loop's locals without quieting the file. A bare collection written in a signal's
@@ -276,11 +278,16 @@ is not inside a function.
 
 Three limits are worth knowing before a project reads a clean run as proof:
 
-- **Only a written annotation is examined, so `var x := []` is not reported.**
-  It infers an *untyped* `Array`, and it is the commoner way to write one than
-  a bare `Array` annotation is. `require-typed-collection` passing therefore
-  does not mean a project's collections are typed. Catching it needs expression
-  inference this package does not have.
+- **A collection is inferred only from an empty literal.** `var x := []` and
+  `var x := {}` are reported, because an empty literal declares the collection
+  and nothing else: the element type can only come from the author. A
+  *populated* literal is not. `var x := [1, 2, 3]` is an untyped `Array` in
+  Godot too, but naming its element type means typing every element and
+  deciding what their common type is, which is expression inference this
+  package does not have. Nor is any other initializer: `var x := build()` may
+  well be a collection, and deciding that is the same problem. A declaration
+  that carries a written annotation is reported from the annotation alone, so
+  `var x: Array = []` is one finding and not two.
 - **A finding whose fix the configured engine cannot parse is dropped, with no
   output at all.** There is no "your engine is too old" diagnostic, because
   telling a project to write a type it cannot parse is worse than saying
