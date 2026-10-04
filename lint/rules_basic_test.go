@@ -125,7 +125,10 @@ class Neighbours:
 	assertNoRule(t, "unnecessary-pass", "pass\nfunc a(): pass\n")
 }
 
-func TestUnnecessaryPassCountsTheExtendsClauseOfAClass(t *testing.T) {
+// TestUnnecessaryPassStaysSilentWhereGodotRequiresABody covers every block
+// Godot refuses to parse when it is empty: a lone "pass" there is the only way
+// to write the block, so reporting it would ask for code that does not compile.
+func TestUnnecessaryPassStaysSilentWhereGodotRequiresABody(t *testing.T) {
 	source := gd(`class Multiline extends Node:
     pass
 
@@ -133,8 +136,60 @@ class Inline extends Node: pass
 
 class Plain:
     pass
+
+class Nested:
+    class Deeper extends RefCounted:
+        pass
+
+func body():
+    pass
+
+func branches(x):
+    if x:
+        pass
+    elif not x:
+        pass
+    else:
+        pass
+    while x:
+        pass
+    for i in 3:
+        pass
+    match x:
+        1:
+            pass
+        _:
+            pass
+
+func lambda():
+    return func():
+        pass
+
+var watched: int:
+    set(value):
+        pass
+    get:
+        pass
 `)
-	assertRule(t, "unnecessary-pass", source, 2, 4)
+	assertNoRule(t, "unnecessary-pass", source)
+}
+
+// TestUnnecessaryPassReportsAPassBesideAnotherStatement pins the other side of
+// the predicate: a block that holds a statement of its own parses without the
+// "pass", so the "pass" can go.
+func TestUnnecessaryPassReportsAPassBesideAnotherStatement(t *testing.T) {
+	source := gd(`class Multiline extends Node:
+    pass
+    var count = 1
+
+class Inline extends Node:
+    var only = 1; pass
+
+func body():
+    pass
+    return 1
+`)
+	assertRule(t, "unnecessary-pass", source, 2, 6, 9)
 }
 
 func TestExpressionNotAssignedFiresOnDiscardedValues(t *testing.T) {

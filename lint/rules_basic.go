@@ -113,9 +113,17 @@ func (s *significantTokens) depthChange(from, to int) int {
 }
 
 // unnecessaryPassRule reports every "pass" that shares its block with another
-// statement. gdlint counts statements per syntax-tree node, so comments and
-// annotations do not count, and the "extends" clause of a class declaration
-// does.
+// statement. Statements are counted per syntax-tree node, so comments and
+// annotations do not count.
+//
+// A block holding nothing but "pass" is never reported, because Godot refuses
+// to parse an empty body: an inner class, a function, a branch, a loop, a match
+// case, a lambda, and a property accessor each need a statement, and "pass" is
+// the only one that means nothing. The "extends" clause of an inner class
+// therefore does not count towards its body, since "class Inner extends Node:"
+// still needs the "pass" that follows it. A file is the one block Godot accepts
+// empty, but a lone "pass" there is left alone too, so the rule reports exactly
+// a "pass" that something else in its block already stands in for.
 type unnecessaryPassRule struct{}
 
 func (unnecessaryPassRule) Name() string { return "unnecessary-pass" }
@@ -125,9 +133,9 @@ func (unnecessaryPassRule) Check(_ *Context, script *project.Script) []Diagnosti
 		return nil
 	}
 	var found []Diagnostic
-	block := func(statements []ast.Statement, extra int) {
+	block := func(statements []ast.Statement) {
 		var passes []*ast.KeywordStatement
-		total := extra
+		total := 0
 		for _, statement := range statements {
 			switch statement := statement.(type) {
 			case *ast.Comment, *ast.Annotation, *ast.FunctionDeclaration, *ast.ClassDeclaration:
@@ -147,36 +155,32 @@ func (unnecessaryPassRule) Check(_ *Context, script *project.Script) []Diagnosti
 		}
 	}
 
-	block(script.File.Statements, 0)
+	block(script.File.Statements)
 	ast.Inspect(script.File, func(node ast.Node) bool {
 		switch node := node.(type) {
 		case *ast.ClassDeclaration:
-			extra := 0
-			if node.Extends != "" {
-				extra = 1
-			}
-			block(node.Body, extra)
+			block(node.Body)
 		case *ast.FunctionDeclaration:
-			block(node.Body, 0)
+			block(node.Body)
 		case *ast.LambdaExpression:
-			block(node.Body, 0)
+			block(node.Body)
 		case *ast.IfStatement:
 			for _, branch := range node.Branches {
-				block(branch.Body, 0)
+				block(branch.Body)
 			}
-			block(node.Else, 0)
+			block(node.Else)
 		case *ast.WhileStatement:
-			block(node.Body, 0)
+			block(node.Body)
 		case *ast.ForStatement:
-			block(node.Body, 0)
+			block(node.Body)
 		case *ast.MatchStatement:
 			for _, matchCase := range node.Cases {
-				block(matchCase.Body, 0)
+				block(matchCase.Body)
 			}
 		case *ast.VariableDeclaration:
-			block(node.Getter, 0)
+			block(node.Getter)
 			if node.Setter != nil {
-				block(node.Setter.Body, 0)
+				block(node.Setter.Body)
 			}
 		}
 		return true
