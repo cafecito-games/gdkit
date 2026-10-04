@@ -16,7 +16,7 @@ parse the same way, so every tool agrees on which files are in scope.
 | Tool | What it does |
 | --- | --- |
 | [`gdkit arch`](#architecture-checks) | Enforces layer, feature, and engine-purity boundaries, and finds dependency cycles |
-| [`gdkit lint`](#linting) | Reports 30 naming, structural, design, documentation, and formatting problems |
+| [`gdkit lint`](#linting) | Reports 30 naming, structural, design, documentation, and formatting problems, and 7 more a project can opt in to |
 | [`gdkit format`](#formatting) | Rewrites GDScript into one canonical style, verifying every rewrite first |
 | [`gdkit uid`](#uid-sidecars) | Creates the `uid://` sidecars Godot would have created |
 | [`gdkit gen`](#code-generation) | Generates `_to_string`, `equals`, and `deep_equals` into the classes that opt in |
@@ -153,9 +153,10 @@ escape hatch is in [ADR-backed exceptions](#adr-backed-exceptions).
 ## Linting
 
 `gdkit lint` reports 30 naming, structural, design, documentation, and
-formatting problems in GDScript. Like the architecture analyzer, it works from
-the parsed AST and shares its project discovery, so both tools agree on which
-files are in scope.
+formatting problems in GDScript, with 7 further rules a project opts in to —
+see [Rules that ship inert](#rules-that-ship-inert). Like the architecture
+analyzer, it works from the parsed AST and shares its project discovery, so
+both tools agree on which files are in scope.
 
 ```sh
 gdkit lint check .
@@ -200,6 +201,14 @@ Structure rules:
 - `no-else-return` and `no-elif-return` flag an `else` or `elif` that follows
   branches which return.
 
+Static typing rules report a declaration that carries no static type
+annotation. All six [ship inert](#rules-that-ship-inert), and
+[Static typing rules](#static-typing-rules) describes each one:
+
+- `require-return-type`, `require-argument-type`, `require-variable-type`,
+  `require-typed-collection`, `require-signal-argument-type`, and
+  `require-typed-loop-variable`.
+
 Design limits:
 
 - `max-returns`, `max-public-methods`, and `function-arguments-number`.
@@ -228,6 +237,60 @@ Two further rules are reported by the driver rather than by a rule:
 - `unknown-ignore` reports a suppression comment that names a rule that does not
   exist, so a misspelled name cannot silently suppress nothing.
 
+### Static typing rules
+
+An untyped GDScript declaration is a `Variant`: the engine cannot check it,
+cannot specialize it, and reports nothing when the wrong value is assigned to
+it. Six rules report one. Each has a configuration key of the same name holding
+a list of function-name globs it skips, and a Godot version its fix needs —
+`godot_version` in the configuration decides whether that fix can be written at
+all.
+
+| Rule | Reports | Exempt list matches | Needs Godot |
+| --- | --- | --- | --- |
+| `require-return-type` | `func f():` with no `->` | the function being declared | 4.0 |
+| `require-argument-type` | a parameter with no `: Type` and no `:=` default | the function being declared; for a lambda's parameter, the enclosing function | 4.0 |
+| `require-variable-type` | `var x` or `var x = v`, at class or function scope, `@export` included | the enclosing function | 4.0 |
+| `require-typed-collection` | an annotation of bare `Array` or `Dictionary` | the enclosing function | `Array[T]` 4.0, `Dictionary[K, V]` 4.4 |
+| `require-signal-argument-type` | `signal s(arg)` with an untyped parameter | the signal's own name | 4.0 |
+| `require-typed-loop-variable` | `for item in …` with no `: Type` | the enclosing function | 4.2 |
+
+Three things satisfy every one of them, and all three are deliberate: an
+explicit annotation; `:=` inference, which *is* static typing; and an explicit
+`: Variant`, which is how a declaration opts out on purpose.
+
+Three declarations are never reported. A `const` carries no annotation because
+GDScript types it from its value. A variadic `...args` parameter collects
+whatever is passed into an `Array`, so "untyped" is not a missing type. A
+lambda's return type is consumed where the lambda is written, where an
+annotation is noise — a lambda's *parameters* are still checked, because they
+are a contract its caller satisfies.
+
+Matching on the enclosing function is what makes `["_process"]` quiet a hot
+loop's locals without quieting the file. A bare collection written in a signal's
+payload is named for the signal, like the rest of the payload, because a signal
+is not inside a function.
+
+Three limits are worth knowing before a project reads a clean run as proof:
+
+- **Only a written annotation is examined, so `var x := []` is not reported.**
+  It infers an *untyped* `Array`, and it is the commoner way to write one than
+  a bare `Array` annotation is. `require-typed-collection` passing therefore
+  does not mean a project's collections are typed. Catching it needs expression
+  inference this package does not have.
+- **A finding whose fix the configured engine cannot parse is dropped, with no
+  output at all.** There is no "your engine is too old" diagnostic, because
+  telling a project to write a type it cannot parse is worse than saying
+  nothing. So on `"godot_version": "4.3"` a bare `Dictionary` is not reported
+  while a bare `Array` still is, and on anything below `4.2`
+  `require-typed-loop-variable` reports nothing at all.
+- **A class-scope declaration cannot be exempted by a list.** It has no
+  enclosing function, so no glob can name it, not even `["*"]`; it is
+  suppressed with a `# gdkit:ignore` comment like anything else. That includes a
+  `for` loop inside a class-scope variable's initializer lambda. Code inside a
+  property accessor is named for the property, which is the only name a pattern
+  could use.
+
 ### Lint configuration
 
 `gdkit lint init` writes `.gdkit/lint.json` with the default policy, and
@@ -243,6 +306,7 @@ default:
 | --- | --- |
 | `source_roots` | `["."]` |
 | `exclude` | `[".git/**", ".godot/**", ".gdkit/**", "addons/**"]` |
+| `godot_version` | `"4.7"` |
 | `disable` | none |
 | `enable` | none |
 | `enable_new_rules` | `false` |
@@ -253,6 +317,7 @@ default:
 | `max-file-lines` | `1000` |
 | `max-line-length` | `100` |
 | `tab-characters` | `1` |
+| each [static typing rule](#static-typing-rules)'s key | `[]`; no function is exempt |
 | `missing-docstring` | `[]`; the rule is off |
 | `no-engine-logging` | every engine output call; no logger named |
 
@@ -263,6 +328,23 @@ paths listed in [`.gdkitignore`](#ignoring-files-with-gdkitignore).
 
 `enable` and `enable_new_rules` turn on rules that ship inert; see
 [Rules that ship inert](#rules-that-ship-inert).
+
+`godot_version` is the engine version the project targets, written as
+`major.minor` or `major.minor.patch`. A rule whose fix needs newer syntax than
+this reports nothing, so a project is never told to write an annotation its
+engine cannot parse; the [static typing rules](#static-typing-rules) are the
+rules this gates today. It defaults to the newest Godot gdkit knows, which is
+safe only because every gated rule ships inert: a project that has not opted in
+cannot be affected by the default, and a project on an older engine lowers this
+one key instead of hunting for the right rule names.
+
+```json
+{
+  "godot_version": "4.3",
+  "enable": ["require-return-type", "require-argument-type"],
+  "require-variable-type": ["_process", "_physics_process"]
+}
+```
 
 `tab-characters` is a setting and not a rule. `max-line-length` expands each
 tab to that many spaces before measuring a line.
@@ -392,7 +474,10 @@ Widening what an existing rule reports is the same event as adding a rule, from
 a project's point of view, so it arrives the same way: as a new inert rule name
 rather than as a quiet change to the rule already running.
 
-`no-engine-logging` is the one rule that ships inert today.
+Seven rules ship inert today: `no-engine-logging`, and the six
+[static typing rules](#static-typing-rules) — `require-return-type`,
+`require-argument-type`, `require-variable-type`, `require-typed-collection`,
+`require-signal-argument-type`, and `require-typed-loop-variable`.
 
 `missing-docstring` predates this mechanism and is inert through its own empty
 `missing-docstring` list instead. That worked because the rule happens to be
