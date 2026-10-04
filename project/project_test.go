@@ -452,3 +452,82 @@ func TestLoadPrefersSidecarOverResourceHeaderForTheSameIdentifier(t *testing.T) 
 		t.Fatalf("UIDs = %v, want the sidecar owner to win", snapshot.UIDs)
 	}
 }
+
+func TestLoadSelectionNarrowsSelectedButNotPaths(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"keep.gd":          "class_name Keep\n",
+		"addons/vendor.gd": "class_name Vendor\n",
+	})
+	snapshot, err := Load(Config{
+		Root:      root,
+		Selection: &Selection{SourceRoots: []string{"."}, Exclude: []string{"addons/**"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Paths) != 2 {
+		t.Fatalf("Paths = %v, want both scripts", snapshot.Paths)
+	}
+	if !slices.Equal(snapshot.Selected, []string{"keep.gd"}) {
+		t.Errorf("Selected = %v, want [keep.gd]", snapshot.Selected)
+	}
+	if snapshot.Scripts["addons/vendor.gd"] == nil {
+		t.Error("an unselected script must still be parsed and indexed")
+	}
+}
+
+func TestLoadWithNoSelectionSelectsEverything(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"a.gd": "class_name A\n"})
+	snapshot, err := Load(Config{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(snapshot.Selected, snapshot.Paths) {
+		t.Errorf("Selected = %v, want Paths %v", snapshot.Selected, snapshot.Paths)
+	}
+}
+
+func TestLoadSelectionHonorsTheIgnoreFile(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"keep.gd":      "class_name Keep\n",
+		"hidden.gd":    "class_name Hidden\n",
+		IgnoreFileName: "hidden.gd\n",
+	})
+	snapshot, err := Load(Config{
+		Root:      root,
+		Selection: &Selection{SourceRoots: []string{"."}, HonorIgnoreFile: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(snapshot.Selected, []string{"keep.gd"}) {
+		t.Errorf("Selected = %v, want [keep.gd]", snapshot.Selected)
+	}
+	if snapshot.Scripts["hidden.gd"] == nil {
+		t.Error("an ignored script must still be in the snapshot so its class_name stays indexed")
+	}
+}
+
+func TestLoadSelectionNarrowsBySourceRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"src/a.gd":   "class_name A\n",
+		"tools/b.gd": "class_name B\n",
+	})
+	snapshot, err := Load(Config{
+		Root:      root,
+		Selection: &Selection{SourceRoots: []string{"src"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(snapshot.Selected, []string{"src/a.gd"}) {
+		t.Errorf("Selected = %v, want [src/a.gd]", snapshot.Selected)
+	}
+	if len(snapshot.Paths) != 2 {
+		t.Errorf("Paths = %v, want both", snapshot.Paths)
+	}
+}

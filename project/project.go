@@ -30,6 +30,21 @@ const IgnoreFileName = ".gdkitignore"
 // header or uid= line is short; a longer line holds something else.
 const maxResourceLine = 64 * 1024
 
+// Selection narrows which parsed scripts a tool acts on. Scripts outside it
+// are still walked, parsed, and present in the snapshot.
+//
+// It exists for a tool that must index more than it writes. generate resolves
+// a class's equals against the whole inheritance graph, so a file hidden by
+// .gdkitignore has to keep its class_name and its extends edge in the index
+// even though generate will never rewrite it. Putting those filters on Config
+// instead would drop the file from the snapshot, and absence from the index is
+// indistinguishable from a type generate knows nothing about.
+type Selection struct {
+	SourceRoots     []string
+	Exclude         []string
+	HonorIgnoreFile bool
+}
+
 // Config selects the files that belong to a project.
 type Config struct {
 	Root        string
@@ -39,6 +54,10 @@ type Config struct {
 	// Exclude still applies: a path is skipped when either one covers it, so a
 	// negated ignore pattern cannot bring back an excluded path.
 	HonorIgnoreFile bool
+	// Selection, when non-nil, narrows what the caller acts on without
+	// narrowing the universe that is walked and parsed. A nil Selection, which
+	// every tool but generate passes, selects everything discovered.
+	Selection *Selection
 }
 
 // Script is one discovered GDScript file.
@@ -125,6 +144,9 @@ type Snapshot struct {
 	// Sidecars is every discovered .uid file, sorted by path. It covers
 	// sidecars beside files this package does not parse, such as shaders.
 	Sidecars []Sidecar
+	// Selected is the subset of Paths that Config.Selection admits, sorted. It
+	// is Paths itself when Selection is nil.
+	Selected []string
 }
 
 // Load walks the configured source roots and parses every .gd file it finds.
@@ -273,7 +295,64 @@ func Load(config Config) (*Snapshot, error) {
 		}
 		scripts[name] = script
 	}
-	return &Snapshot{Root: root, Paths: paths, Scripts: scripts, UIDs: uids, Sidecars: sidecars}, nil
+	selected, err := selectPaths(root, config.Selection, paths)
+	if err != nil {
+		return nil, err
+	}
+	return &Snapshot{
+		Root:     root,
+		Paths:    paths,
+		Scripts:  scripts,
+		UIDs:     uids,
+		Sidecars: sidecars,
+		Selected: selected,
+	}, nil
+}
+
+// selectPaths returns the subset of paths that selection admits, sorted. A nil
+// selection admits everything, which is what every tool that does not need to
+// index more than it acts on passes.
+func selectPaths(root string, selection *Selection, paths []string) ([]string, error) {
+	if selection == nil {
+		return paths, nil
+	}
+	var ignored *ignore.Matcher
+	if selection.HonorIgnoreFile {
+		matcher, err := loadIgnoreFile(root)
+		if err != nil {
+			return nil, err
+		}
+		ignored = matcher
+	}
+	selected := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if !underAnyRoot(path, selection.SourceRoots) {
+			continue
+		}
+		if glob.MatchAny(selection.Exclude, path) {
+			continue
+		}
+		if ignored.Ignored(path, false) {
+			continue
+		}
+		selected = append(selected, path)
+	}
+	return selected, nil
+}
+
+// underAnyRoot reports whether path sits under one of roots. No roots, or a
+// root of "." , admits everything, matching how Load defaults SourceRoots.
+func underAnyRoot(path string, roots []string) bool {
+	if len(roots) == 0 {
+		return true
+	}
+	for _, root := range roots {
+		root = strings.TrimSuffix(filepath.ToSlash(root), "/")
+		if root == "" || root == "." || path == root || strings.HasPrefix(path, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // loadIgnoreFile reads the ignore file at the project root. A project without
