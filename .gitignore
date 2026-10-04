@@ -36,3 +36,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Task-tracking sidecars written beside a plan
+*.tasks.json
