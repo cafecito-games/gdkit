@@ -19,6 +19,7 @@ parse the same way, so every tool agrees on which files are in scope.
 | [`gdkit lint`](#linting) | Reports 30 naming, structural, design, documentation, and formatting problems |
 | [`gdkit format`](#formatting) | Rewrites GDScript into one canonical style, verifying every rewrite first |
 | [`gdkit uid`](#uid-sidecars) | Creates the `uid://` sidecars Godot would have created |
+| [`gdkit gen`](#code-generation) | Generates `_to_string` and `equals` into the classes that opt in |
 
 The analyzer uses [`gdparser`](https://github.com/cafecito-games/gdparser) and
 does not search source text with regular expressions. It parses GDScript,
@@ -36,6 +37,7 @@ gdkit arch check .      # layer, feature, and engine-purity boundaries
 gdkit lint check .      # GDScript style and correctness
 gdkit format check .    # canonical formatting; writes nothing
 gdkit uid check .       # scripts with no uid:// identity
+gdkit gen check .       # generated methods that are missing or out of date
 ```
 
 Nothing needs configuring first: every tool runs with a built-in default policy.
@@ -76,6 +78,7 @@ SHA-256 manifest.
 - [Linting](#linting) — `gdkit lint`
 - [Formatting](#formatting) — `gdkit format`
 - [UID sidecars](#uid-sidecars) — `gdkit uid`
+- [Code generation](#code-generation) — `gdkit gen`
 
 **Across every tool**
 
@@ -656,6 +659,137 @@ writes sidecars for shaders, which `gdkit` does not parse and so does not speak
 for — and it skips the paths listed in
 [`.gdkitignore`](#ignoring-files-with-gdkitignore), so a vendored script is
 left without an identity just as it is left unlinted.
+
+## Code generation
+
+`gdkit gen` writes two boilerplate value-object methods into a class that asks
+for them, inside a region it owns:
+
+```gdscript
+class_name Coordinate
+extends RefCounted
+
+# gdkit:generate = to_string, equals
+var q: int
+var r: int
+var _cache: Dictionary  # gdkit:generate:ignore-field
+
+
+# gdkit:generated:begin
+func _to_string() -> String:
+	return "Coordinate(q=%s, r=%s)" % [self.q, self.r]
+
+
+func equals(p_other: Variant) -> bool:
+	if not p_other is Object:
+		return false
+	if p_other.get_script() != get_script():
+		return false
+	return self.q == p_other.q and self.r == p_other.r
+
+
+# gdkit:generated:end
+```
+
+```sh
+gdkit gen check /path/to/godot-project          # report, write nothing
+gdkit gen check --diff /path/to/godot-project   # show what would change
+gdkit gen write /path/to/godot-project          # write the regions
+gdkit gen init /path/to/godot-project           # write the default config
+```
+
+GDScript requires a class's methods to live in that class's one script file, so
+there is no sibling-file equivalent of `go generate` here: the methods land in
+your own script, between sentinels, and `gen` owns everything between them. Run
+`gen write` on a clean tree and review the diff, as with `format write`.
+
+### Opting in
+
+| Form | Where | Meaning |
+| --- | --- | --- |
+| a `generate` entry in `.gdkit/generate.json` | configuration | opts matching files in |
+| `# gdkit:generate = to_string, equals` | a class body, on its own line | opts this class in |
+| `# gdkit:generate:ignore` | a class body, on its own line | opts this class out |
+| `# gdkit:generate:ignore-field` | on, or above, a `var` | excludes that field |
+
+Precedence is `ignore` > directive > configuration: an opt-out configuration can
+override is not an opt-out. The class-level and field-level opt-outs are spelled
+differently on purpose — one spelling for both would be ambiguous above a
+class's first field.
+
+A directive counts only when it is a comment in the class body itself. One
+inside a function, or inside an inner class, does not opt anything in; a marker
+on an inner class is reported, because an inner class cannot be generated for.
+
+Fields are every member `var` the class declares, in declaration order. A
+`const`, a `static var`, and an `@onready var` are never included — the last is
+node wiring rather than state, and is null before `_ready`.
+
+### What `equals` compares
+
+The guard is script identity rather than `is <ClassName>`, for two reasons: it
+works for a class that declares no `class_name`, and it is symmetric, so
+`a.equals(b)` and `b.equals(a)` always agree. `is` answers true one way and
+false the other across a subclass.
+
+A subclass **composes** with its parent: the generated method calls
+`super.equals(p_other)` before comparing its own fields, so every field in the
+ancestry is compared by the class that declares it. Where that is not possible —
+a base class with fields that has no `equals` of its own — the subclass is
+refused rather than generating a comparison that silently ignores inherited
+state. The diagnostic names the class that needs to opt in.
+
+For the same reason a class is refused when a subclass elsewhere would inherit
+its `equals` while adding fields of its own. Opting that subclass in clears it.
+
+`equals` compares an object-valued field **by reference**, because that is what
+`==` does to an `Object` in Godot 4. `Array` and `Dictionary` fields compare by
+value, because that is what `==` does to those. Structural comparison of a
+nested value object is planned as a separate `deep_equals` generator.
+
+### Generation diagnostics
+
+| Rule | Reports |
+| --- | --- |
+| `source-parse` | a file that could not be parsed |
+| `class_name.duplicate` | two scripts claiming one `class_name` |
+| `generate.stale` | a region that is missing or out of date |
+| `generate.marker` | a malformed directive, an unknown generator name, or a second region in one class |
+| `generate.conflict` | a method of the same name already declared with a different signature |
+| `generate.unsupported` | a class `gen` refuses, with the reason |
+| `generate.orphaned` | a region whose class no longer opts in |
+| `generate.unsafe` | a rewrite that verification refused |
+
+`equals` needs the whole inheritance graph to be visible, so a parse failure
+*anywhere* in the project blocks it — an unreadable file could be a subclass
+that adds fields, and nothing in the base names it. `to_string` does not depend
+on the graph and is unaffected.
+
+An orphaned region is **kept** and reported, not deleted: removing it is
+`gen write --prune`, so editing a glob never destroys code as a side effect.
+
+### Generation configuration
+
+`.gdkit/generate.json`, written by `gdkit gen init`:
+
+```json
+{
+  "version": 1,
+  "source_roots": ["."],
+  "exclude": [".git/**", ".godot/**", ".gdkit/**", "addons/**"],
+  "generate": [
+    { "paths": ["**/domain/value/*.gd"], "generators": ["to_string", "equals"] }
+  ]
+}
+```
+
+A file matching several entries gets the **union** of their generators, so
+capability is added by adding a rule and reordering the list changes nothing.
+
+`gen` reads `.gdkit/format.json` as well, and the region it writes is canonical
+in your project's style — `gen write` introduces no new `format check` finding.
+It does not reformat the rest of the file: every byte outside the region is left
+exactly as it was.
 
 ## Ignoring files with .gdkitignore
 
