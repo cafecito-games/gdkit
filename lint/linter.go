@@ -36,11 +36,16 @@ type PendingRule interface {
 type Context struct {
 	Config Config
 
-	patterns map[string]*regexp.Regexp
+	compiled *compiledConfig
 }
 
 // Pattern returns the compiled, anchored pattern for a name rule.
-func (c *Context) Pattern(rule string) *regexp.Regexp { return c.patterns[rule] }
+func (c *Context) Pattern(rule string) *regexp.Regexp {
+	if c.compiled == nil {
+		return nil
+	}
+	return c.compiled.patterns[rule]
+}
 
 var registry = map[string]Rule{}
 
@@ -128,7 +133,7 @@ func New(config Config) (*Linter, error) {
 // newLinter builds a linter over an explicit rule set, bypassing the global
 // registry so the driver can be tested in isolation.
 func newLinter(config Config, rules []Rule) (*Linter, error) {
-	patterns, err := config.validate()
+	compiled, err := config.validate()
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +160,7 @@ func newLinter(config Config, rules []Rule) (*Linter, error) {
 		enabled = append(enabled, rule)
 	}
 	return &Linter{
-		context:  Context{Config: config, patterns: patterns},
+		context:  Context{Config: config, compiled: compiled},
 		enabled:  enabled,
 		disabled: disabled,
 		severity: config.Severity,

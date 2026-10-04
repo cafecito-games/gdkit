@@ -219,9 +219,17 @@ func (c Config) Validate() error {
 	return err
 }
 
-// validate is Validate, also returning the compiled name patterns so a caller
-// that needs them does not compile twice.
-func (c Config) validate() (map[string]*regexp.Regexp, error) {
+// compiledConfig holds everything validate compiles once, so no rule compiles
+// anything per file. Context carries it, and a rule reads it through Context's
+// accessors by convention rather than by enforcement: every rule lives in this
+// package, so an unexported field is reachable either way.
+type compiledConfig struct {
+	patterns map[string]*regexp.Regexp
+}
+
+// validate is Validate, also returning the compiled configuration so a caller
+// that needs it does not compile twice.
+func (c Config) validate() (*compiledConfig, error) {
 	if c.Version != 1 {
 		return nil, fmt.Errorf("unsupported lint config version %d", c.Version)
 	}
@@ -291,5 +299,9 @@ func (c Config) validate() (map[string]*regexp.Regexp, error) {
 			return nil, fmt.Errorf("%s must not be negative, got %d", limit.name, limit.value)
 		}
 	}
-	return c.compileNamePatterns()
+	patterns, err := c.compileNamePatterns()
+	if err != nil {
+		return nil, err
+	}
+	return &compiledConfig{patterns: patterns}, nil
 }
