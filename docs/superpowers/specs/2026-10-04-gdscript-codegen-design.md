@@ -256,18 +256,41 @@ does not mean "project class" either: engine types are absent from that index
 too, so `Vector2` and a misspelled `Coordinat` are indistinguishable by it
 alone. Resolution is therefore against two catalogues in order:
 
-1. **Builtin Variant types** — an embedded list in `generate/builtin.go`. There
-   are 39 of them, they are enumerable, and they are stable across Godot 4, so
-   this is a list and not a configuration problem. A field of a builtin type
-   compares with `==`, which is correct including for `Array` and `Dictionary`.
+1. **Builtin Variant value types** — an embedded list in `generate/builtin.go`.
+   A field of one compares with `==`, which is correct including for `Array` and
+   `Dictionary`, since Godot 4 compares those by value.
 2. **The project `class_name` index.**
 
+The builtin set is **not** stable across Godot 4, and an earlier draft of this
+spec asserted that it was. `PackedVector4Array` is absent from the Godot 4.0
+`Variant.Type` enum and present by 4.6. The list is therefore the **union** of
+every builtin introduced anywhere in Godot 4, which needs no version
+configuration to be sound: a type that does not exist in the engine version a
+project targets cannot appear in that project's source, so a union can only be
+over-permissive about names that nobody can write. A per-version list would buy
+nothing and would need a `godot_version` key to consult.
+
+`Object` and `Variant` are in the enum but are **not** in this list. `Object` is
+the very thing whose reference semantics justify refusing a `Node`-typed field,
+so classifying it as a comparable builtin would contradict that rule; a field
+declared `Object` has no value equality to generate. `Variant` is handled by the
+untyped row of the dispatch table, since that is what it means.
+
 A type in neither is **refused** with `generate.unsupported` naming it. That
-rejects a field typed as a native engine class, such as `Node` or `Texture2D`,
-and that is the intended answer rather than a limitation to apologise for: a
-native engine object has reference semantics and no value-equality to generate,
-so a class holding one is not the kind of class this tool generates for. The
-field-level opt-out is the escape hatch, and the diagnostic names it.
+rejects a field typed as a native engine class, such as `Node` or `Texture2D`:
+a native engine object has reference semantics and no value equality to
+generate, so a class holding one is not the kind of class this tool can compare
+structurally. The field-level opt-out is the escape hatch, and the diagnostic
+names it.
+
+**This applies to `deep_equals` alone.** Resolution exists to decide whether to
+recurse, and only `deep_equals` recurses. `_to_string` formats any value with
+`%s`, and `equals` compares any value with `==`; neither needs to know what a
+field's type is, so neither refuses a field for having an unresolvable one. A
+class holding a `Node` can still generate `_to_string` and `equals` — the
+`equals` will compare that field by reference, which is the correct semantic for
+a node. Only a generator that claims to compare *structurally* owes the reader a
+refusal when it cannot.
 
 A full native-class catalogue — roughly 800 names, versioned per Godot release —
 is what it would take to distinguish `Texture2D` from a typo, and it buys only a
@@ -283,19 +306,27 @@ ordering:
    `ignore`, over selected scripts only. Yields the *requested* set of
    (script, class, generators).
 3. **Index** — over the whole universe: `class_name` to script, the inheritance
-   edge each class declares, and each class's declared methods with their
-   staticness and arity.
+   edge each class declares, each class's declared methods with their staticness
+   and arity, and **each class's selectable fields**.
 4. **Resolve capabilities** — compute, to a fixed point, which
    (class, signature) pairs are *realizable*.
-5. **Select fields** — per requested class, in declaration order, with the
-   per-field opt-out applied.
-6. **Emit and canonicalise** — each requested generator produces its method
+5. **Emit and canonicalise** — each requested generator produces its method
    text, consulting step 4. The region, including the leading gap it owns, is
    formatted in isolation with the project's `format` configuration and spliced
    into the file.
-7. **Verify** — the candidate must reparse, and every byte outside the region
+6. **Verify** — the candidate must reparse, and every byte outside the region
    must be identical to the source.
-8. **Sort** — by path, then line, column, rule.
+7. **Sort** — by path, then line, column, rule.
+
+**Field selection is part of indexing, not a later step for requested classes
+only.** Capability resolution and both inheritance rules ask whether some
+*other* class — an ancestor, or an unrequested descendant — declares a
+selectable field, so that question has to be answerable for every parsed class
+before step 4 runs. An earlier draft selected fields after resolving
+capabilities and only for requested classes, which made the fixed point depend
+on information the pipeline had not computed yet. `# gdkit:generate:ignore-field`
+is therefore read for every class in the universe, including classes that never
+opt in.
 
 ### Realizable, not merely planned
 
@@ -309,9 +340,15 @@ So step 4 computes `realizable(class, signature)` as a **greatest** fixed point:
 
 - seed it optimistically — every declared-and-compatible method, plus every
   requested generator, is assumed realizable;
-- repeatedly demote any requested pair whose own emission needs a provider that
-  is not realizable, or whose class carries any blocking diagnostic;
+- repeatedly demote any **generated** pair whose own emission needs a provider
+  that is not realizable, or whose class carries a blocking diagnostic;
 - stop when a pass demotes nothing.
+
+A declared, compatible method is **immutable** and can never be demoted. It
+already exists in the file; nothing this run does can take it away. Conflating
+the two would let a blocked generator erase a perfectly good hand-written
+provider and collapse every dependent that was relying on it, so the set tracks
+provenance — `declared` or `generated` — and only the latter is demotable.
 
 The set only ever shrinks, so this terminates. Starting optimistically rather
 than pessimistically is what makes a cycle work: `A` and `B` holding each other
@@ -336,31 +373,60 @@ subclass work: `C extends B`, `C` adds nothing, `B` generates `deep_equals`, so
 `provider(C, deep_equals)` is `B` and a field typed `C` recurses correctly. An
 earlier draft refused that case while calling it harmless.
 
-**Refusing an unsound base.** A generated `equals` compares only the fields its
-own class declares, and script identity does not save it: two `SubHex`
-instances answer the same `get_script()`, so a `SubHex` inheriting `Hex.equals`
-passes the guard and then ignores every field `SubHex` added. No guard can fix
-this — the method has no static handle on "the script I was generated into"
-without a self-referential `preload`. The index can:
+**Composing with the ancestor.** A generated comparison that looked only at the
+fields its own class declares would be unsound in both directions, and script
+identity does not save it. Two `SubHex` instances answer the same
+`get_script()`, so a `SubHex` inheriting `Hex.equals` passes the guard and
+ignores every field `SubHex` added; and a `SubHex` that generates its *own*
+`equals` would compare only `r` and ignore the `q` it inherited. An earlier
+draft of this spec claimed that opting the subclass in cleared the problem,
+which was simply wrong — it relocates it.
+
+A generated method therefore **composes with its ancestor's provider** before
+comparing its own fields:
+
+```gdscript
+func equals(p_other: Variant) -> bool:
+	if not (p_other is Object):
+		return false
+	if p_other.get_script() != get_script():
+		return false
+	if not super.equals(p_other):
+		return false
+	return self.r == p_other.r
+```
+
+`super.equals` is emitted only when `provider(parent, S)` exists. The ancestor's
+own guard passes, because both operands really are the same script. This closes
+inherited fields rather than declaring them out of scope: every field in the
+ancestry is compared, each by the class that declares it.
+
+What remains is the case with no ancestor to compose with:
 
 > A requested class `R` generating signature `S` is refused with
-> `generate.unsupported` when some descendant `D` has `provider(D, S) == R`
-> and at least one class on the path from `R` (exclusive) to `D` (inclusive)
-> declares a selectable field.
+> `generate.unsupported` when `R`'s ancestry declares a selectable field and
+> `provider(parent(R), S)` does not exist. The message names the nearest
+> ancestor that would need to opt in.
 
-Three consequences are deliberate, and each was wrong in an earlier draft:
+And the mirror of it, for a descendant that does not opt in at all:
+
+> `R` is refused when some descendant `D` has `provider(D, S) == R` and at least
+> one class on the path from `R` (exclusive) to `D` (inclusive) declares a
+> selectable field.
+
+Three consequences of the descendant rule are deliberate:
 
 - **Descendants are transitive, not direct.** A grandchild that adds fields and
-  inherits `R`'s method is just as unsound as a child that does.
-- **An override is a barrier.** If an intermediate `B` provides `S` itself, then
-  `provider(D, S)` is `B` and not `R`, so `R` is not refused for `D`'s sake.
-  `B` is then checked against its own descendants by the same rule.
-- **A field-free descendant is not a problem**, because it adds no state that
-  the inherited comparison could miss.
+  inherits `R`'s method is as unsound as a child that does.
+- **An override is a barrier.** If an intermediate `B` provides `S` itself then
+  `provider(D, S)` is `B`, not `R`, so `R` is not refused for `D`'s sake — and
+  `B`, which now composes with `R`, is checked against its own descendants by
+  the same rule.
+- **A field-free descendant is not a problem**, because it adds no state an
+  inherited comparison could miss.
 
-The diagnostic lands on `R`, which is the class whose generated method would be
-unsound, rather than on `D`, which may not be selected at all. Opting `D` in
-clears it.
+Both diagnostics land on `R`, the class whose generated method would be unsound,
+rather than on an ancestor or descendant that may not be selected at all.
 
 ### Parse failures are universe-wide, and this is the one scope exception
 
@@ -601,19 +667,38 @@ Dispatch per field:
 | absent, `Variant`, or `:=` inferred | runtime `has_method` fallback | `generate.untyped` |
 
 An object-valued field can be `null`, and `null.deep_equals(…)` is a runtime
-error, so every recursion is null-aware:
+error, so every recursion is null-aware. A recursion can also **not terminate**,
+which is a separate and worse problem: a self-referential field, or a live
+`A → B → A` object graph, makes a naive structural comparison descend forever.
+The realizability fixed point does not help — it proves the method exists, not
+that the walk it performs is finite.
+
+So the generator emits **two** methods. `deep_equals` is the public entry point
+and holds the visited set; `_gdkit_deep_equals` does the work and is what
+recursion calls. Keeping the set out of the public signature is what lets
+`a.deep_equals(b)` stay a one-argument call:
 
 ```gdscript
 func deep_equals(p_other: Variant) -> bool:
+	return _gdkit_deep_equals(p_other, {})
+
+
+func _gdkit_deep_equals(p_other: Variant, __gdkit_seen: Dictionary) -> bool:
 	if not (p_other is Object):
 		return false
 	if p_other.get_script() != get_script():
+		return false
+	var __gdkit_key := [get_instance_id(), p_other.get_instance_id()]
+	if __gdkit_seen.has(__gdkit_key):
+		return true
+	__gdkit_seen[__gdkit_key] = true
+	if not super._gdkit_deep_equals(p_other, __gdkit_seen):
 		return false
 	if self.q != p_other.q:
 		return false
 	if (self.origin == null) != (p_other.origin == null):
 		return false
-	if self.origin != null and not self.origin.deep_equals(p_other.origin):
+	if self.origin != null and not self.origin._gdkit_deep_equals(p_other.origin, __gdkit_seen):
 		return false
 	if self.tags.size() != p_other.tags.size():
 		return false
@@ -622,10 +707,26 @@ func deep_equals(p_other: Variant) -> bool:
 		var __gdkit_right: Variant = p_other.tags[__gdkit_index]
 		if (__gdkit_left == null) != (__gdkit_right == null):
 			return false
-		if __gdkit_left != null and not __gdkit_left.deep_equals(__gdkit_right):
+		if __gdkit_left != null and not __gdkit_left._gdkit_deep_equals(__gdkit_right, __gdkit_seen):
 			return false
 	return true
 ```
+
+Returning `true` on a revisited pair is the coinductive answer — a pair already
+under comparison is assumed equal unless something else proves it unequal —
+which is the standard treatment for bisimulation on cyclic structures and the
+only one that terminates without declaring every cyclic graph unequal.
+
+The visited set is keyed on the pair of instance IDs, so an `Array` is used as a
+`Dictionary` key, which Godot 4 hashes by value. The `super` call participates
+in the recursion, so the set threads through the ancestry too.
+
+One consequence for the provider rules: recursion requires
+`_gdkit_deep_equals`, not `deep_equals`. A hand-written `deep_equals` therefore
+satisfies a top-level call but **cannot** be a provider for a field's recursion,
+and a class holding a field of that type is refused with
+`generate.unsupported`. The signature a provider must offer is named in the
+diagnostic, because the fix is to let gdkit generate the pair.
 
 One `if` per field rather than an `and` chain, because the comparison differs
 per field and a chain of mixed call and operator forms is unreadable at any
@@ -709,8 +810,10 @@ rules, where capability is added by adding a rule. Union is also
 order-independent, so reordering the list cannot change the output.
 
 `source_roots`, `exclude`, and `.gdkitignore` populate `project.Selection`. None
-narrows the universe. There is no `godot_version` key: nothing in this design is
-version-gated, because every semantic it relies on is constant across Godot 4.
+narrows the universe. There is no `godot_version` key. The builtin catalogue is a
+union over all of Godot 4 rather than a per-version list, for the reason given
+under Type resolution, and every other semantic this design relies on is
+constant across Godot 4.
 
 Unknown keys are rejected at every depth, naming the offending key's full JSON
 path, as `architecture` does. `minimum_gdkit_version` is supported and checked
@@ -772,8 +875,19 @@ with a named test:
 - an orphaned region in an excluded file, which must still be reported;
 - an unparseable file outside the selection, which must block `equals` but not
   `to_string`;
-- a field typed `Vector2`, which must compare rather than be refused, and one
-  typed `Coordinat`, which must be refused.
+- a field typed `Vector2`, which must compare rather than be refused; one
+  typed `PackedVector4Array`, which must compare although it postdates 4.0; one
+  typed `Object`, which must be refused; and one typed `Coordinat`, which must
+  be refused;
+- a self-referential field, and a live `A` to `B` to `A` graph, which must
+  terminate and compare equal;
+- a subclass that generates `equals` while its base owns fields, which must
+  compose via `super` and compare both;
+- a requested subclass whose base has no provider, which must be refused;
+- a class with a hand-written `deep_equals` used as another class's field type,
+  which must be refused for lacking `_gdkit_deep_equals`;
+- a blocked generator alongside a hand-written provider of the same signature,
+  where the hand-written one must survive.
 
 A test pins that `lint` reports nothing on a file carrying any of the three
 marker forms.
@@ -781,9 +895,6 @@ marker forms.
 ## Explicitly out of scope
 
 - **Inner classes.** A marker on an inner `class` is `generate.unsupported`.
-- **Inherited fields.** A class generates from the fields it declares; the
-  descendant refusal rule keeps that gap from producing wrong code rather than
-  closing it.
 - **A full native-class catalogue.** Roughly 800 versioned names, to improve a
   message for a field that is refused either way.
 - **A `hash` generator.** The obvious fourth member of this family and the one
