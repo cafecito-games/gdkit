@@ -19,7 +19,7 @@
     {
       "id": 2,
       "subject": "Task 3: Per-rule exempt lists",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         1
       ],

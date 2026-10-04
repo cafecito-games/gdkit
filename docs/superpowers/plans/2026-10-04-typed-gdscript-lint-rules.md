@@ -443,7 +443,7 @@ and a prerelease suffix that are mistakes in a config file."
 **Acceptance Criteria:**
 - [ ] Six `[]string` config keys exist, named exactly after their rules, all `omitempty`
 - [ ] `gdkit lint init` does **not** write them (the default policy exempts nothing, and six empty lists would imply the rules run)
-- [ ] A malformed glob fails `Validate()` with a message naming the rule and the pattern
+- [ ] Every pattern is compiled by `Validate()`. `internal/glob.Compile` cannot fail — it `QuoteMeta`s every literal, so `[` is a literal bracket — so its error path is unreachable and gets no test. Check the error anyway; do not write a test that cannot pass.
 - [ ] `Context.exempt(rule, name)` matches `internal/glob` patterns, and is false for an empty `name`
 
 **Verify:** `go test -race ./lint/ -run Exempt` → PASS
@@ -485,21 +485,14 @@ func TestContextExemptMatchesGlobPatterns(t *testing.T) {
 		}
 	}
 }
-
-func TestValidateRejectsAMalformedExemptPattern(t *testing.T) {
-	config := DefaultConfig()
-	config.RequireVariableType = []string{"["}
-	err := config.Validate()
-	if err == nil || !strings.Contains(err.Error(), "require-variable-type") {
-		t.Fatalf("Validate() = %v, want an error naming the rule", err)
-	}
-}
 ```
+
+There is deliberately no malformed-pattern test: `glob.Compile` cannot fail, so there is no malformed pattern to write one with.
 
 - [ ] **Step 2: Run it to verify it fails**
 
 ```sh
-go test -race ./lint/ -run 'Exempt|MalformedExempt'
+go test -race ./lint/ -run Exempt
 ```
 
 Expected: FAIL — `config.RequireReturnType undefined`.
@@ -549,8 +542,8 @@ func (c Config) exemptPatterns() map[string][]string {
 	}
 }
 
-// compileExemptPatterns compiles every exempt pattern, so a malformed glob is a
-// configuration error rather than a pattern that silently matches nothing.
+// compileExemptPatterns compiles every exempt pattern once, so no rule compiles
+// one per file.
 func (c Config) compileExemptPatterns() (map[string][]glob.Pattern, error) {
 	compiled := make(map[string][]glob.Pattern)
 	for rule, patterns := range c.exemptPatterns() {

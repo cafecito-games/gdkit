@@ -183,8 +183,17 @@ matches depends on the rule:
 A class-scope declaration has no enclosing function and is therefore never
 exempted by a list; it is suppressed with a `# gdkit:ignore` comment like
 anything else. Every list defaults empty, and `Validate()` compiles every
-pattern so a malformed glob fails as configuration rather than silently matching
-nothing.
+pattern.
+
+Compiling them cannot currently fail, and it is worth saying why rather than
+leaving a reader to wonder. `internal/glob.Compile` passes every literal
+character through `regexp.QuoteMeta` and builds the rest from fixed strings
+(`**/`, `{feature}`, `*`, `?`), so the expression it produces is always valid —
+`[` is a literal bracket, not a malformed character class. Its error return is
+therefore unreachable, here and in the `exclude` validation directly above it.
+The error is still checked, because that is what one does with a returned error
+and because a future syntax check in `glob` would flow straight through, but no
+configuration value can reach it today and no test pretends otherwise.
 
 ### The list-semantics collision, accepted deliberately
 
