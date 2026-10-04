@@ -4,56 +4,70 @@
     {
       "id": 0,
       "subject": "Task 1: compiledConfig",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Move the compiled name patterns into a struct that Context carries, so later tasks have somewhere to put the parsed Godot version and the compiled exempt globs.\n\n**Files:**\n- Modify: lint/config.go (validate), lint/linter.go (Context, Pattern, newLinter)\n\n**Acceptance Criteria:**\n- validate() returns (*compiledConfig, error)\n- Context holds a *compiledConfig instead of a patterns map\n- Context.Pattern returns nil rather than panicking on a zero Context\n- No behavior change: the existing lint suite passes with no test file edited\n\n**Verify:** go test -race ./lint/...\n\n**Steps:** confirm green; add compiledConfig; change validate's signature; change Context and Pattern; change newLinter; verify; commit.\n\n```json:metadata\n{\"files\": [\"lint/config.go\", \"lint/linter.go\"], \"verifyCommand\": \"go test -race ./lint/...\", \"acceptanceCriteria\": [\"validate returns *compiledConfig\", \"Context holds compiledConfig\", \"Pattern nil-guards a zero Context\", \"no test file edited\"]}\n```"
     },
     {
       "id": 1,
       "subject": "Task 2: godot_version",
       "status": "pending",
-      "blockedBy": [0],
+      "blockedBy": [
+        0
+      ],
       "description": "**Goal:** A configured engine version, parsed once, that a rule can compare a floor against.\n\n**Files:**\n- Modify: internal/versiongate/versiongate.go, internal/versiongate/versiongate_test.go, lint/config.go, lint/linter.go, lint/config_test.go\n\n**Acceptance Criteria:**\n- ParseEngineVersion accepts \"4.7\" and \"4.7.0\"; rejects \"4\", \"v4.7\", \"4.7.0-beta1\", \"4.7.\", \"\"\n- Config.GodotVersion defaults to \"4.7\" and is written by gdkit lint init\n- A malformed godot_version fails Validate() naming the key\n- Context.supports(floor) compares the configured version\n\n**Verify:** go test -race ./internal/versiongate/... ./lint/...\n\n**Steps:** TDD ParseEngineVersion; TDD the config field and Context.supports; update any cmd/gdkit lint-init golden output; commit.\n\n```json:metadata\n{\"files\": [\"internal/versiongate/versiongate.go\", \"internal/versiongate/versiongate_test.go\", \"lint/config.go\", \"lint/linter.go\", \"lint/config_test.go\"], \"verifyCommand\": \"go test -race ./internal/versiongate/... ./lint/...\", \"acceptanceCriteria\": [\"ParseEngineVersion accepts an optional patch\", \"GodotVersion defaults to 4.7\", \"malformed version fails Validate\", \"Context.supports compares correctly\"]}\n```"
     },
     {
       "id": 2,
       "subject": "Task 3: Per-rule exempt lists",
       "status": "pending",
-      "blockedBy": [1],
+      "blockedBy": [
+        1
+      ],
       "description": "**Goal:** Each of the six rules takes a list of function-name globs it skips, compiled once.\n\n**Files:**\n- Modify: lint/config.go, lint/linter.go, lint/config_test.go\n\n**Acceptance Criteria:**\n- Six []string keys named exactly after their rules, all omitempty\n- gdkit lint init does not write them\n- A malformed glob fails Validate() naming the rule and the pattern\n- Context.exempt(rule, name) matches internal/glob patterns and is false for an empty name\n\n**Verify:** go test -race ./lint/ -run Exempt\n\n**Steps:** TDD Context.exempt; add the config fields; add exemptPatterns and compileExemptPatterns; commit.\n\n```json:metadata\n{\"files\": [\"lint/config.go\", \"lint/linter.go\", \"lint/config_test.go\"], \"verifyCommand\": \"go test -race ./lint/ -run Exempt\", \"acceptanceCriteria\": [\"six omitempty list keys\", \"init writes none of them\", \"malformed glob fails Validate\", \"exempt is false for an empty name\"]}\n```"
     },
     {
       "id": 3,
       "subject": "Task 4: Collector, require-return-type, require-argument-type",
       "status": "pending",
-      "blockedBy": [2],
+      "blockedBy": [
+        2
+      ],
       "description": "**Goal:** The shared walk, the rule type behind all six, and the two rules that govern a signature.\n\n**Files:**\n- Create: lint/rules_typing.go, lint/rules_typing_test.go, lint/testdata/typing/signatures.gd\n- Modify: lint/rules_fixture_test.go, lint/pending_test.go\n\n**Acceptance Criteria:**\n- func f(): reports require-return-type at the function's name\n- An untyped parameter reports require-argument-type at the parameter's name\n- -> void, : int, := 0, : Variant, and a variadic ...args each report nothing\n- A lambda's parameters are checked; its return type is never checked\n- Both rules are inert under DefaultConfig()\n- TestPendingRulesAreExactlyTheInertOnes and TestFixturesExerciseEveryRule pass\n\n**Verify:** go test -race ./lint/...\n\n**Steps:** find the PendingSince release with gh release list; TDD both rules; create rules_typing.go with the collector; update the pinned inert set; add the fixture and wire the group; commit.\n\n```json:metadata\n{\"files\": [\"lint/rules_typing.go\", \"lint/rules_typing_test.go\", \"lint/testdata/typing/signatures.gd\", \"lint/rules_fixture_test.go\", \"lint/pending_test.go\"], \"verifyCommand\": \"go test -race ./lint/...\", \"acceptanceCriteria\": [\"missing return type reported at the name\", \"untyped parameter reported at the name\", \"inferred, Variant, and variadic report nothing\", \"lambda parameters checked and return type not\", \"inert by default\", \"pinned set and fixture group updated\"]}\n```"
     },
     {
       "id": 4,
       "subject": "Task 5: require-variable-type, require-typed-collection",
       "status": "pending",
-      "blockedBy": [3],
-      "description": "**Goal:** Variables at both scopes, and the bare Array/Dictionary annotation — the rule with two version floors.\n\n**Files:**\n- Modify: lint/rules_typing.go, lint/rules_typing_test.go, lint/rules_fixture_test.go, lint/pending_test.go\n- Create: lint/testdata/typing/variables.gd\n\n**Acceptance Criteria:**\n- var x and var x = 1 report at the name, at class and function scope\n- @export var x = 1 reports; const X = 1 never reports\n- var x: Array reports require-typed-collection at the annotation, not the name\n- Array[int] and Dictionary[String, int] report nothing\n- A bare Dictionary reports at 4.4 and not at 4.3; a bare Array reports at both\n- A bare Array in a parameter or a return type also reports\n\n**Verify:** go test -race ./lint/...\n\n**Steps:** TDD both rules including the dual floor; register them; add variable() and collection(); check signature annotations too; update the pinned set; add the fixture; commit.\n\n```json:metadata\n{\"files\": [\"lint/rules_typing.go\", \"lint/rules_typing_test.go\", \"lint/testdata/typing/variables.gd\", \"lint/rules_fixture_test.go\", \"lint/pending_test.go\"], \"verifyCommand\": \"go test -race ./lint/...\", \"acceptanceCriteria\": [\"untyped vars reported at both scopes\", \"untyped @export reported\", \"const never reported\", \"bare collection reported at the annotation\", \"Dictionary gated at 4.4 while Array is not\", \"signature annotations checked\"]}\n```"
+      "blockedBy": [
+        3
+      ],
+      "description": "**Goal:** Variables at both scopes, and the bare Array/Dictionary annotation \u2014 the rule with two version floors.\n\n**Files:**\n- Modify: lint/rules_typing.go, lint/rules_typing_test.go, lint/rules_fixture_test.go, lint/pending_test.go\n- Create: lint/testdata/typing/variables.gd\n\n**Acceptance Criteria:**\n- var x and var x = 1 report at the name, at class and function scope\n- @export var x = 1 reports; const X = 1 never reports\n- var x: Array reports require-typed-collection at the annotation, not the name\n- Array[int] and Dictionary[String, int] report nothing\n- A bare Dictionary reports at 4.4 and not at 4.3; a bare Array reports at both\n- A bare Array in a parameter or a return type also reports\n\n**Verify:** go test -race ./lint/...\n\n**Steps:** TDD both rules including the dual floor; register them; add variable() and collection(); check signature annotations too; update the pinned set; add the fixture; commit.\n\n```json:metadata\n{\"files\": [\"lint/rules_typing.go\", \"lint/rules_typing_test.go\", \"lint/testdata/typing/variables.gd\", \"lint/rules_fixture_test.go\", \"lint/pending_test.go\"], \"verifyCommand\": \"go test -race ./lint/...\", \"acceptanceCriteria\": [\"untyped vars reported at both scopes\", \"untyped @export reported\", \"const never reported\", \"bare collection reported at the annotation\", \"Dictionary gated at 4.4 while Array is not\", \"signature annotations checked\"]}\n```"
     },
     {
       "id": 5,
       "subject": "Task 6: require-signal-argument-type, require-typed-loop-variable",
       "status": "pending",
-      "blockedBy": [4],
+      "blockedBy": [
+        4
+      ],
       "description": "**Goal:** The last two sites: a signal's payload and a for header.\n\n**Files:**\n- Modify: lint/rules_typing.go, lint/rules_typing_test.go, lint/rules_fixture_test.go, lint/pending_test.go, lint/testdata/typing/variables.gd\n- Create: lint/testdata/typing/signals.gd\n\n**Acceptance Criteria:**\n- signal damaged(amount) reports at the parameter, naming the signal\n- signal damaged(amount: int) reports nothing\n- for item in items reports at the loop variable; for item: Thing in items does not\n- The loop rule is silent at 4.1 and reports at 4.2\n- A signal's exempt list matches the signal's name, not an enclosing function\n\n**Verify:** go test -race ./lint/...\n\n**Steps:** TDD both rules; register them and add the 4.2 floor; add signal() and the ForStatement case; update the pinned set to its final value; add the signals fixture and finish the variables one; commit.\n\n```json:metadata\n{\"files\": [\"lint/rules_typing.go\", \"lint/rules_typing_test.go\", \"lint/testdata/typing/signals.gd\", \"lint/testdata/typing/variables.gd\", \"lint/rules_fixture_test.go\", \"lint/pending_test.go\"], \"verifyCommand\": \"go test -race ./lint/...\", \"acceptanceCriteria\": [\"untyped signal parameter reported\", \"typed signal parameter not reported\", \"untyped loop variable reported\", \"loop rule gated at 4.2\", \"signal exempt matches the signal name\"]}\n```"
     },
     {
       "id": 6,
       "subject": "Task 7: Cross-rule version-gate test",
       "status": "pending",
-      "blockedBy": [5],
+      "blockedBy": [
+        5
+      ],
       "description": "**Goal:** Pin that the gate makes rules silent for the right reason, since reporting nothing is also what a broken rule does.\n\n**Files:**\n- Modify: lint/rules_typing_test.go\n\n**Acceptance Criteria:**\n- One test asserts a 4.0 project gets the 4.0 rules and neither gated rule\n- The same source at 4.7 produces every rule, proving the silence was the gate\n\n**Verify:** go test -race ./lint/ -run TypingVersionGate\n\n**Steps:** write the two-version table over one source that has a site for every rule; run it; commit.\n\n```json:metadata\n{\"files\": [\"lint/rules_typing_test.go\"], \"verifyCommand\": \"go test -race ./lint/ -run TypingVersionGate\", \"acceptanceCriteria\": [\"4.0 list is the 4.7 list minus the two gated rules\", \"every rule fires at 4.7\"]}\n```"
     },
     {
       "id": 7,
       "subject": "Task 8: Documentation",
       "status": "pending",
-      "blockedBy": [6],
+      "blockedBy": [
+        6
+      ],
       "description": "**Goal:** The README describes the six rules, godot_version, and the new rule count.\n\n**Files:**\n- Modify: README.md\n\n**Acceptance Criteria:**\n- Both \"30 ... problems\" counts read 36\n- Each rule appears with what it reports, what satisfies it, its exempt key, and its version floor\n- godot_version appears in the configuration table with its default and the reason it is the newest version\n- The README states the rules ship inert and how to enable them\n- The require-typed-collection blind spot (var x := []) is documented\n\n**Verify:** grep -c \"require-return-type\" README.md >= 1 and grep \"30 naming\" README.md is empty\n\n**Steps:** update the two counts; add the static-typing rule subsection; document godot_version; full gofmt/vet/build/test; commit.\n\n```json:metadata\n{\"files\": [\"README.md\"], \"verifyCommand\": \"go test -race ./... && grep -c require-return-type README.md\", \"acceptanceCriteria\": [\"counts read 36\", \"six rules documented\", \"godot_version documented\", \"inertness documented\", \"blind spot documented\"]}\n```"
     }
   ],
