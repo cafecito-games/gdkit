@@ -1635,10 +1635,21 @@ func buildClass(id, path string, inner bool, script *project.Script, statements 
 	}
 	for _, statement := range statements {
 		switch node := statement.(type) {
-		case *ast.ClassNameDeclaration:
-			class.Name, class.HasClassName = node.Name, true
-		case *ast.ExtendsDeclaration:
-			class.Extends = node.Type
+		case *ast.Directive:
+			// gdparser models class_name and extends as one Directive node
+			// keyed by the keyword, and a single line may carry both, as in
+			// "class_name Hex extends RefCounted".
+			switch node.Name {
+			case "class_name":
+				if identifier, ok := node.Value.(*ast.Identifier); ok {
+					class.Name, class.HasClassName = identifier.Name, true
+				}
+				if node.Extends != nil {
+					class.ExtendsExpr = node.Extends
+				}
+			case "extends":
+				class.ExtendsExpr = node.Value
+			}
 		case *ast.FunctionDeclaration:
 			offset := node.Span().Start.Offset
 			line := lineAt(script, offset)
@@ -1708,12 +1719,32 @@ func buildInnerClasses(enclosingID, path string, script *project.Script, stateme
 // to be an engine type, which is the only reading that lets "extends Node"
 // work; a typo there is a project Godot itself will not load.
 func (i *Index) resolveExtends(snapshot *project.Snapshot, class *Class) (*Class, bool) {
-	base, chain := splitExtends(class.Extends)
+	target, ok := parseExtends(class.ExtendsExpr)
+	if !ok {
+		return nil, false
+	}
+	base, chain := target.Name, target.Chain
+	if target.Path != "" {
+		base = target.Path
+	}
 	if base == "" {
 		return nil, false
 	}
 	var head *Class
 	switch {
+	case target.Path == "":
+		// A bare identifier is looked up in lexical scope first — an inner
+		// class of an enclosing class shadows a global of the same name — and
+		// then globally.
+		if lexical, found := i.lexicalLookup(class, base); found {
+			head = lexical
+		} else if global, found := i.ByClassName[base]; found {
+			head = global
+		} else {
+			// Not a project class: an engine type, which is not a parent for
+			// our purposes.
+			return nil, false
+		}
 	case strings.HasPrefix(base, "uid://"):
 		path, ok := snapshot.UIDs[base]
 		if !ok {
@@ -1723,23 +1754,10 @@ func (i *Index) resolveExtends(snapshot *project.Snapshot, class *Class) (*Class
 		head = i.TopLevel[path]
 	case strings.HasPrefix(base, "res://"):
 		head = i.TopLevel[strings.TrimPrefix(base, "res://")]
-	case strings.HasSuffix(base, ".gd"):
-		// A relative path resolves against the declaring script's directory,
-		// as Godot's analyzer does.
-		head = i.TopLevel[joinRelative(class.Path, base)]
 	default:
-		// A bare identifier is looked up in lexical scope first — an inner
-		// class of an enclosing class shadows a global of the same name — and
-		// then globally.
-		if lexical, ok := i.lexicalLookup(class, base); ok {
-			head = lexical
-		} else if global, ok := i.ByClassName[base]; ok {
-			head = global
-		} else {
-			// Not a project class: an engine type, which is not a parent for
-			// our purposes.
-			return nil, false
-		}
+		// Any other quoted path is relative to the declaring script's
+		// directory, as Godot's analyzer resolves it.
+		head = i.TopLevel[joinRelative(class.Path, base)]
 	}
 	if head == nil {
 		class.UnresolvedBase = true
@@ -1756,34 +1774,43 @@ func (i *Index) resolveExtends(snapshot *project.Snapshot, class *Class) (*Class
 	return head, true
 }
 
-// splitExtends separates the base from its member chain. A quoted path may be
-// followed by a chain, as in `extends "res://base.gd".Inner`.
-func splitExtends(target string) (string, []string) {
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return "", nil
-	}
-	if target[0] == '"' || target[0] == '\'' {
-		quote := target[0]
-		if end := strings.IndexByte(target[1:], quote); end >= 0 {
-			base := target[1 : 1+end]
-			rest := strings.TrimPrefix(target[2+end:], ".")
-			return base, splitChain(rest)
-		}
-		return strings.Trim(target, `"'`), nil
-	}
-	segments := splitChain(target)
-	if len(segments) == 0 {
-		return "", nil
-	}
-	return segments[0], segments[1:]
+// extendsTarget is the parsed form of a base class: a base plus the member
+// chain reaching an inner class.
+type extendsTarget struct {
+	// Path is the quoted script path, when the base was a string literal.
+	Path string
+	// Name is the identifier, when the base was not a string literal.
+	Name string
+	// Chain is the dotted inner-class names after the base.
+	Chain []string
 }
 
-func splitChain(rest string) []string {
-	if rest = strings.TrimSpace(rest); rest == "" {
-		return nil
+// parseExtends reads the base-class form out of the AST rather than out of the
+// source text.
+//
+// gdparser's parseBaseClassExpression has already done this work: a base class
+// is a StringLiteral or an Identifier, optionally wrapped in a MemberExpression
+// chain, which is exactly the structure these rules need. An earlier draft of
+// this plan re-derived it by splitting the rendered string on quotes and dots,
+// which is both redundant and the kind of text handling the repository's "no
+// regex over source text" invariant exists to keep out of gdkit.
+func parseExtends(expression ast.Expression) (extendsTarget, bool) {
+	target := extendsTarget{}
+	for {
+		switch node := expression.(type) {
+		case *ast.MemberExpression:
+			target.Chain = append([]string{node.Property}, target.Chain...)
+			expression = node.Object
+		case *ast.Identifier:
+			target.Name = node.Name
+			return target, true
+		case *ast.StringLiteral:
+			target.Path = node.Value
+			return target, true
+		default:
+			return extendsTarget{}, false
+		}
 	}
-	return strings.Split(rest, ".")
 }
 
 // joinRelative resolves a path relative to the directory of from.
