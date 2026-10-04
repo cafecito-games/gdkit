@@ -64,17 +64,24 @@ yields locals, `for` headers, and nested lambdas.
 
 ```go
 type typingSite struct {
-    rule      string      // which rule governs this site
-    name      string      // the declared name, for the message
-    enclosing string      // function or signal name, for the exempt list
-    typeName  string      // the written annotation, "" when absent
-    inferred  bool        // written with ":="
-    floor     string      // minimum godot_version for the fix to be writable
-    span      token.Span  // what to underline
+    rule      string              // which rule governs this site
+    message   string              // the rendered diagnostic
+    enclosing string              // function or signal name, for the exempt list
+    floor     versiongate.Version // the Godot version that first accepts the fix
+    span      token.Span          // what to underline
 }
 ```
 
-`floor` belongs to the site rather than to the rule because
+The collector emits a site **only for a violation**, so a rule never re-decides
+what counts as typed. One shared `annotated(typeName, inferred)` predicate holds
+that definition, which is the point of having one collector: a site carrying the
+raw annotation would invite each rule to interpret it again, and
+`require-typed-collection` would have to interpret it the opposite way, since
+there the annotation's presence *is* the defect.
+
+`floor` is a `versiongate.Version` rather than a string, so a site compares
+without parsing anything per file. It belongs to the site rather than to the rule
+because
 `require-typed-collection` needs both values: a bare `Array` is fixable at 4.0,
 a bare `Dictionary` only at 4.4. This is the only rule in gdkit whose
 applicability varies per finding, and it is pinned by a test for that reason.
@@ -143,13 +150,19 @@ if it is ever built. The rule checks annotations only, and the README says so.
 
 ### `godot_version`
 
-A `major.minor.patch` string, default `"4.7"`, parsed by
-`internal/versiongate.ParseRequirement` rather than `Parse`. `ParseRequirement`
-is the stricter of the two precisely because its input is hand-written, which
-this value is: a leading `v` or a prerelease suffix is an error here, not
-something to tolerate. `Config.Validate()` parses it, so a typo is a
-configuration failure carrying a `failure.Kind` — exit `2` — rather than a rule
-that quietly stops firing.
+A Godot engine version, default `"4.7"`. Written as `major.minor` or
+`major.minor.patch`; an omitted patch is `0`.
+
+It is parsed by a new `internal/versiongate.ParseEngineVersion`, which exists
+because neither existing entry point fits. `ParseRequirement` demands exactly
+three components — nobody writes a Godot version as `4.7.0` — and `Parse` is
+deliberately lax about a leading `v` and a prerelease suffix because it reads a
+version a *binary reports about itself*. This value is hand-written into a
+config file, so it wants `ParseRequirement`'s strictness with an optional patch:
+a leading `v` or a prerelease suffix is a mistake worth naming.
+
+`Config.Validate()` parses it, so a typo is a configuration failure carrying a
+`failure.Kind` — exit `2` — rather than a rule that quietly stops firing.
 
 Defaulting to the newest version is safe only because these rules ship inert: a
 project that has not opted in cannot be affected by the default, and a project
