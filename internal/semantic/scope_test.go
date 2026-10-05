@@ -369,7 +369,7 @@ func TestScopesFreezeConstantBindingFacts(t *testing.T) {
 func TestScopesRestrictNonConstantNamespacesInConstantExpressions(t *testing.T) {
 	source := sources(t, map[string]string{
 		"autoload.gd": "class_name Auto\n",
-		"player.gd":   "class_name Player\nstatic var static_field: int\nstatic func static_method():\n\tpass\nconst TOP_STATIC_FIELD = static_field\nconst TOP_STATIC_METHOD = static_method\nconst TOP_AUTOLOAD = AutoLoad\nconst TOP_SINGLE = Single\nconst TOP_PRELOAD = preload(\"res://thing.gd\")\nconst TOP_LOAD = load(\"res://thing.gd\")\nenum { BAD = static_field }\nfunc run():\n\tconst LOCAL_STATIC_FIELD = static_field\n\tconst LOCAL_STATIC_METHOD = static_method\n\tconst LOCAL_AUTOLOAD = AutoLoad\n\tconst LOCAL_SINGLE = Single\n",
+		"player.gd":   "class_name Player\nstatic var static_field: int\nstatic func static_method():\n\tpass\nconst TOP_STATIC_FIELD = static_field\nconst TOP_STATIC_METHOD = static_method\nconst TOP_AUTOLOAD = AutoLoad\nconst TOP_SINGLE = Single\nconst TOP_PRELOAD = preload(\"res://thing.gd\")\nconst TOP_LOAD = load(\"res://thing.gd\")\nconst TOP_UTILITY = utility()\nenum { BAD = static_field }\nfunc run():\n\tconst LOCAL_STATIC_FIELD = static_field\n\tconst LOCAL_STATIC_METHOD = static_method\n\tconst LOCAL_AUTOLOAD = AutoLoad\n\tconst LOCAL_SINGLE = Single\n\tconst LOCAL_UTILITY = utility()\n",
 	})
 	source.autoloads["AutoLoad"] = "autoload.gd"
 	if got := source.ParseFailures(); len(got) != 0 {
@@ -386,11 +386,13 @@ func TestScopesRestrictNonConstantNamespacesInConstantExpressions(t *testing.T) 
 		{name: "AutoLoad", line: 7},
 		{name: "Single", line: 8},
 		{name: "load", line: 10},
-		{name: "static_field", line: 11},
-		{name: "static_field", line: 13},
-		{name: "static_method", line: 14},
-		{name: "AutoLoad", line: 15},
-		{name: "Single", line: 16},
+		{name: "utility", line: 11},
+		{name: "static_field", line: 12},
+		{name: "static_field", line: 14},
+		{name: "static_method", line: 15},
+		{name: "AutoLoad", line: 16},
+		{name: "Single", line: 17},
+		{name: "utility", line: 18},
 	} {
 		scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, testCase.name, testCase.line), "non-constant namespace")
 	}

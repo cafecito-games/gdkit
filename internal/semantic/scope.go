@@ -1068,10 +1068,17 @@ func (i *ScopeIndex) resolveEngineGlobal(scope *Scope, name string) BindingResul
 
 func constantEngineGlobalAllowed(binding Binding) bool {
 	switch binding.Kind() {
-	case BindingEngineType, BindingEngineUtility:
+	case BindingEngineType:
 		return true
 	case BindingLanguageSpecial:
 		return binding.Name() == "preload"
+	case BindingEngineUtility:
+		// Engine utilities are intentionally unknown here. Godot only accepts
+		// the math utility category in a constant expression, but the immutable
+		// Engine surface deliberately does not retain utility categories. A
+		// future engine publication that carries that evidence can narrow this
+		// answer without guessing from a function name.
+		return false
 	default:
 		return false
 	}
