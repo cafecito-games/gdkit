@@ -31,6 +31,11 @@ type Config struct {
 	// Generate opts files in by path. A file matching several entries gets the
 	// union of their generators.
 	Generate []Entry `json:"generate"`
+	// HelpersPath names the generated utility class, project-root-relative.
+	// It must be somewhere the snapshot walks, because the class is resolved
+	// out of the index like any other: a path the walk prunes would make
+	// deep_equals refuse every class while the file sat on disk.
+	HelpersPath string `json:"helpers_path,omitempty"`
 	// MinimumGdkitVersion is the floor this config needs.
 	MinimumGdkitVersion string `json:"minimum_gdkit_version,omitempty"`
 }
@@ -46,6 +51,7 @@ func DefaultConfig() Config {
 		SourceRoots: []string{"."},
 		Exclude:     []string{".git/**", ".godot/**", ".gdkit/**", "addons/**"},
 		Generate:    []Entry{},
+		HelpersPath: "gdkit_helpers.gd",
 	}
 }
 
@@ -116,13 +122,47 @@ func (c Config) Validate() error {
 			return fmt.Errorf("exclude pattern %q: %w", pattern, err)
 		}
 	}
+	if err := c.validateHelpersPath(); err != nil {
+		return err
+	}
 	_, err := c.compile()
 	return err
 }
 
+// validateHelpersPath checks that the helpers file is somewhere the project
+// walk will reach. It is a path-only check and performs no I/O, so it reports
+// a path the walk prunes whether or not the file exists yet — which is the
+// point: Check cannot tell an excluded file from an absent one, and reporting
+// "run gen init --helpers" for a file that is already there would be a lie.
+func (c Config) validateHelpersPath() error {
+	if c.HelpersPath == "" {
+		return errors.New("helpers_path must name the generated utility class")
+	}
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(c.HelpersPath)))
+	if filepath.IsAbs(filepath.FromSlash(c.HelpersPath)) || clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("helpers_path %q must be a project-relative path", c.HelpersPath)
+	}
+	if !strings.HasSuffix(clean, ".gd") {
+		return fmt.Errorf("helpers_path %q must name a .gd file", c.HelpersPath)
+	}
+	for _, pattern := range c.Exclude {
+		if glob.MatchAny([]string{pattern}, clean) {
+			return fmt.Errorf("helpers_path %q is excluded by %q, so the project walk would never reach it", clean, pattern)
+		}
+	}
+	for _, root := range c.SourceRoots {
+		cleanRoot := filepath.ToSlash(filepath.Clean(filepath.FromSlash(root)))
+		if cleanRoot == "." || clean == cleanRoot || strings.HasPrefix(clean, cleanRoot+"/") {
+			return nil
+		}
+	}
+	return fmt.Errorf("helpers_path %q is outside every source_root, so the project walk would never reach it", clean)
+}
+
 // compiled holds the config's prepared forms.
 type compiled struct {
-	entries []Entry
+	entries     []Entry
+	helpersPath string
 }
 
 func (c Config) compile() (*compiled, error) {
@@ -147,6 +187,7 @@ func (c Config) compile() (*compiled, error) {
 		}
 		result.entries = append(result.entries, entry)
 	}
+	result.helpersPath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(c.HelpersPath)))
 	return result, nil
 }
 

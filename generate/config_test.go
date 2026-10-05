@@ -88,7 +88,7 @@ func TestLoadConfigRejectsAnUnknownGeneratorName(t *testing.T) {
 // index, which is what encoding/json would otherwise do to a slice element.
 func TestLoadConfigDoesNotLeakDefaultsIntoADeclaredEntry(t *testing.T) {
 	root := t.TempDir()
-	writeConfig(t, root, `{"source_roots":["src"],"generate":[{"paths":["x/**"],"generators":["equals"]}]}`)
+	writeConfig(t, root, `{"source_roots":["src"],"helpers_path":"src/gdkit_helpers.gd","generate":[{"paths":["x/**"],"generators":["equals"]}]}`)
 	config, err := LoadConfig(root, "")
 	if err != nil {
 		t.Fatal(err)
@@ -125,5 +125,62 @@ func writeConfig(t *testing.T, root, contents string) {
 	}
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDefaultConfigNamesTheHelpersFile(t *testing.T) {
+	if got := DefaultConfig().HelpersPath; got != "gdkit_helpers.gd" {
+		t.Errorf("HelpersPath = %q, want gdkit_helpers.gd", got)
+	}
+}
+
+func TestConfigRejectsAHelpersPathTheSnapshotCannotSee(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		mutate  func(*Config)
+		message string
+	}{
+		{"empty", func(c *Config) { c.HelpersPath = "" }, "helpers_path"},
+		{"absolute", func(c *Config) { c.HelpersPath = "/tmp/helpers.gd" }, "project-relative"},
+		{"escaping", func(c *Config) { c.HelpersPath = "../helpers.gd" }, "project-relative"},
+		{"not a script", func(c *Config) { c.HelpersPath = "helpers.txt" }, ".gd"},
+		{"excluded", func(c *Config) { c.HelpersPath = "addons/helpers.gd" }, "addons/**"},
+		{"outside every source root", func(c *Config) {
+			c.SourceRoots = []string{"src"}
+			c.HelpersPath = "gdkit_helpers.gd"
+		}, "source_root"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			config := DefaultConfig()
+			testCase.mutate(&config)
+			err := config.Validate()
+			if err == nil {
+				t.Fatal("Validate() accepted a helpers_path it cannot see")
+			}
+			if !strings.Contains(err.Error(), testCase.message) {
+				t.Errorf("error = %q, want it to name %q", err, testCase.message)
+			}
+		})
+	}
+}
+
+func TestConfigAcceptsAHelpersPathInsideASourceRoot(t *testing.T) {
+	config := DefaultConfig()
+	config.SourceRoots = []string{"src"}
+	config.HelpersPath = "src/gdkit_helpers.gd"
+	if err := config.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
+func TestLoadConfigKeepsTheDefaultHelpersPath(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, `{"generate":[{"paths":["a/**"],"generators":["equals"]}]}`)
+	config, err := LoadConfig(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.HelpersPath != "gdkit_helpers.gd" {
+		t.Errorf("HelpersPath = %q, want the default", config.HelpersPath)
 	}
 }
