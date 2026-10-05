@@ -25,6 +25,20 @@ func TestDeepEqualsRecursesIntoAProjectClassField(t *testing.T) {
 	}
 }
 
+// max-returns reports a function at its last return, so the one suppression
+// sits on the final return and names only that rule.
+func TestDeepEqualsSuppressesOnlyMaxReturnsOnItsFinalReturn(t *testing.T) {
+	got := emitFor(t, "unit.gd", deepEqualsGenerator{}, map[string]string{
+		"unit.gd": "class_name Unit\nextends RefCounted\n\nvar name: String\n",
+	})
+	if !strings.HasSuffix(got, "\treturn true  # gdkit:ignore = max-returns\n") {
+		t.Errorf("final return carries no max-returns suppression:\n%s", got)
+	}
+	if strings.Count(got, "gdkit:ignore") != 1 {
+		t.Errorf("want exactly one suppression:\n%s", got)
+	}
+}
+
 func TestDeepEqualsComposesWithTheParentProvider(t *testing.T) {
 	got := emitFor(t, "hex.gd", deepEqualsGenerator{}, map[string]string{
 		"coordinate.gd": "class_name Coordinate\nextends RefCounted\n\nvar q: int\n\n" +

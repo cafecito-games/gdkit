@@ -972,8 +972,14 @@ func deep_equals(p_other: Variant) -> bool:
 		return false
 	if not GDKitEquality.deep_equals(self.label, p_other.label):
 		return false
-	return true
+	return true  # gdkit:ignore = max-returns
 ```
+
+The trailing comment keeps `gdkit lint check` quiet about the one thing the
+method cannot avoid: it returns once per field, so a class with a few fields
+exceeds `max-returns`. It names that rule alone and sits on the last return,
+where the rule reports, so a hand-written function in the same file is still
+checked and no other finding in the method is hidden.
 
 The helper is the static method of the companion addon's `GDKitEquality` class:
 

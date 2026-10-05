@@ -156,6 +156,16 @@ the default branch.
   every self-referential tree, which is most of what `deep_equals` is for; the
   cost is that a cyclic graph reached through a container exhausts the stack
   rather than being refused.
+  The emitted `deep_equals` returns once per field, so it would trip `lint`'s
+  `max-returns` default in code the project does not own. Its final
+  `return true` carries `# gdkit:ignore = max-returns`: `max-returns` reports at
+  a function's last return, so a line-scoped ignore there covers exactly that
+  function, and it names only that rule so it cannot mask another finding. A
+  `disable`/`enable` pair was rejected because lint clips every disable of a rule
+  at that rule's earliest enable, which would cut short or void a project's own
+  disable of the rule elsewhere in the file. `generate` spells the rule name
+  itself rather than importing `lint`; `TestGeneratedDeepEqualsIsCleanUnderDefaultLintFormatAndGen`
+  pins the two together.
   The comparison itself lives in a companion Godot addon declaring
   `class_name GDKitEquality`, not in generated code. It is resolved by name out
   of the universe through `Index.HelpersClass`, which is what lets it sit under
