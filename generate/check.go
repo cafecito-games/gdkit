@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/cafecito-games/gdkit/format"
+	"github.com/cafecito-games/gdkit/internal/buildinfo"
+	"github.com/cafecito-games/gdkit/internal/versiongate"
 	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdparser"
 	"github.com/cafecito-games/gdparser/ast"
@@ -387,9 +389,8 @@ func (g *Generator) whyRefused(index *Index, class *Class, signature Signature, 
 			signature.Name, capabilities.UniverseCause)
 	case signature == deepEqualsSignature && index.HelpersClass == nil:
 		return fmt.Sprintf(
-			"deep_equals calls %s, which this project does not declare; install the gdkit addon "+
-				"(gpm add --name gdkit --source github-release --repo cafecito-games/gdkit --version <tag>, "+
-				"where <tag> is the release matching this gdkit)", helpersClassName)
+			"deep_equals calls %s, which this project does not declare; install the gdkit addon (%s)",
+			helpersClassName, addonInstallCommand())
 	case signature == deepEqualsSignature && !hasHelpersClass(index):
 		return fmt.Sprintf(
 			"%s is declared at %s but has no static deep_equals(p_lhs, p_rhs), so the installed gdkit addon is too old",
@@ -511,4 +512,24 @@ func (g *Generator) canonicalise(bodies []string) (string, error) {
 		formatted += "\n"
 	}
 	return formatted, nil
+}
+
+// detectedVersion reports the running binary's version. It is a variable so a
+// test can refuse as an arbitrary release would.
+var detectedVersion = func() string { return buildinfo.Current().Version }
+
+// addonInstallCommand is the gpm invocation that installs the companion addon.
+// gpm uses --version verbatim as the release tag, and a gdkit tag carries the
+// leading "v" that the version this binary reports about itself does not, so
+// the argument is spelled out here rather than left for the reader to
+// reconstruct. ParseRequirement draws the line that matters: it accepts a bare
+// major.minor.patch and rejects a development or snapshot build, which names no
+// published release and must not be offered as "vdev".
+func addonInstallCommand() string {
+	const command = "gpm add --name gdkit --source github-release --repo cafecito-games/gdkit --version "
+	version := detectedVersion()
+	if _, err := versiongate.ParseRequirement(version); err != nil {
+		return command + `<tag>, where <tag> is the gdkit release matching this build, including its leading "v"`
+	}
+	return command + "v" + version
 }
