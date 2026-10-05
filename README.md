@@ -1029,6 +1029,24 @@ strictly equal. That is also what makes the realistic recursive shapes
 terminate: a self-reference, and a sub-object both sides share, are settled
 without recursing.
 
+What it will not do is compare two **independently built cyclic** graphs, where
+no pair of instances is ever identical and the recursion never bottoms out. A
+cyclic value object is pathological, so `gen` refuses the class instead:
+
+```
+node.gd:1: Error: deep_equals cannot be shown to terminate: this class's field
+types form a cycle through node.gd (generate.unsupported)
+```
+
+That check reads declared field types, so a field with no type, an explicit
+`Variant`, or a `:=`-inferred type is invisible to it. A field typed
+`Array[Branch]` inside `Branch` is **not** a cycle and still generates, even
+though the code now recurses into containers: tree-shaped data terminates
+through the identity check, and refusing that shape would refuse most of what
+`deep_equals` is for. The cost is that a genuinely cyclic graph reached through
+a container, or through an untyped, `Variant`, or `:=`-inferred field, exhausts
+the stack rather than being refused at check time.
+
 #### The helpers class
 
 The class is a prerequisite. A class that opts into `deep_equals` while no class
@@ -1062,24 +1080,6 @@ viable: once classified it is a dependency target, and under the default policy
 presentation-layer value object calling it would be a `dependency.direction`
 violation whichever layer the file were filed under. Excluding it keeps its
 `class_name` out of the index, so a call to it is no edge at all.
-
-What it will not do is compare two **independently built cyclic** graphs, where
-no pair of instances is ever identical and the recursion never bottoms out. A
-cyclic value object is pathological, so `gen` refuses the class instead:
-
-```
-node.gd:1: Error: deep_equals cannot be shown to terminate: this class's field
-types form a cycle through node.gd (generate.unsupported)
-```
-
-That check reads declared field types, so a field with no type, an explicit
-`Variant`, or a `:=`-inferred type is invisible to it. A field typed
-`Array[Branch]` inside `Branch` is **not** a cycle and still generates, even
-though the code now recurses into containers: tree-shaped data terminates
-through the identity check, and refusing that shape would refuse most of what
-`deep_equals` is for. The cost is that a genuinely cyclic graph reached through
-a container, or through an untyped, `Variant`, or `:=`-inferred field, exhausts
-the stack rather than being refused at check time.
 
 ### Generation diagnostics
 
