@@ -134,7 +134,7 @@ func TestDefaultConfigNamesTheHelpersFile(t *testing.T) {
 	}
 }
 
-func TestConfigRejectsAHelpersPathTheSnapshotCannotSee(t *testing.T) {
+func TestConfigRejectsAMalformedHelpersPath(t *testing.T) {
 	for _, testCase := range []struct {
 		name    string
 		mutate  func(*Config)
@@ -150,7 +150,7 @@ func TestConfigRejectsAHelpersPathTheSnapshotCannotSee(t *testing.T) {
 			testCase.mutate(&config)
 			err := config.Validate()
 			if err == nil {
-				t.Fatal("Validate() accepted a helpers_path it cannot see")
+				t.Fatal("Validate() accepted a malformed helpers_path")
 			}
 			if !strings.Contains(err.Error(), testCase.message) {
 				t.Errorf("error = %q, want it to name %q", err, testCase.message)

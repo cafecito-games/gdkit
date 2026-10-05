@@ -32,9 +32,11 @@ type Config struct {
 	// union of their generators.
 	Generate []Entry `json:"generate"`
 	// HelpersPath names the generated utility class, project-root-relative.
-	// It must be somewhere the snapshot walks, because the class is resolved
-	// out of the index like any other: a path the walk prunes would make
-	// deep_equals refuse every class while the file sat on disk.
+	// It should be somewhere the snapshot walks, because the class is resolved
+	// out of the index like any other — but that is not validated here, since
+	// the default lies outside a project whose source_roots do not include the
+	// root, and such a config has to keep loading. An unreachable path resolves
+	// to no helpers class, and deep_equals refuses with a message saying so.
 	HelpersPath string `json:"helpers_path,omitempty"`
 	// MinimumGdkitVersion is the floor this config needs.
 	MinimumGdkitVersion string `json:"minimum_gdkit_version,omitempty"`
