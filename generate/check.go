@@ -388,8 +388,8 @@ func (g *Generator) whyRefused(index *Index, class *Class, signature Signature, 
 	case signature == deepEqualsSignature && index.HelpersClass == nil:
 		return fmt.Sprintf(
 			"deep_equals calls %s, which this project does not declare; install the gdkit addon "+
-				"(gpm add --name gdkit --source git --url https://github.com/cafecito-games/gdkit.git "+
-				"--source-path addons/gdkit)", helpersClassName)
+				"(gpm add --name gdkit --source github-release --repo cafecito-games/gdkit --version <tag>, "+
+				"where <tag> is the release matching this gdkit)", helpersClassName)
 	case signature == deepEqualsSignature && !hasHelpersClass(index):
 		return fmt.Sprintf(
 			"%s is declared at %s but has no static deep_equals(p_lhs, p_rhs), so the installed gdkit addon is too old",
