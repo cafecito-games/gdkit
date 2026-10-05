@@ -280,3 +280,10 @@ func TestVerifyRefusesAChangeOutsideTheRegion(t *testing.T) {
 		t.Fatal("a candidate that rewrote code outside the region passed verification")
 	}
 }
+
+func TestTheHelpersDirectiveIsNotAccepted(t *testing.T) {
+	report := checkProject(t, DefaultConfig(), map[string]string{
+		"a.gd": "class_name Thing\nextends RefCounted\n\n# gdkit:generate = helpers\nvar x: int\n",
+	})
+	assertDiagnostic(t, report, ruleMarker)
+}

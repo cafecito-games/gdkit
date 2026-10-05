@@ -98,7 +98,13 @@ type Index struct {
 	Classes map[string]*Class
 	// TopLevel is keyed by path and holds only each file's outermost class,
 	// which is the only kind that can be a generation target.
-	TopLevel            map[string]*Class
+	TopLevel map[string]*Class
+	// HelpersClass is the class at the configured helpers_path, nil when the
+	// project declares none. BuildIndex does not set it — it knows nothing of
+	// configuration — so Check assigns it after building. Emitters read the
+	// class name from here rather than hardcoding one, which is what lets a
+	// project rename the class.
+	HelpersClass        *Class
 	ByClassName         map[string]*Class
 	DuplicateClassNames map[string][]string
 	// Children maps a class ID to the IDs extending it directly.

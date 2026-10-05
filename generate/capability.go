@@ -12,6 +12,10 @@ var (
 	// deepEqualsSignature is the shape the generated code dispatches on at
 	// runtime, so a hand-written method of this shape participates too.
 	deepEqualsSignature = Signature{Name: "deep_equals", Arity: 1}
+	// helpersSignature is the shared static comparison. Its arity is what
+	// keeps it distinct from deepEqualsSignature, which is the instance
+	// method it dispatches to.
+	helpersSignature = Signature{Name: "deep_equals", Static: true, Arity: 2}
 )
 
 type pair struct {
@@ -139,7 +143,7 @@ func Resolve(index *Index, requested map[string][]string, blockers map[string]bo
 		}
 	}
 	for id, class := range index.Classes {
-		if class.HasRegion && len(requested[id]) == 0 {
+		if class.HasRegion && len(requested[id]) == 0 && class != index.HelpersClass {
 			capabilities.orphaned[id] = true
 		}
 	}

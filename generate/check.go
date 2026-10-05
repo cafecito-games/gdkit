@@ -104,6 +104,7 @@ func (p Plan) HasBlockers() bool { return len(p.Diagnostics) > 0 }
 // so this terminates.
 func (g *Generator) Check(snapshot *project.Snapshot) Plan {
 	index := BuildIndex(snapshot)
+	index.HelpersClass = index.TopLevel[g.compiled.helpersPath]
 	requested, markers := g.resolveOptIn(snapshot, index)
 	blockers := g.localBlockers(index, requested, markers)
 	// An unsafe refusal is reported from the pass that found it. A later pass
@@ -193,7 +194,25 @@ func (g *Generator) resolveOptIn(snapshot *project.Snapshot, index *Index) (map[
 			requested[id] = names
 		}
 	}
+	// The helpers file is in scope because the configuration points at it, not
+	// because it carries a directive or matches a generate entry. Injecting
+	// the request here is also what keeps orphan detection off it: that rule
+	// fires on any class holding a region absent from requested.
+	if helpers := index.HelpersClass; helpers != nil && !helpers.Inner && selected[helpers.Path] {
+		requested[helpers.ID] = withGenerator(requested[helpers.ID], helpersGenerator{}.Name())
+	}
 	return requested, diagnostics
+}
+
+// withGenerator appends a generator name once, preserving the order the
+// caller's own list already has.
+func withGenerator(names []string, name string) []string {
+	for _, existing := range names {
+		if existing == name {
+			return names
+		}
+	}
+	return append(names, name)
 }
 
 // directivesOf reads the directive comments a class owns directly.
@@ -294,7 +313,8 @@ func (g *Generator) buildPlan(snapshot *project.Snapshot, index *Index, requeste
 	// also be the way to hide it.
 	for _, id := range sortedKeys(index.Classes) {
 		class := index.Classes[id]
-		if class.Inner || !class.HasRegion || len(requested[id]) > 0 {
+		// Nothing may prune a file the configuration names, selected or not.
+		if class.Inner || !class.HasRegion || len(requested[id]) > 0 || class == index.HelpersClass {
 			continue
 		}
 		plan.Orphans = append(plan.Orphans, class.Path)
