@@ -445,6 +445,67 @@ func TestArtifactRejectsDigestTamperingAndNonCanonicalRecords(t *testing.T) {
 	})
 }
 
+func TestLoadRegistryArtifactRequiresExactIdentity(t *testing.T) {
+	blob, err := GenerateArtifact(readRawFixture(t), officialGodotCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := LoadArtifact(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matching := registryIdentity{
+		version:      baseline.Provenance.Version,
+		rawSHA256:    baseline.Provenance.RawSHA256,
+		sourceCommit: baseline.Provenance.SourceCommit,
+		schemaSHA256: baseline.Provenance.SchemaSHA256,
+	}
+
+	var envelope artifact
+	if err := json.Unmarshal(decompressArtifactForTest(t, blob), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	envelope.Schema.Provenance.Source = SourceOverride
+	envelope.Schema.Provenance.SourceCommit = ""
+	envelope.Digest, err = schemaDigest(envelope.Schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overrideBlob := compressArtifactForTest(t, envelope)
+
+	tests := []struct {
+		name     string
+		blob     []byte
+		mutate   func(*registryIdentity)
+		accepted bool
+	}{
+		{name: "matching", blob: blob, accepted: true},
+		{name: "source", blob: overrideBlob},
+		{name: "version", blob: blob, mutate: func(identity *registryIdentity) { identity.version.Patch++ }},
+		{name: "raw digest", blob: blob, mutate: func(identity *registryIdentity) { identity.rawSHA256 = strings.Repeat("0", sha256.Size*2) }},
+		{name: "source commit", blob: blob, mutate: func(identity *registryIdentity) { identity.sourceCommit = "different-commit" }},
+		{name: "schema digest", blob: blob, mutate: func(identity *registryIdentity) { identity.schemaSHA256 = strings.Repeat("0", sha256.Size*2) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			identity := matching
+			if test.mutate != nil {
+				test.mutate(&identity)
+			}
+			loaded, err := loadRegistryArtifact(test.blob, identity)
+			if test.accepted {
+				if err != nil || loaded == nil || loaded.Engine == nil {
+					t.Fatalf("loadRegistryArtifact() = %+v, %v", loaded, err)
+				}
+				return
+			}
+			if err == nil || loaded != nil || !strings.Contains(err.Error(), "does not match its registry identity") {
+				t.Fatalf("loadRegistryArtifact() = %+v, %v", loaded, err)
+			}
+		})
+	}
+}
+
 func TestLazyArtifactConcurrentLoadsPublishOneCompleteEngine(t *testing.T) {
 	blob, err := GenerateArtifact(readRawFixture(t), officialGodotCommit)
 	if err != nil {
