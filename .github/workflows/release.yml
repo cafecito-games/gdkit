@@ -37,7 +37,16 @@ jobs:
           cache: true
       - run: go test -race ./...
       - run: go vet ./...
+      - name: Install gpm
+        run: |
+          # Pinned, not @latest: `gpm package` output is a release contract the
+          # addon's consumers verify byte for byte.
+          go install github.com/cafecito-games/godot-package-manager/cmd/gpm@v0.5.1
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+      - name: Verify the addon packages
+        run: scripts/test-package-addon
       - name: Compute version and create release tag
+        id: release_tag
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -101,6 +110,8 @@ jobs:
             echo "Created ${tag} at ${head_sha}"
           fi
 
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
           {
             echo "### Releasing ${tag}"
             echo "Previous release: \`${latest_tag}\`"
@@ -115,3 +126,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      # After GoReleaser: `release --clean` wipes dist/, so the addon archives
+      # are written elsewhere and uploaded once the release exists. The index
+      # must sit beside its archives, so the whole directory is uploaded.
+      - name: Package and upload the gpm addon
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The tag push path skips the step that computes the tag, leaving its
+          # output empty, so the pushed ref name is the fallback.
+          RELEASE_TAG: ${{ steps.release_tag.outputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          addon_output="${RUNNER_TEMP}/gdkit-addon"
+          scripts/package-addon "${RELEASE_TAG#v}" "${addon_output}"
+          gh release upload "${RELEASE_TAG}" "${addon_output}"/* --clobber
