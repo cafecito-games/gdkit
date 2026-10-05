@@ -28,8 +28,9 @@ func (deepEqualsGenerator) NeedsInheritanceGraph() bool { return true }
 // and a second code path. Uniform routing also keeps this emitter free of any
 // type analysis at all.
 //
-// The call is qualified with the helpers class's own class_name rather than a
-// fixed spelling, so a project that renames the class keeps working.
+// The call is qualified with helpersClassName, which is also how the class is
+// resolved, so a project cannot rename it: the generated code and the lookup
+// have to agree on one global, and the addon is the thing that declares it.
 func (deepEqualsGenerator) Emit(class *Class, index *Index, capabilities *Capabilities) (string, []Diagnostic) {
 	var body strings.Builder
 	body.WriteString("func deep_equals(p_other: Variant) -> bool:\n")
@@ -42,12 +43,11 @@ func (deepEqualsGenerator) Emit(class *Class, index *Index, capabilities *Capabi
 	if _, ok := capabilities.Provider(index, class.ParentID, deepEqualsSignature); ok {
 		body.WriteString("\tif not super.deep_equals(p_other):\n\t\treturn false\n")
 	}
-	helpers := index.HelpersClass.Name
 	for _, field := range class.Fields {
 		// Every reference is self-qualified: a field named p_other would
 		// otherwise be shadowed by the parameter and read the argument.
 		fmt.Fprintf(&body, "\tif not %s.deep_equals(self.%s, p_other.%s):\n\t\treturn false\n",
-			helpers, field.Name, field.Name)
+			helpersClassName, field.Name, field.Name)
 	}
 	body.WriteString("\treturn true\n")
 	return body.String(), nil
