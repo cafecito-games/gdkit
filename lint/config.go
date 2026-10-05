@@ -279,9 +279,9 @@ func LoadConfig(root, name string) (Config, error) {
 		return Config{}, failure.WrapPath(failure.ConfigParse, name,
 			errors.New("parse lint config: file must contain exactly one JSON value"))
 	}
-	if extensionAPIIsNull(data) {
+	if err := validateExtensionAPIField(data); err != nil {
 		return Config{}, failure.WrapPath(failure.ConfigParse, name,
-			errors.New("parse lint config: extension_api must be a string, not null"))
+			fmt.Errorf("parse lint config: %w", err))
 	}
 	config := DefaultConfig()
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -428,11 +428,42 @@ func validateExtensionAPIPath(name string) error {
 	return nil
 }
 
-func extensionAPIIsNull(data []byte) bool {
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(data, &object); err != nil {
-		return false
+func validateExtensionAPIField(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil {
+		return err
 	}
-	value, present := object["extension_api"]
-	return present && bytes.Equal(bytes.TrimSpace(value), []byte("null"))
+	if token != json.Delim('{') {
+		return nil
+	}
+	seen := false
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return errors.New("lint config contains a non-string key")
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+		if !strings.EqualFold(key, "extension_api") {
+			continue
+		}
+		if key != "extension_api" {
+			return fmt.Errorf("extension_api key must use exact spelling, not %q", key)
+		}
+		if seen {
+			return errors.New("extension_api key must not be duplicated")
+		}
+		seen = true
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return errors.New("extension_api must be a string, not null")
+		}
+	}
+	return nil
 }

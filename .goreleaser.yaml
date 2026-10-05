@@ -37,6 +37,17 @@ archives:
           - zip
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ title .Os }}_{{ if eq .Arch "amd64" }}x86_64{{ else }}{{ .Arch }}{{ end }}
+    files:
+      # Setting files replaces GoReleaser's defaults, so preserve every
+      # default spelling before adding the Godot attribution at archive root.
+      - license*
+      - LICENSE*
+      - readme*
+      - README*
+      - changelog*
+      - CHANGELOG*
+      - src: internal/semantic/engineschema/data/GODOT_LICENSE.txt
+        strip_parent: true
 
 checksum:
   name_template: checksums.txt

@@ -3,6 +3,7 @@ package lint
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,10 +73,40 @@ func loadEngineOverride(root, configuredPath string, compiled *compiledConfig) (
 		return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
 			fmt.Errorf("extension_api %q resolves outside the project root", configuredPath))
 	}
-	data, err := os.ReadFile(resolvedTarget)
+	info, err := os.Stat(resolvedTarget)
 	if err != nil {
 		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
-			fmt.Errorf("read extension_api %q: %w", configuredPath, err))
+			fmt.Errorf("inspect extension_api %q: %w", configuredPath, err))
+	}
+	if !info.Mode().IsRegular() {
+		return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
+			fmt.Errorf("extension_api %q is not a regular file", configuredPath))
+	}
+	file, err := os.Open(resolvedTarget)
+	if err != nil {
+		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+			fmt.Errorf("open extension_api %q: %w", configuredPath, err))
+	}
+	openedInfo, statErr := file.Stat()
+	if statErr != nil {
+		_ = file.Close()
+		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+			fmt.Errorf("inspect open extension_api %q: %w", configuredPath, statErr))
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
+			fmt.Errorf("extension_api %q is not a regular file", configuredPath))
+	}
+	data, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+			fmt.Errorf("read extension_api %q: %w", configuredPath, readErr))
+	}
+	if closeErr != nil {
+		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+			fmt.Errorf("close extension_api %q: %w", configuredPath, closeErr))
 	}
 	loaded, err := engineschema.LoadRaw(data, engineschema.SourceOverride, "")
 	if err != nil {

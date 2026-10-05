@@ -130,6 +130,34 @@ func TestRunLintResolvedExtensionAPIEscapeFailsClosedAsJSON(t *testing.T) {
 	}
 }
 
+func TestRunLintMalformedExtensionAPIPresenceFailsAsConfigParseJSON(t *testing.T) {
+	for _, contents := range []string{
+		`{"EXTENSION_API":null}`,
+		`{"extension_api":"engine.json","extension_api":null}`,
+	} {
+		root := t.TempDir()
+		writeCLIFile(t, root, "player.gd", "extends Node\n")
+		writeCLIFile(t, root, ".gdkit/lint.json", contents)
+		body := runFailure(t, "lint", "check", "--format", "json", root)
+		if body.Kind != "config.parse" || !strings.HasSuffix(filepath.ToSlash(body.Path), "/.gdkit/lint.json") {
+			t.Fatalf("failure = %+v", body)
+		}
+	}
+}
+
+func TestRunLintNonRegularExtensionAPIFailsAsConfigInvalidJSON(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", "extends Node\n")
+	if err := os.Mkdir(filepath.Join(root, "engine.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, root, ".gdkit/lint.json", `{"extension_api":"engine.json"}`)
+	body := runFailure(t, "lint", "check", "--format", "json", root)
+	if body.Kind != "config.invalid" || body.Path != "engine.json" {
+		t.Fatalf("failure = %+v", body)
+	}
+}
+
 func readCLIEngineFixture(t *testing.T) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "semantic", "engineschema", "testdata", "extension_api_4_7_2_official.json.gz"))

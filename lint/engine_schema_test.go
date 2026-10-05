@@ -61,14 +61,26 @@ func TestExtensionAPIPathValidation(t *testing.T) {
 }
 
 func TestLoadConfigRejectsNullExtensionAPIInsteadOfTreatingItAsAbsent(t *testing.T) {
-	for _, contents := range []string{`{"extension_api":null}`, `{"extension_api":null} {}`} {
-		t.Run(contents, func(t *testing.T) {
+	tests := []struct {
+		name     string
+		contents string
+	}{
+		{name: "null", contents: `{"extension_api":null}`},
+		{name: "trailing document", contents: `{"extension_api":null} {}`},
+		{name: "case variant null", contents: `{"EXTENSION_API":null}`},
+		{name: "case variant after value", contents: `{"extension_api":"tools/extension_api.json","Extension_API":null}`},
+		{name: "case variant before value", contents: `{"Extension_API":null,"extension_api":"tools/extension_api.json"}`},
+		{name: "duplicate null after value", contents: `{"extension_api":"tools/extension_api.json","extension_api":null}`},
+		{name: "duplicate value after null", contents: `{"extension_api":null,"extension_api":"tools/extension_api.json"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.MkdirAll(filepath.Join(root, ".gdkit"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			name := filepath.Join(root, filepath.FromSlash(DefaultConfigPath))
-			if err := os.WriteFile(name, []byte(contents), 0o600); err != nil {
+			if err := os.WriteFile(name, []byte(test.contents), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			config, err := LoadConfig(root, "")
@@ -78,6 +90,22 @@ func TestLoadConfigRejectsNullExtensionAPIInsteadOfTreatingItAsAbsent(t *testing
 			assertFailure(t, err, failure.ConfigParse, name)
 		})
 	}
+}
+
+func TestLoadConfigRejectsCaseVariantExtensionAPIKey(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".gdkit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Join(root, filepath.FromSlash(DefaultConfigPath))
+	if err := os.WriteFile(name, []byte(`{"Extension_API":"tools/extension_api.json"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(root, "")
+	if err == nil || config.ExtensionAPI != nil {
+		t.Fatalf("LoadConfig() = %+v, %v", config, err)
+	}
+	assertFailure(t, err, failure.ConfigParse, name)
 }
 
 func TestNonSemanticRunsDoNotLoadOrGateOnEngineSchema(t *testing.T) {
@@ -301,6 +329,21 @@ func TestExtensionAPIRejectsResolvedSymlinkEscape(t *testing.T) {
 	}
 	path := "extension_api.json"
 	if err := os.Symlink(outside, filepath.Join(root, path)); err != nil {
+		t.Fatal(err)
+	}
+	config := DefaultConfig()
+	config.ExtensionAPI = &path
+	linter, err := newLinterForProject(root, config, nil)
+	if err == nil || linter != nil {
+		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
+	}
+	assertFailure(t, err, failure.ConfigInvalid, path)
+}
+
+func TestExtensionAPIRejectsNonRegularInput(t *testing.T) {
+	root := t.TempDir()
+	path := "extension_api.json"
+	if err := os.Mkdir(filepath.Join(root, path), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	config := DefaultConfig()
