@@ -86,6 +86,16 @@ func TestIndexResolvesInnerClassesThroughEnclosingAndInheritedScopes(t *testing.
 	}
 }
 
+func TestScopeLookupWaitsForNearerInheritedScopesToSettle(t *testing.T) {
+	index := BuildIndex(sources(t, map[string]string{
+		"base.gd":    "class_name Base\n",
+		"derived.gd": "extends Base\nclass Thing:\n\tpass\nclass E extends P:\n\tclass X extends Thing:\n\t\tpass\nclass P extends Q:\n\tpass\nclass Q extends Base:\n\tclass Thing:\n\t\tpass\n",
+	}))
+	if got := index.Classes["derived.gd#E#X"].ParentID; got != "derived.gd#Q#Thing" {
+		t.Errorf("ParentID = %q, want the nearer inherited Thing", got)
+	}
+}
+
 func TestIndexResolvesEveryInheritanceForm(t *testing.T) {
 	s := sources(t, map[string]string{
 		"base.gd":     "class_name Base\nclass Inner:\n\tclass Deep:\n\t\tpass\n",

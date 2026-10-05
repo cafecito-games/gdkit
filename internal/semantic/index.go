@@ -163,7 +163,7 @@ func BuildIndex(source SourceSet) *Index {
 		if class.Extends == "" {
 			continue
 		}
-		if !index.resolve(source, class, false) && class.UnresolvedCause == "" && class.ExternalBase == "" {
+		if !index.resolve(source, class, false, nil) && class.UnresolvedCause == "" && class.ExternalBase == "" {
 			pending[id] = true
 		}
 	}
@@ -171,7 +171,7 @@ func BuildIndex(source SourceSet) *Index {
 		changed = false
 		for _, id := range sortedBoolKeys(pending) {
 			class := index.Classes[id]
-			if index.resolve(source, class, true) || class.UnresolvedCause != "" || class.ExternalBase != "" {
+			if index.resolve(source, class, true, pending) || class.UnresolvedCause != "" || class.ExternalBase != "" {
 				delete(pending, id)
 				changed = true
 			}
@@ -179,12 +179,9 @@ func BuildIndex(source SourceSet) *Index {
 	}
 	for _, id := range sortedBoolKeys(pending) {
 		class := index.Classes[id]
-		target, ok := targetOf(class)
-		if !ok || len(target.Chain) > 0 {
-			class.unresolved(class.Extends)
-		} else {
-			class.ExternalBase = target.Name
-		}
+		// A dependency deadlock is incomplete project resolution, never proof
+		// that a bare name is an external engine class.
+		class.unresolved(class.Extends)
 	}
 	for _, id := range index.ClassIDs() {
 		if parent := index.Classes[id].ParentID; parent != "" {
@@ -336,7 +333,7 @@ func renderExtends(expression ast.Expression) string {
 	return strings.Join(append([]string{base}, target.Chain...), ".")
 }
 
-func (i *Index) resolve(source SourceSet, class *ClassDecl, includeScope bool) bool {
+func (i *Index) resolve(source SourceSet, class *ClassDecl, includeScope bool, pending map[string]bool) bool {
 	target, ok := targetOf(class)
 	if !ok {
 		class.unresolved(class.Extends)
@@ -368,8 +365,16 @@ func (i *Index) resolve(source SourceSet, class *ClassDecl, includeScope bool) b
 		}
 		head = i.TopLevel[alias.ResolvedPath]
 	} else if includeScope {
-		head = i.scopeLookup(class, target.Name)
+		var settled bool
+		head, settled = i.scopeLookup(class, target.Name, pending)
 		if head == nil {
+			if settled {
+				if len(target.Chain) > 0 {
+					class.unresolved(class.Extends)
+				} else {
+					class.ExternalBase = target.Name
+				}
+			}
 			return false
 		}
 	} else {
@@ -409,12 +414,25 @@ func (i *Index) preloadAlias(class *ClassDecl, name string) (PreloadAlias, bool)
 	return PreloadAlias{}, false
 }
 
-func (i *Index) scopeLookup(class *ClassDecl, name string) *ClassDecl {
+// scopeLookup returns settled=false when a nearer inherited scope still has an
+// unresolved base. A farther enclosing match must not be accepted until that
+// scope settles, because its eventual ancestors can contain a nearer match.
+func (i *Index) scopeLookup(class *ClassDecl, name string, pending map[string]bool) (*ClassDecl, bool) {
 	for scope := class.ID; scope != ""; {
-		for _, ancestor := range i.Ancestry(scope) {
+		seen := map[string]bool{}
+		for ancestor := scope; ancestor != "" && !seen[ancestor]; {
+			seen[ancestor] = true
 			if found := i.Classes[ancestor+"#"+name]; found != nil && found.ID != class.ID {
-				return found
+				return found, true
 			}
+			owner := i.Classes[ancestor]
+			if owner == nil {
+				break
+			}
+			if ancestor != class.ID && pending[ancestor] {
+				return nil, false
+			}
+			ancestor = owner.ParentID
 		}
 		cut := strings.LastIndexByte(scope, '#')
 		if cut < 0 {
@@ -422,7 +440,7 @@ func (i *Index) scopeLookup(class *ClassDecl, name string) *ClassDecl {
 		}
 		scope = scope[:cut]
 	}
-	return nil
+	return nil, true
 }
 
 func collectPreloads(source SourceSet, filePath string, statements []ast.Statement) []PreloadAlias {

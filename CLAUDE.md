@@ -38,7 +38,7 @@ the default branch.
 
 ## Architecture
 
-`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Sixteen packages:
+`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Seventeen packages:
 
 - `architecture/` — the dependency analyzer: layer and feature boundaries, cycles,
   and engine purity (the substance of `gdkit arch`).
@@ -146,6 +146,10 @@ the default branch.
 - `internal/semantic/` — the immutable resolved type vocabulary. It has no
   parsing or diagnostic policy; `AssignableTo` is three-valued, and
   `Indeterminate` means analysis was inconclusive so consumers stay silent.
+- `internal/semanticsource/` — the adapter from `project.Snapshot` to the
+  semantic analyzer's source boundary. It exposes the full `Snapshot.Paths`
+  universe rather than the filtered `Selected` action subset, never reparses
+  files, and resolves only static script targets present in the snapshot.
 
 A rule may **ship inert**: if it implements `lint.PendingRule` it does not run
 until a project names it in `enable` or sets `enable_new_rules`. This exists so
