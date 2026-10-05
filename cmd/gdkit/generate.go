@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/cafecito-games/gdkit/format"
@@ -13,6 +14,7 @@ import (
 	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/internal/textdiff"
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/cafecito-games/gdkit/uid"
 )
 
 func runGen(args []string, stdout, stderr io.Writer) int {
@@ -218,6 +220,7 @@ func runGenInit(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("gen init", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	force := flags.Bool("force", false, "replace an existing configuration file")
+	helpers := flags.Bool("helpers", false, "also write the generated helpers class and its uid sidecar")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -241,12 +244,93 @@ func runGenInit(args []string, stdout, stderr io.Writer) int {
 	}
 	configData = append(configData, '\n')
 	name := filepath.Join(root, filepath.FromSlash(generate.DefaultConfigPath))
-	if err := writeStarter(name, configData, *force); err != nil {
+	// With --helpers an existing configuration is kept rather than refused:
+	// the helpers class is written where that configuration says, and
+	// running the command again must be a no-op.
+	if _, statErr := os.Stat(name); *helpers && !*force && statErr == nil {
+		fmt.Fprintln(stdout, generate.DefaultConfigPath, "already exists")
+	} else {
+		if err := writeStarter(name, configData, *force); err != nil {
+			fmt.Fprintln(stderr, "gdkit:", err)
+			return 2
+		}
+		fmt.Fprintln(stdout, "wrote", generate.DefaultConfigPath)
+	}
+	if *helpers {
+		if code := writeHelpersClass(root, *force, stdout, stderr); code != 0 {
+			return code
+		}
+	}
+	return 0
+}
+
+// writeHelpersClass writes the generated utility class and its uid sidecar.
+//
+// Each is written only when absent, and they are reported separately because
+// they can be in different states: a project may already hold the script with
+// an identity Godot assigned, and overwriting that sidecar would break every
+// reference Godot has cached. --force therefore replaces the script and never
+// the sidecar.
+func writeHelpersClass(root string, force bool, stdout, stderr io.Writer) int {
+	config, err := generate.LoadConfig(root, "")
+	if err != nil {
 		fmt.Fprintln(stderr, "gdkit:", err)
 		return 2
 	}
-	fmt.Fprintln(stdout, "wrote", generate.DefaultConfigPath)
+	relative := config.HelpersPath
+	target := filepath.Join(root, filepath.FromSlash(relative))
+	script := "class_name GDKitHelpers\nextends RefCounted\n"
+	if _, err := os.Stat(target); err == nil && !force {
+		fmt.Fprintln(stdout, relative, "already exists")
+	} else {
+		if err := writeStarter(target, []byte(script), force); err != nil {
+			fmt.Fprintln(stderr, "gdkit:", err)
+			return 2
+		}
+		fmt.Fprintln(stdout, "wrote", relative)
+	}
+	sidecar := target + ".uid"
+	if _, err := os.Stat(sidecar); err == nil {
+		fmt.Fprintln(stdout, relative+".uid", "already exists")
+		return 0
+	}
+	identifier, err := mintHelpersUID(root)
+	if err != nil {
+		fmt.Fprintln(stderr, "gdkit:", err)
+		return 2
+	}
+	if err := writeStarter(sidecar, []byte(identifier+"\n"), false); err != nil {
+		fmt.Fprintln(stderr, "gdkit:", err)
+		return 2
+	}
+	fmt.Fprintln(stdout, "wrote", relative+".uid")
 	return 0
+}
+
+// mintHelpersUID draws an identifier no declaration in the project already
+// claims. Every claim is reserved first, including one inside an ignored path:
+// a collision would be reported by uid check as a duplicate, and the file
+// gdkit told the project to create must not be the cause.
+func mintHelpersUID(root string) (string, error) {
+	snapshot, err := project.Load(project.Config{Root: root, HonorIgnoreFile: true, Identities: true})
+	if err != nil {
+		return "", err
+	}
+	generator := uid.NewGenerator(nil)
+	for _, claim := range snapshot.Claims {
+		identifier, ok := uid.Decode(claim.UID)
+		if !ok {
+			// A malformed declaration claims no identifier, and uid check is
+			// what reports it; drawing around it is not this command's job.
+			continue
+		}
+		generator.Reserve(identifier)
+	}
+	identifier, err := generator.Next()
+	if err != nil {
+		return "", err
+	}
+	return uid.Encode(identifier), nil
 }
 
 // genProject loads the project under root and computes its generation plan.

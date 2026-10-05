@@ -49,7 +49,8 @@ Commands:
                  repoint the broken references that name a path
   gen check      report classes whose generated methods are missing or stale
   gen write      write the generated methods into the classes that opted in
-  gen init       write the default .gdkit/generate.json configuration
+  gen init       write the default .gdkit/generate.json configuration;
+                 --helpers also writes the helpers class and its uid sidecar
   version        print version and source revision information
 `
 
