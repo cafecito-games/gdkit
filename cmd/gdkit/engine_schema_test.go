@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,10 +14,10 @@ import (
 	"github.com/cafecito-games/gdkit/lint"
 )
 
-// The bytes copied here are the producer-derived fixture documented at
-// internal/semantic/engineschema/schema_test.go. Running them through the CLI
-// proves the real lint configuration, startup, and JSON report path accepts
-// the same unmodified Godot shape as the schema loader.
+// The decompressed bytes are the complete official producer output documented
+// at internal/semantic/engineschema/schema_test.go. Running them through the
+// CLI proves the real config, startup, and JSON report path accepts the exact
+// same Godot bytes as the schema loader.
 func TestRunLintJSONReportsExplicitEngineSchemaProvenance(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", "extends Node\n")
@@ -89,13 +91,63 @@ func TestRunLintExtensionAPIFailuresUseJSONKindsPathsAndEmptyStdout(t *testing.T
 	}
 }
 
+func TestRunLintInvalidExtensionAPIPathsFailClosedAsJSON(t *testing.T) {
+	for _, configuredPath := range []string{"", "/tmp/extension_api.json", "../extension_api.json", "tools/../../extension_api.json"} {
+		t.Run(strings.ReplaceAll(configuredPath, "/", "_"), func(t *testing.T) {
+			root := t.TempDir()
+			writeCLIFile(t, root, "player.gd", "extends Node\n")
+			config, err := json.Marshal(map[string]any{
+				"godot_version": "4.7",
+				"extension_api": configuredPath,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeCLIBytes(t, root, ".gdkit/lint.json", config)
+			body := runFailure(t, "lint", "check", "--format", "json", root)
+			if body.Kind != "config.invalid" || !strings.HasSuffix(filepath.ToSlash(body.Path), "/.gdkit/lint.json") {
+				t.Fatalf("failure = %+v", body)
+			}
+		})
+	}
+}
+
+func TestRunLintResolvedExtensionAPIEscapeFailsClosedAsJSON(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", "extends Node\n")
+	outside := filepath.Join(t.TempDir(), "extension_api.json")
+	if err := os.WriteFile(outside, readCLIEngineFixture(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configuredPath := "engine.json"
+	if err := os.Symlink(outside, filepath.Join(root, configuredPath)); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFile(t, root, ".gdkit/lint.json", `{"godot_version":"4.7","extension_api":"engine.json"}`)
+	body := runFailure(t, "lint", "check", "--format", "json", root)
+	if body.Kind != "config.invalid" || body.Path != configuredPath {
+		t.Fatalf("failure = %+v", body)
+	}
+}
+
 func readCLIEngineFixture(t *testing.T) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "semantic", "engineschema", "testdata", "extension_api_4_7_2_sample.json"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "semantic", "engineschema", "testdata", "extension_api_4_7_2_official.json.gz"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return data
+	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func writeCLIBytes(t *testing.T, root, name string, contents []byte) {

@@ -245,3 +245,17 @@ func TestEngineReturnedArgumentsCannotMutateTheIndex(t *testing.T) {
 		t.Fatalf("mutated stored argument to kind %v name %q", got.Kind(), got.Name())
 	}
 }
+
+func TestEngineRejectsInheritanceCyclesBeforePublication(t *testing.T) {
+	builder := NewEngineBuilder()
+	if err := builder.AddClass("A", "B"); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddClass("B", "A"); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := builder.Build()
+	if err == nil || engine != nil || !strings.Contains(err.Error(), "inheritance cycle") {
+		t.Fatalf("Build() = %+v, %v", engine, err)
+	}
+}

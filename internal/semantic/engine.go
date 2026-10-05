@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -352,6 +353,9 @@ func (b *EngineBuilder) Build() (*Engine, error) {
 	if b == nil {
 		return nil, fmt.Errorf("engine builder is nil")
 	}
+	if err := validateEngineInheritance(b.classes); err != nil {
+		return nil, err
+	}
 	for key := range b.methods {
 		if !b.ownerExists(key.owner) {
 			return nil, fmt.Errorf("engine method %s.%s names unknown owner %q", key.owner, key.name, key.owner)
@@ -405,6 +409,48 @@ func (b *EngineBuilder) Build() (*Engine, error) {
 		engine.utilities[name] = resolveEngineMethod(spec, engine.builtins, engine.classes)
 	}
 	return engine, nil
+}
+
+func validateEngineInheritance(parents map[string]string) error {
+	const (
+		inheritanceVisiting = 1
+		inheritanceDone     = 2
+	)
+	state := make(map[string]uint8, len(parents))
+	names := make([]string, 0, len(parents))
+	for name := range parents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var visit func(string) error
+	visit = func(name string) error {
+		switch state[name] {
+		case inheritanceVisiting:
+			return fmt.Errorf("engine class inheritance cycle at %q", name)
+		case inheritanceDone:
+			return nil
+		}
+		parent, exists := parents[name]
+		if !exists {
+			return nil
+		}
+		state[name] = inheritanceVisiting
+		if parent != "" {
+			if _, internal := parents[parent]; internal {
+				if err := visit(parent); err != nil {
+					return err
+				}
+			}
+		}
+		state[name] = inheritanceDone
+		return nil
+	}
+	for _, name := range names {
+		if err := visit(name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (b *EngineBuilder) ownerExists(name string) bool {

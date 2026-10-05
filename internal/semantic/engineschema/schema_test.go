@@ -19,10 +19,13 @@ import (
 )
 
 const (
-	fixturePath         = "testdata/extension_api_4_7_2_sample.json"
-	fixtureRawSHA256    = "a9bf8cda0343d4ea7440611c3a1f1e18c450f44f2663093e14457262433dfdf3"
-	officialRawSHA256   = "d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986"
-	officialGodotCommit = "ed1daf0bf"
+	fixturePath            = "testdata/extension_api_4_7_2_sample.json"
+	officialRawFixturePath = "testdata/extension_api_4_7_2_official.json.gz"
+	fixtureRawSHA256       = "a9bf8cda0343d4ea7440611c3a1f1e18c450f44f2663093e14457262433dfdf3"
+	officialRawSHA256      = "d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986"
+	officialArtifactSHA256 = "bf23992dfff8d700515596254186e13e91df374aa4d13fe4dd74f4ef7792d7f6"
+	officialRawBytes       = 6_965_057
+	officialGodotCommit    = "ed1daf0bf"
 )
 
 func readRawFixture(t *testing.T) []byte {
@@ -32,6 +35,15 @@ func readRawFixture(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func readOfficialRawFixture(t *testing.T) []byte {
+	t.Helper()
+	compressed, err := os.ReadFile(officialRawFixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decompressArtifactForTest(t, compressed)
 }
 
 // This fixture retains rows emitted by the official Godot 4.7.2 producer at
@@ -95,6 +107,39 @@ func TestLoadRawAcceptsGodotProducedFixtureByteForByte(t *testing.T) {
 		if !found || result.Name() != "Vector2" {
 			t.Errorf("Vector2 %s %s = %q, %t", operator.name, operator.right, result.Name(), found)
 		}
+	}
+}
+
+// This gzip is only a repository-size wrapper. Its decompressed bytes are the
+// complete, unmodified output of the official Godot 4.7.2 binary. Godot emits
+// the retained header/tables at core/extension/extension_api_dump.cpp:104-127,
+// 559-619,623-908,912-1283,1287-1305 (commit ed1daf0bf).
+func TestLoadRawAcceptsOfficialGodot472DumpByteForByte(t *testing.T) {
+	raw := readOfficialRawFixture(t)
+	if len(raw) != officialRawBytes || digestBytes(raw) != officialRawSHA256 {
+		t.Fatalf("official raw fixture = %d bytes, SHA-256 %s", len(raw), digestBytes(raw))
+	}
+	loaded, err := LoadRaw(raw, SourceOverride, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Provenance.Version != (Version{Major: 4, Minor: 7, Patch: 2}) ||
+		loaded.Provenance.Build != "official" || loaded.Provenance.RawSHA256 != officialRawSHA256 {
+		t.Fatalf("official raw provenance = %+v", loaded.Provenance)
+	}
+	assertCoreEngineFacts(t, loaded.Engine)
+}
+
+func TestOfficialGodot472RegeneratesCommittedArtifactByteForByte(t *testing.T) {
+	generated, err := GenerateArtifact(readOfficialRawFixture(t), officialGodotCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(generated, godot47Artifact) {
+		t.Fatalf("generated artifact SHA-256 = %s, committed = %s", digestBytes(generated), digestBytes(godot47Artifact))
+	}
+	if got := digestBytes(generated); got != officialArtifactSHA256 {
+		t.Fatalf("generated artifact SHA-256 = %s, want %s", got, officialArtifactSHA256)
 	}
 }
 
@@ -250,6 +295,9 @@ func TestRawValidationRejectsMalformedRetainedRows(t *testing.T) {
 		})},
 		{name: "class name", mutate: mutateNamedRow("classes", "Node", func(row map[string]any) {
 			row["name"] = " Node"
+		})},
+		{name: "class inheritance cycle", mutate: mutateNamedRow("classes", "Object", func(row map[string]any) {
+			row["inherits"] = "Node"
 		})},
 		{name: "method name", mutate: mutateNestedNamedRow("classes", "Node", "methods", "get_node", func(row map[string]any) {
 			delete(row, "name")
@@ -439,6 +487,86 @@ func TestCorruptArtifactNeverPublishesPartialState(t *testing.T) {
 		loaded, err := lazy.Load()
 		if err == nil || loaded != nil {
 			t.Fatalf("attempt %d = %+v, %v", attempt, loaded, err)
+		}
+	}
+}
+
+func TestOfficialArtifactResolvesOrExplainsEveryRetainedTypeSpelling(t *testing.T) {
+	loaded, err := LoadEmbedded(4, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := decompressArtifactForTest(t, godot47Artifact)
+	document, _, err := decodeArtifactJSON(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spellings := map[string]bool{}
+	for _, class := range document.Classes {
+		if class.Inherits != "" {
+			spellings[class.Inherits] = true
+		}
+	}
+	for _, method := range document.Methods {
+		spellings[method.ReturnType] = true
+		for _, argument := range method.Arguments {
+			spellings[argument.Type] = true
+		}
+	}
+	for _, property := range document.Properties {
+		spellings[property.Type] = true
+	}
+	for _, operator := range document.Operators {
+		if operator.Right != "" {
+			spellings[operator.Right] = true
+		}
+		spellings[operator.ReturnType] = true
+	}
+	for _, singleton := range document.Singletons {
+		spellings[singleton.Type] = true
+	}
+	for _, utility := range document.Utilities {
+		spellings[utility.ReturnType] = true
+		for _, argument := range utility.Arguments {
+			spellings[argument.Type] = true
+		}
+	}
+	for spelling := range spellings {
+		resolved := loaded.Engine.ResolveType(spelling)
+		if resolved.Kind() == semantic.KindUnknown && !strings.Contains(resolved.Reason(), spelling) {
+			t.Errorf("official retained type %q became an unexplained Unknown: %s", spelling, resolved.Reason())
+		}
+	}
+}
+
+func BenchmarkLoadEmbeddedArtifactCold(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		loaded, err := LoadArtifact(godot47Artifact)
+		if err != nil || loaded == nil {
+			b.Fatalf("LoadArtifact() = %+v, %v", loaded, err)
+		}
+	}
+}
+
+func BenchmarkLoadOfficialRawOverrideCold(b *testing.B) {
+	name := os.Getenv("GDKIT_EXTENSION_API")
+	if name == "" {
+		b.Skip("set GDKIT_EXTENSION_API to an official raw extension_api.json")
+	}
+	raw, err := os.ReadFile(name)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if got := digestBytes(raw); got != officialRawSHA256 {
+		b.Fatalf("raw SHA-256 = %s, want %s", got, officialRawSHA256)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		loaded, err := LoadRaw(raw, SourceOverride, "")
+		if err != nil || loaded == nil {
+			b.Fatalf("LoadRaw() = %+v, %v", loaded, err)
 		}
 	}
 }

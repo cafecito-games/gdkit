@@ -18,3 +18,8 @@ go run ./internal/semantic/engineschema/cmd/generate \
 
 The retained API facts are derived from Godot Engine and distributed under
 Godot's MIT license in `GODOT_LICENSE.txt`.
+
+`../testdata/extension_api_4_7_2_official.json.gz` is a normalized gzip wrapper
+around the exact 6,965,057 producer bytes used above, retained so the raw
+loader and generator are exercised byte-for-byte. The wrapper's SHA-256 is
+`26cc942ddf4b0ac936218f39bf54572cda2962d5f4c78ceb70c29ff4a92d891c`.

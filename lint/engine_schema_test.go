@@ -1,7 +1,10 @@
 package lint
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -204,6 +207,27 @@ func TestExplicitExtensionAPIIsAWholesaleNumericMatchingOverride(t *testing.T) {
 	}
 }
 
+// The decompressed fixture is the complete byte-for-byte output of the
+// official Godot 4.7.2 producer cited in engineschema/schema_test.go. This
+// exercises the project-root adapter, not only the underlying raw parser.
+func TestNewForProjectAcceptsOfficialProducerDump(t *testing.T) {
+	raw := readOfficialEngineFixture(t)
+	root := t.TempDir()
+	path := "tools/godot/extension_api.json"
+	writeEngineOverride(t, root, path, raw)
+	config := DefaultConfig()
+	config.GodotVersion = "4.7.2"
+	config.ExtensionAPI = &path
+	linter, err := newLinterForProject(root, config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provenance := linter.Lint(emptySnapshot()).EngineSchema
+	if provenance == nil || provenance.RawSHA256 != "d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986" {
+		t.Fatalf("engine_schema = %+v", provenance)
+	}
+}
+
 func TestExplicitExtensionAPIAcceptsForkBrandingButNotNumericMismatch(t *testing.T) {
 	raw := mutateEngineHeader(t, func(header map[string]any) {
 		header["version_status"] = "stable"
@@ -320,6 +344,26 @@ func readEngineFixture(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func readOfficialEngineFixture(t *testing.T) []byte {
+	t.Helper()
+	compressed, err := os.ReadFile("../internal/semantic/engineschema/testdata/extension_api_4_7_2_official.json.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func mutateEngineHeader(t *testing.T, mutate func(map[string]any)) []byte {

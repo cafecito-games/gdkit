@@ -26,7 +26,10 @@ type lazyArtifact struct {
 }
 
 func newLazyArtifact(blob []byte, loader artifactLoader) *lazyArtifact {
-	return &lazyArtifact{blob: append([]byte(nil), blob...), loader: loader}
+	// Retain the read-only embedded view without copying it at package startup.
+	// The first actual load takes a private copy before handing bytes to the
+	// loader, so ordinary lint runs neither allocate for nor decompress it.
+	return &lazyArtifact{blob: blob, loader: loader}
 }
 
 func (l *lazyArtifact) Load() (*Loaded, error) {
@@ -35,7 +38,9 @@ func (l *lazyArtifact) Load() (*Loaded, error) {
 			l.err = errors.New("engine schema artifact has no loader")
 			return
 		}
-		loaded, err := l.loader(l.blob)
+		blob := append([]byte(nil), l.blob...)
+		l.blob = nil
+		loaded, err := l.loader(blob)
 		if err != nil {
 			l.err = err
 			return

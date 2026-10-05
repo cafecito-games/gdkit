@@ -19,6 +19,9 @@ func GenerateArtifact(raw []byte, sourceCommit string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, err := compileDocument(document); err != nil {
+		return nil, fmt.Errorf("%w: validate engine schema before generation: %v", ErrRawInvalid, err)
+	}
 	digest, err := schemaDigest(document)
 	if err != nil {
 		return nil, fmt.Errorf("calculate engine schema digest: %w", err)
