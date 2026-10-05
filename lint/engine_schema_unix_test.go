@@ -3,6 +3,7 @@
 package lint
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -11,6 +12,24 @@ import (
 
 	"github.com/cafecito-games/gdkit/internal/failure"
 )
+
+func TestExtensionAPIRejectsUnixSocketAsInvalid(t *testing.T) {
+	root := t.TempDir()
+	path := "extension_api.json"
+	listener, err := net.Listen("unix", filepath.Join(root, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	config := DefaultConfig()
+	config.ExtensionAPI = &path
+	linter, err := newLinterForProject(root, config, nil)
+	if err == nil || linter != nil {
+		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
+	}
+	assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, path))
+}
 
 func TestExtensionAPIRejectsFIFOWithoutBlocking(t *testing.T) {
 	root := t.TempDir()

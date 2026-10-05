@@ -95,6 +95,14 @@ func loadEngineOverride(root, configuredPath string, compiled *compiledConfig) (
 	// the project names the same file we checked. os.Root still confines a path
 	// component replaced with an escaping symlink between validation and open.
 	file, openErr := rootHandle.OpenFile(resolvedRelative, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	var targetInfo os.FileInfo
+	if openErr != nil {
+		// Some non-regular files, notably Unix sockets, reject open before the
+		// descriptor-level check below. Stat through the confined root while it
+		// is still open so every existing non-regular target has the same
+		// config.invalid classification.
+		targetInfo, _ = rootHandle.Stat(resolvedRelative)
+	}
 	rootCloseErr := rootHandle.Close()
 	if openErr != nil {
 		if currentTarget, resolveErr := filepath.EvalSymlinks(target); resolveErr == nil {
@@ -102,6 +110,10 @@ func loadEngineOverride(root, configuredPath string, compiled *compiledConfig) (
 				return nil, failure.WrapPath(failure.ConfigInvalid, failurePath,
 					fmt.Errorf("extension_api %q resolves outside the project root", configuredPath))
 			}
+		}
+		if targetInfo != nil && !targetInfo.Mode().IsRegular() {
+			return nil, failure.WrapPath(failure.ConfigInvalid, failurePath,
+				fmt.Errorf("extension_api %q is not a regular file", configuredPath))
 		}
 		return nil, failure.WrapPath(failure.ConfigRead, failurePath,
 			fmt.Errorf("open extension_api %q inside project root: %w", configuredPath, openErr))
