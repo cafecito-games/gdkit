@@ -425,6 +425,9 @@ func validateExtensionAPIPath(name string) error {
 		(len(name) >= 2 && ((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z')) && name[1] == ':') {
 		return fmt.Errorf("extension_api %q must be a project-relative path", name)
 	}
+	if clean != name {
+		return fmt.Errorf("extension_api %q must not contain dot segments, empty segments, or a trailing slash", name)
+	}
 	return nil
 }
 

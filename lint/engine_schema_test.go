@@ -50,7 +50,20 @@ func TestExtensionAPIPathValidation(t *testing.T) {
 		t.Fatalf("valid extension_api: %v", err)
 	}
 
-	for _, value := range []string{"", "/tmp/extension_api.json", "../extension_api.json", "tools/../../extension_api.json", `tools\extension_api.json`, "C:/extension_api.json", "C:extension_api.json", "bad\x00path"} {
+	for _, value := range []string{
+		"",
+		"/tmp/extension_api.json",
+		"../extension_api.json",
+		"tools/../../extension_api.json",
+		"./extension_api.json",
+		"tools/../extension_api.json",
+		"tools//extension_api.json",
+		"tools/godot/",
+		`tools\extension_api.json`,
+		"C:/extension_api.json",
+		"C:extension_api.json",
+		"bad\x00path",
+	} {
 		t.Run(strings.ReplaceAll(value, "/", "_"), func(t *testing.T) {
 			config := DefaultConfig()
 			config.ExtensionAPI = &value
@@ -58,6 +71,38 @@ func TestExtensionAPIPathValidation(t *testing.T) {
 				t.Fatalf("Validate() = %v", err)
 			}
 		})
+	}
+}
+
+func TestExtensionAPIRejectsSymlinkDotDotAmbiguityAsInvalidConfig(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	outsideTarget := filepath.Join(outside, "target")
+	if err := os.Mkdir(outsideTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideTarget, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	// Without canonical path validation, filepath.Join/EvalSymlinks inspect this
+	// in-root file while os.Root resolves link before .. and refuses the escape.
+	writeEngineOverride(t, root, "extension_api.json", readEngineFixture(t))
+	writeEngineOverride(t, outside, "extension_api.json", readEngineFixture(t))
+	if err := os.MkdirAll(filepath.Join(root, ".gdkit"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, filepath.FromSlash(DefaultConfigPath))
+	if err := os.WriteFile(configPath, []byte(`{"extension_api":"link/../extension_api.json"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := LoadConfig(root, "")
+	if err == nil {
+		_, err = newLinterForProject(root, config, nil)
+	}
+	labelled, ok := failure.Of(err)
+	if !ok || labelled.Kind != failure.ConfigInvalid {
+		t.Fatalf("ambiguous extension_api failure = %#v, want %q", err, failure.ConfigInvalid)
 	}
 }
 

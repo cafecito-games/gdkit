@@ -375,10 +375,12 @@ requires that exact numeric patch. Fork status, build, branding, and suffixes
 are retained as provenance but do not affect matching.
 
 The path must not be absolute, empty, escape the project lexically, or resolve
-through a symlink outside it. An unreadable dump is `config.read`, malformed
-JSON is `config.parse`, and an invalid schema or numeric mismatch is
-`config.invalid`. With `--format json`, those failures are written only to
-stderr and stdout remains empty.
+through a symlink outside it. It must be written canonically, without `.` or
+`..` segments, doubled slashes, or a trailing slash, so validation and the
+confined open always address the same file. An unreadable dump is
+`config.read`, malformed JSON is `config.parse`, and an invalid schema or
+numeric mismatch is `config.invalid`. With `--format json`, those failures are
+written only to stderr and stdout remains empty.
 
 An integrity or provenance failure in gdkit's own embedded artifact is instead
 `analysis.failed`; it is not mislabeled as a project configuration error.
