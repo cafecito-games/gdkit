@@ -30,6 +30,9 @@ dist/
 go.work
 go.work.sum
 
+# Local Grafo semantic index
+.grafo/
+
 # env file
 .env
 
