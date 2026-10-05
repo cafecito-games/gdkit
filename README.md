@@ -380,6 +380,9 @@ JSON is `config.parse`, and an invalid schema or numeric mismatch is
 `config.invalid`. With `--format json`, those failures are written only to
 stderr and stdout remains empty.
 
+An integrity or provenance failure in gdkit's own embedded artifact is instead
+`analysis.failed`; it is not mislabeled as a project configuration error.
+
 Built-in semantic engine support starts at Godot 4.7. The initial registry has
 one exact key, `4.7`, backed by the latest supported patch, official Godot
 4.7.2. A later semantic-aware rule never borrows that table for 4.6, 4.8, or
@@ -1516,6 +1519,10 @@ go run ./internal/semantic/engineschema/cmd/generate \
 
 Generation stable-sorts retained records and clears gzip filename, comment,
 extra, and time metadata, so identical input produces byte-identical output.
+The command prints the raw, semantic-schema, and compressed-artifact digests
+plus artifact size. When updating the official patch or adding a supported
+forward minor, follow the complete identity/fixture/documentation checklist in
+the artifact's [data README](internal/semantic/engineschema/data/README.md).
 The artifact is derived from Godot Engine under its bundled
 [MIT attribution](internal/semantic/engineschema/data/GODOT_LICENSE.txt).
 

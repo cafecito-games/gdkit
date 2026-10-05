@@ -173,6 +173,15 @@ func TestEngineResolvesContainerAndEnumSpellings(t *testing.T) {
 			t.Errorf("%s = kind %v name %q", spelling, got.Kind(), got.Name())
 		}
 	}
+	if got := engine.ResolveType("enum::Error"); got.Kind() != KindEnum || got.Name() != "Error" {
+		t.Errorf("global enum = kind %v name %q", got.Kind(), got.Name())
+	}
+	for _, spelling := range []string{"enum::Missing.Mode", "bitfield::Missing.Flags"} {
+		got := engine.ResolveType(spelling)
+		if got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "Missing") {
+			t.Errorf("%s = kind %v reason %q", spelling, got.Kind(), got.Reason())
+		}
+	}
 	if engine.ResolveType("Callable").Kind() != KindCallable || engine.ResolveType("Signal").Kind() != KindSignal {
 		t.Error("Callable or Signal did not use its dedicated semantic kind")
 	}

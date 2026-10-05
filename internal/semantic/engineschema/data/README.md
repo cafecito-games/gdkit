@@ -16,6 +16,26 @@ go run ./internal/semantic/engineschema/cmd/generate \
   -raw-sha256 d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986
 ```
 
+The command verifies the generated artifact before replacing the destination
+and prints `raw_sha256`, `schema_sha256`, `artifact_sha256`, and
+`artifact_bytes` for the registry and provenance records.
+
+When advancing the bundled patch or adding a forward minor, update these as one
+reviewed provenance change:
+
+1. Verify the official dump's header, byte count, and raw digest, then replace
+   the exact producer fixture in `../testdata`.
+2. Generate the artifact and record every printed digest and size.
+3. Update the exact registry key/artifact and its pinned `registryIdentity` in
+   `../registry.go`; add a key for a new minor rather than replacing or falling
+   back to another minor.
+4. Update the provenance constants and deterministic-regeneration assertions in
+   `../schema_test.go`.
+5. Update this file, the root `README.md`, and the refresh command/provenance
+   guidance in `CLAUDE.md` together.
+6. Run the focused engine-schema tests, the full race suite, and the GoReleaser
+   snapshot/archive-attribution checks before committing the artifact.
+
 The retained API facts are derived from Godot Engine and distributed under
 Godot's MIT license in `GODOT_LICENSE.txt`.
 

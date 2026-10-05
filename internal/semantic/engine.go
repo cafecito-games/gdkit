@@ -510,10 +510,10 @@ func resolveEngineType(spelling string, builtins map[string]bool, classes map[st
 		return Void()
 	}
 	if name, ok := strings.CutPrefix(spelling, "enum::"); ok && name != "" {
-		return Enum(name)
+		return resolveEngineEnum(spelling, name, builtins, classes)
 	}
 	if name, ok := strings.CutPrefix(spelling, "bitfield::"); ok && name != "" {
-		return Enum(name)
+		return resolveEngineEnum(spelling, name, builtins, classes)
 	}
 	if element, ok := strings.CutPrefix(spelling, "typedarray::"); ok {
 		if !builtins["Array"] {
@@ -558,6 +558,16 @@ func resolveEngineType(spelling string, builtins map[string]bool, classes map[st
 		}
 	}
 	return Unknown(fmt.Sprintf("engine type %q is absent from schema", spelling))
+}
+
+func resolveEngineEnum(spelling, name string, builtins map[string]bool, classes map[string]Type) Type {
+	owner, _, qualified := strings.Cut(name, ".")
+	if qualified && owner != "Variant" && !builtins[owner] {
+		if _, exists := classes[owner]; !exists {
+			return Unknown(fmt.Sprintf("engine enum owner %q in type %q is absent from schema", owner, spelling))
+		}
+	}
+	return Enum(name)
 }
 
 func engineName(kind, name string) error {

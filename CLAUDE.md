@@ -21,6 +21,8 @@ go run ./internal/semantic/engineschema/cmd/generate \
   -output internal/semantic/engineschema/data/godot_4_7.json.gz \
   -source-commit ed1daf0bf \
   -raw-sha256 d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986
+# The command prints every pinned digest/size. When changing the input, follow
+# internal/semantic/engineschema/data/README.md's complete refresh checklist.
 
 # Run the CLI from the checkout
 go run ./cmd/gdkit arch check /path/to/godot-project

@@ -35,10 +35,24 @@ func main() {
 	if err != nil {
 		fatal("generate artifact: %v", err)
 	}
+	summary, err := summarizeArtifact(gotSHA256, artifact)
+	if err != nil {
+		fatal("verify generated artifact: %v", err)
+	}
 	if err := writeAtomically(*output, artifact); err != nil {
 		fatal("write artifact: %v", err)
 	}
-	fmt.Printf("raw_sha256=%s artifact_bytes=%d\n", gotSHA256, len(artifact))
+	fmt.Println(summary)
+}
+
+func summarizeArtifact(rawSHA256 string, artifact []byte) (string, error) {
+	loaded, err := engineschema.LoadArtifact(artifact)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(artifact)
+	return fmt.Sprintf("raw_sha256=%s schema_sha256=%s artifact_sha256=%s artifact_bytes=%d",
+		rawSHA256, loaded.Provenance.SchemaSHA256, hex.EncodeToString(digest[:]), len(artifact)), nil
 }
 
 func writeAtomically(path string, data []byte) error {

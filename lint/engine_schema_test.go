@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -191,6 +192,22 @@ func TestSemanticRuleRejectsEveryUnbundledMinorWithoutFallback(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEmbeddedSchemaCorruptionIsAnAnalysisFailure(t *testing.T) {
+	config := DefaultConfig()
+	compiled, err := config.validate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := prepareEngineSchemaWithLoader("", false, config, compiled, []Rule{&engineAwareTestRule{}},
+		func(int, int) (*engineschema.Loaded, error) {
+			return nil, errors.New("embedded artifact digest mismatch")
+		})
+	if err == nil || loaded != nil {
+		t.Fatalf("prepareEngineSchemaWithLoader() = %+v, %v", loaded, err)
+	}
+	assertFailure(t, err, failure.AnalysisFailed, "")
 }
 
 // The copied bytes come from the real Godot producer fixture documented in

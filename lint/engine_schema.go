@@ -7,12 +7,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/internal/semantic/engineschema"
 )
 
 func prepareEngineSchema(root string, projectAware bool, config Config, compiled *compiledConfig, enabled []Rule) (*engineschema.Loaded, error) {
+	return prepareEngineSchemaWithLoader(root, projectAware, config, compiled, enabled, engineschema.LoadEmbedded)
+}
+
+type embeddedSchemaLoader func(int, int) (*engineschema.Loaded, error)
+
+func prepareEngineSchemaWithLoader(root string, projectAware bool, config Config, compiled *compiledConfig, enabled []Rule, loadEmbedded embeddedSchemaLoader) (*engineschema.Loaded, error) {
 	if config.ExtensionAPI != nil {
 		if !projectAware {
 			return nil, failure.WrapPath(failure.ConfigInvalid, *config.ExtensionAPI,
@@ -25,7 +32,7 @@ func prepareEngineSchema(root string, projectAware bool, config Config, compiled
 	}
 
 	version := compiled.godotVersion
-	loaded, err := engineschema.LoadEmbedded(version.Major, version.Minor)
+	loaded, err := loadEmbedded(version.Major, version.Minor)
 	if err == nil {
 		return loaded, nil
 	}
@@ -34,7 +41,7 @@ func prepareEngineSchema(root string, projectAware bool, config Config, compiled
 			"godot_version %q has no embedded engine schema; configure extension_api with a matching dump or use a gdkit release that supports Godot %d.%d: %w",
 			config.GodotVersion, version.Major, version.Minor, err))
 	}
-	return nil, failure.Wrap(failure.ConfigInvalid, fmt.Errorf(
+	return nil, failure.Wrap(failure.AnalysisFailed, fmt.Errorf(
 		"load embedded engine schema for godot_version %q: %w", config.GodotVersion, err))
 }
 
@@ -73,19 +80,27 @@ func loadEngineOverride(root, configuredPath string, compiled *compiledConfig) (
 		return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
 			fmt.Errorf("extension_api %q resolves outside the project root", configuredPath))
 	}
-	info, err := os.Stat(resolvedTarget)
+	rootHandle, err := os.OpenRoot(resolvedRoot)
 	if err != nil {
 		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
-			fmt.Errorf("inspect extension_api %q: %w", configuredPath, err))
+			fmt.Errorf("open project root for extension_api %q: %w", configuredPath, err))
 	}
-	if !info.Mode().IsRegular() {
-		return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
-			fmt.Errorf("extension_api %q is not a regular file", configuredPath))
-	}
-	file, err := os.Open(resolvedTarget)
-	if err != nil {
+	file, openErr := rootHandle.OpenFile(filepath.FromSlash(configuredPath), os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	rootCloseErr := rootHandle.Close()
+	if openErr != nil {
+		if currentTarget, resolveErr := filepath.EvalSymlinks(target); resolveErr == nil {
+			if currentlyInside, withinErr := pathWithin(resolvedRoot, currentTarget); withinErr == nil && !currentlyInside {
+				return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
+					fmt.Errorf("extension_api %q resolves outside the project root", configuredPath))
+			}
+		}
 		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
-			fmt.Errorf("open extension_api %q: %w", configuredPath, err))
+			fmt.Errorf("open extension_api %q inside project root: %w", configuredPath, openErr))
+	}
+	if rootCloseErr != nil {
+		_ = file.Close()
+		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+			fmt.Errorf("close project root for extension_api %q: %w", configuredPath, rootCloseErr))
 	}
 	openedInfo, statErr := file.Stat()
 	if statErr != nil {
