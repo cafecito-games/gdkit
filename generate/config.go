@@ -129,11 +129,15 @@ func (c Config) Validate() error {
 	return err
 }
 
-// validateHelpersPath checks that the helpers file is somewhere the project
-// walk will reach. It is a path-only check and performs no I/O, so it reports
-// a path the walk prunes whether or not the file exists yet — which is the
-// point: Check cannot tell an excluded file from an absent one, and reporting
-// "run gen init --helpers" for a file that is already there would be a lie.
+// validateHelpersPath checks the shape of the helpers path and nothing more.
+//
+// Whether the project walk actually reaches it is deliberately not checked
+// here. A project with "source_roots": ["src"] and no helpers_path of its own
+// carries the default, which is outside that root, and failing to load such a
+// config would break every existing project on upgrade. An unreachable path
+// instead resolves to no helpers class at all, which Check reports as a
+// refusal naming both remedies — and Check cannot distinguish an excluded
+// path from an absent file in any case, because it performs no I/O.
 func (c Config) validateHelpersPath() error {
 	if c.HelpersPath == "" {
 		return errors.New("helpers_path must name the generated utility class")
@@ -145,18 +149,7 @@ func (c Config) validateHelpersPath() error {
 	if !strings.HasSuffix(clean, ".gd") {
 		return fmt.Errorf("helpers_path %q must name a .gd file", c.HelpersPath)
 	}
-	for _, pattern := range c.Exclude {
-		if glob.MatchAny([]string{pattern}, clean) {
-			return fmt.Errorf("helpers_path %q is excluded by %q, so the project walk would never reach it", clean, pattern)
-		}
-	}
-	for _, root := range c.SourceRoots {
-		cleanRoot := filepath.ToSlash(filepath.Clean(filepath.FromSlash(root)))
-		if cleanRoot == "." || clean == cleanRoot || strings.HasPrefix(clean, cleanRoot+"/") {
-			return nil
-		}
-	}
-	return fmt.Errorf("helpers_path %q is outside every source_root, so the project walk would never reach it", clean)
+	return nil
 }
 
 // compiled holds the config's prepared forms.

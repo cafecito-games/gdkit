@@ -88,7 +88,7 @@ func TestLoadConfigRejectsAnUnknownGeneratorName(t *testing.T) {
 // index, which is what encoding/json would otherwise do to a slice element.
 func TestLoadConfigDoesNotLeakDefaultsIntoADeclaredEntry(t *testing.T) {
 	root := t.TempDir()
-	writeConfig(t, root, `{"source_roots":["src"],"helpers_path":"src/gdkit_helpers.gd","generate":[{"paths":["x/**"],"generators":["equals"]}]}`)
+	writeConfig(t, root, `{"source_roots":["src"],"generate":[{"paths":["x/**"],"generators":["equals"]}]}`)
 	config, err := LoadConfig(root, "")
 	if err != nil {
 		t.Fatal(err)
@@ -144,11 +144,6 @@ func TestConfigRejectsAHelpersPathTheSnapshotCannotSee(t *testing.T) {
 		{"absolute", func(c *Config) { c.HelpersPath = "/tmp/helpers.gd" }, "project-relative"},
 		{"escaping", func(c *Config) { c.HelpersPath = "../helpers.gd" }, "project-relative"},
 		{"not a script", func(c *Config) { c.HelpersPath = "helpers.txt" }, ".gd"},
-		{"excluded", func(c *Config) { c.HelpersPath = "addons/helpers.gd" }, "addons/**"},
-		{"outside every source root", func(c *Config) {
-			c.SourceRoots = []string{"src"}
-			c.HelpersPath = "gdkit_helpers.gd"
-		}, "source_root"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			config := DefaultConfig()
@@ -164,10 +159,13 @@ func TestConfigRejectsAHelpersPathTheSnapshotCannotSee(t *testing.T) {
 	}
 }
 
-func TestConfigAcceptsAHelpersPathInsideASourceRoot(t *testing.T) {
+// A default helpers_path outside the project's source roots must still load.
+// The file simply is not found, and deep_equals refuses with a message naming
+// the remedy; failing the config instead would break every existing project
+// whose source roots do not include the repository root.
+func TestConfigAcceptsADefaultHelpersPathOutsideTheSourceRoots(t *testing.T) {
 	config := DefaultConfig()
 	config.SourceRoots = []string{"src"}
-	config.HelpersPath = "src/gdkit_helpers.gd"
 	if err := config.Validate(); err != nil {
 		t.Fatalf("Validate() = %v, want nil", err)
 	}
