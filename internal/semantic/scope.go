@@ -225,6 +225,7 @@ type scopeContext struct {
 	classID            string
 	static             bool
 	methodName         string
+	superTarget        string
 	constantExpression bool
 }
 
@@ -752,8 +753,26 @@ func (i *ScopeIndex) visitExpression(expression ast.Expression, scope *Scope) {
 		return
 	}
 	i.record(expression, scope)
-	if lambda, ok := expression.(*ast.LambdaExpression); ok {
-		i.visitLambda(lambda, scope)
+	switch node := expression.(type) {
+	case *ast.LambdaExpression:
+		i.visitLambda(node, scope)
+		return
+	case *ast.CallExpression:
+		if identifier, ok := node.Callee.(*ast.Identifier); ok && identifier.Name == "super" {
+			i.record(identifier, i.superScope(scope, scope.context.methodName))
+		} else {
+			i.visitExpression(node.Callee, scope)
+		}
+		for _, argument := range node.Arguments {
+			i.visitExpression(argument, scope)
+		}
+		return
+	case *ast.MemberExpression:
+		if identifier, ok := node.Object.(*ast.Identifier); ok && identifier.Name == "super" {
+			i.record(identifier, i.superScope(scope, node.Property))
+			return
+		}
+		i.visitExpression(node.Object, scope)
 		return
 	}
 	for _, child := range ast.Children(expression) {
@@ -761,6 +780,12 @@ func (i *ScopeIndex) visitExpression(expression ast.Expression, scope *Scope) {
 			i.visitExpression(nested, scope)
 		}
 	}
+}
+
+func (i *ScopeIndex) superScope(scope *Scope, target string) *Scope {
+	context := scope.context
+	context.superTarget = target
+	return i.newScope(scope, context)
 }
 
 func (i *ScopeIndex) visitLambda(lambda *ast.LambdaExpression, creation *Scope) {
@@ -885,13 +910,11 @@ func constantMemberAllowed(member Member) bool {
 
 func (i *ScopeIndex) memberBinding(scope *Scope, kind BindingKind, name string, member Member) Binding {
 	key := fmt.Sprintf(
-		"%s:%s:%s:%s:%s:%d:%d:%d",
-		kind.String(),
-		scope.context.classID,
-		name,
+		"member:%s:%s:%d:%s:%d:%d",
 		member.DeclaringClassID(),
 		member.EngineOwner(),
 		member.Kind(),
+		member.Name(),
 		member.Line(),
 		member.Column(),
 	)
@@ -924,33 +947,33 @@ func (i *ScopeIndex) resolveSelf(scope *Scope) BindingResult {
 }
 
 func (i *ScopeIndex) resolveSuper(scope *Scope) BindingResult {
-	if scope.context.methodName == "" {
-		return unknownBinding("super is unavailable outside a method context")
+	if scope.context.superTarget == "" {
+		return unknownBinding("super is unavailable outside a direct base-dispatch context")
 	}
 	if i.interfaces == nil {
 		return unknownBinding("interface set is unavailable while resolving super")
 	}
-	base := i.interfaces.LookupBase(scope.context.classID, scope.context.methodName)
+	base := i.interfaces.LookupBase(scope.context.classID, scope.context.superTarget)
 	switch base.State() {
 	case LookupUnknown:
 		return unknownBinding(base.Reason())
 	case LookupAbsent:
-		return unknownBinding(fmt.Sprintf("base implementation of method %q is absent", scope.context.methodName))
+		return unknownBinding(fmt.Sprintf("base implementation of method %q is absent", scope.context.superTarget))
 	case LookupFound:
 		member, ok := base.Member()
 		if !ok {
-			return unknownBinding(fmt.Sprintf("base lookup for method %q returned no member", scope.context.methodName))
+			return unknownBinding(fmt.Sprintf("base lookup for method %q returned no member", scope.context.superTarget))
 		}
 		if member.Kind() != MemberMethod && member.Kind() != MemberEngineMethod {
-			return unknownBinding(fmt.Sprintf("base declaration %q is %s rather than a method", scope.context.methodName, member.Kind()))
+			return unknownBinding(fmt.Sprintf("base declaration %q is %s rather than a method", scope.context.superTarget, member.Kind()))
 		}
 		if member.Static() != scope.context.static {
-			return unknownBinding(fmt.Sprintf("base method %q has static/instance mismatch", scope.context.methodName))
+			return unknownBinding(fmt.Sprintf("base method %q has static/instance mismatch", scope.context.superTarget))
 		}
-		key := fmt.Sprintf("super:%s:%s:%s:%s:%d:%d", scope.context.classID, scope.context.methodName, member.DeclaringClassID(), member.EngineOwner(), member.Line(), member.Column())
+		key := fmt.Sprintf("super:%s:%s:%s:%s:%d:%d", scope.context.classID, scope.context.superTarget, member.DeclaringClassID(), member.EngineOwner(), member.Line(), member.Column())
 		return foundBinding(i.namespaceBinding(scope, key, BindingSuper, "super", member.DeclaringClassID(), member.Type(), nil, &member, member.Line(), member.Column()))
 	default:
-		return unknownBinding(fmt.Sprintf("base lookup for method %q returned invalid state", scope.context.methodName))
+		return unknownBinding(fmt.Sprintf("base lookup for method %q returned invalid state", scope.context.superTarget))
 	}
 }
 
@@ -1028,7 +1051,11 @@ func (i *ScopeIndex) resolveProjectGlobal(scope *Scope, name string) (BindingRes
 		if !ok {
 			return unknownBinding(fmt.Sprintf("project global %q has no published class interface", name)), true
 		}
-		return foundBinding(i.namespaceBinding(scope, candidates[0].key, candidates[0].kind, name, candidates[0].class.ID, class.Type(), nil, nil, candidates[0].class.Line, candidates[0].class.Column)), true
+		typeValue := class.Type()
+		if candidates[0].kind == BindingProjectClass {
+			typeValue = classObjectType(typeValue)
+		}
+		return foundBinding(i.namespaceBinding(scope, candidates[0].key, candidates[0].kind, name, candidates[0].class.ID, typeValue, nil, nil, candidates[0].class.Line, candidates[0].class.Column)), true
 	default:
 		return unknownBinding(fmt.Sprintf("project global %q is claimed by more than one retained category", name)), true
 	}
@@ -1041,7 +1068,7 @@ func (i *ScopeIndex) resolveEngineGlobal(scope *Scope, name string) BindingResul
 	engine := i.interfaces.engine
 	candidates := []Binding{}
 	if resolved := engine.ResolveType(name); resolved.Kind() != KindUnknown {
-		candidates = append(candidates, i.namespaceBinding(scope, "engine-type:"+name, BindingEngineType, name, "", resolved, nil, nil, 0, 0))
+		candidates = append(candidates, i.namespaceBinding(scope, "engine-type:"+name, BindingEngineType, name, "", classObjectType(resolved), nil, nil, 0, 0))
 	}
 	if resolved, ok := engine.Singleton(name); ok {
 		candidates = append(candidates, i.namespaceBinding(scope, "engine-singleton:"+name, BindingEngineSingleton, name, "", resolved, nil, nil, 0, 0))
@@ -1064,6 +1091,13 @@ func (i *ScopeIndex) resolveEngineGlobal(scope *Scope, name string) BindingResul
 	default:
 		return unknownBinding(fmt.Sprintf("retained engine global %q is claimed by multiple categories", name))
 	}
+}
+
+func classObjectType(resolved Type) Type {
+	if resolved.Kind() != KindClass {
+		return resolved
+	}
+	return Class(resolved.Name(), nil, true)
 }
 
 func constantEngineGlobalAllowed(binding Binding) bool {

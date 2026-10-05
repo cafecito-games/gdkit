@@ -447,6 +447,34 @@ func TestScopesComposeLocalMemberProjectAndEngineNamespaces(t *testing.T) {
 			t.Errorf("%s binding class = %q, want %q", testCase.name, binding.ClassID(), testCase.classID)
 		}
 	}
+	for _, testCase := range []struct {
+		name string
+		line int
+		kind BindingKind
+		meta bool
+	}{
+		{name: "Global", line: 8, kind: BindingProjectClass, meta: true},
+		{name: "AutoLoad", line: 9, kind: BindingAutoload, meta: false},
+		{name: "Native", line: 10, kind: BindingEngineType, meta: true},
+	} {
+		binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, testCase.name, testCase.line), testCase.kind)
+		if binding.Type().Kind() != KindClass || binding.Type().Meta() != testCase.meta {
+			t.Errorf("%s binding type = %v %q (meta %t), want class meta %t", testCase.name, binding.Type().Kind(), binding.Type().Name(), binding.Type().Meta(), testCase.meta)
+		}
+	}
+}
+
+func TestScopesGiveOneMemberDeclarationOneBindingIdentity(t *testing.T) {
+	source := sources(t, map[string]string{
+		"base.gd":  "class_name Base\nconst LIMIT = 1\nfunc direct():\n\tLIMIT\n",
+		"child.gd": "class_name Child extends Base\nfunc inherited():\n\tLIMIT\n",
+	})
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
+	direct := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, source.File("base.gd"), "LIMIT", 4), BindingMember)
+	inherited := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, source.File("child.gd"), "LIMIT", 3), BindingMember)
+	if direct.ID() != inherited.ID() {
+		t.Fatalf("same inherited member has IDs %q and %q", direct.ID(), inherited.ID())
+	}
 }
 
 func TestScopesKeepFoundUnknownMembersAheadOfRetainedGlobals(t *testing.T) {
@@ -600,6 +628,28 @@ func TestScopesEnforceStaticContextAndResolveCompatibleSuper(t *testing.T) {
 	instanceBase, ok := instanceSuper.SuperMember()
 	if !ok || instanceBase.Static() || instanceBase.DeclaringClassID() != "base.gd" {
 		t.Fatalf("instance super base = %#v, present %t", instanceBase, ok)
+	}
+}
+
+func TestScopesResolveExplicitSuperMembersByTheirOwnName(t *testing.T) {
+	source := sources(t, map[string]string{
+		"base.gd":  "class_name Base\nfunc alternate():\n\tpass\nstatic func static_alternate():\n\tpass\n",
+		"child.gd": "class_name Child extends Base\nfunc caller():\n\tsuper.alternate()\nstatic func static_caller():\n\tsuper.static_alternate()\n",
+	})
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeStaticEngine(t)))
+	for _, testCase := range []struct {
+		line   int
+		method string
+		static bool
+	}{
+		{line: 3, method: "alternate", static: false},
+		{line: 5, method: "static_alternate", static: true},
+	} {
+		binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, source.File("child.gd"), "super", testCase.line), BindingSuper)
+		member, ok := binding.SuperMember()
+		if !ok || member.Name() != testCase.method || member.Static() != testCase.static || member.DeclaringClassID() != "base.gd" {
+			t.Fatalf("super at line %d = %#v, present %t; want %s static=%t from base.gd", testCase.line, member, ok, testCase.method, testCase.static)
+		}
 	}
 }
 
