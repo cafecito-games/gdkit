@@ -8,11 +8,12 @@ import (
 	"github.com/cafecito-games/gdkit/project"
 )
 
-// scriptExtension limits the search for a *missing* identity to GDScript.
-// Godot also writes sidecars beside shaders and other text resources, but
-// gdkit does not know which of those files Godot would have given one, so it
-// does not report theirs as missing. A sidecar that exists is checked and
-// resolved whatever it sits beside.
+// scriptExtension is what scopes the duplicate diagnostic to GDScript; the
+// missing one is scoped by Snapshot.Paths, which holds nothing else. Godot
+// writes sidecars beside shaders and other text resources too, but gdkit does
+// not know which of those files Godot would have given one, so it neither asks
+// for a missing one nor reissues a colliding one. A sidecar that exists is
+// checked and resolved whatever it sits beside.
 const scriptExtension = ".gd"
 
 // Check examines every identity the project declares and every reference to
