@@ -49,6 +49,24 @@ func ParseRequirement(value string) (Version, error) {
 	return parseTriple(value, value)
 }
 
+// ParseEngineVersion reads a Godot engine version a project writes by hand into
+// its configuration. It is ParseRequirement with an optional patch component,
+// because an engine version is written "4.7" far more often than "4.7.0"; a
+// leading "v" or a prerelease suffix is still a mistake worth naming.
+func ParseEngineVersion(value string) (Version, error) {
+	triple := value
+	if strings.Count(value, ".") == 1 {
+		triple += ".0"
+	}
+	version, err := parseTriple(triple, value)
+	if err != nil {
+		// parseTriple's message names the three-component form, which is not
+		// what this function accepts.
+		return Version{}, fmt.Errorf("%q is not a major.minor or major.minor.patch version", value)
+	}
+	return version, nil
+}
+
 // Less reports whether v precedes other.
 func (v Version) Less(other Version) bool {
 	if v.Major != other.Major {

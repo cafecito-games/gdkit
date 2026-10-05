@@ -12,6 +12,7 @@ import (
 
 	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/internal/glob"
+	"github.com/cafecito-games/gdkit/internal/versiongate"
 )
 
 // DefaultConfigPath is where gdkit lint looks for its configuration.
@@ -39,6 +40,17 @@ type Config struct {
 	Version     int      `json:"version"`
 	SourceRoots []string `json:"source_roots"`
 	Exclude     []string `json:"exclude"`
+
+	// GodotVersion is the engine version the project targets, written as
+	// "major.minor" or "major.minor.patch". A rule whose fix needs newer syntax
+	// than this reports nothing, so a project is never told to write a type
+	// annotation its engine cannot parse.
+	//
+	// It defaults to the newest Godot gdkit knows, which is safe only because
+	// every version-gated rule ships inert: a project that has not opted in
+	// cannot be affected by the default, and a project on an older engine
+	// lowers this one key instead of hunting for the right rule name.
+	GodotVersion string `json:"godot_version"`
 
 	// Disable turns rules off by name.
 	Disable []string `json:"disable,omitempty"`
@@ -78,6 +90,34 @@ type Config struct {
 
 	ClassDefinitionsOrder []string `json:"class-definitions-order"`
 
+	// The six fields below hold function-name glob patterns the matching typing
+	// rule skips. An empty list means no exemptions: the rules are inert until
+	// a project enables them, which is PendingRule's job and never a list's.
+	// MissingDocstring below is the exception, not the pattern — its empty list
+	// turns that rule off, because it predates PendingRule.
+	//
+	// What the pattern matches depends on the rule. For require-return-type and
+	// require-argument-type it is the function being declared; for a lambda's
+	// parameter it is the enclosing function, not the lambda. For
+	// require-variable-type, require-typed-collection, and
+	// require-typed-loop-variable it is the enclosing function, so ["_process"]
+	// quiets a hot loop's locals without quieting the file; a class-scope
+	// declaration has no enclosing function, and a rule passes no name for one, so
+	// no list can exempt it — it is suppressed with a # gdkit:ignore comment
+	// instead. Code inside a property accessor is named for the property, which
+	// is the only name a reader could write a pattern for.
+	//
+	// For require-signal-argument-type it is the signal's own name, as it is for
+	// a bare collection written in a signal's payload: a signal is not inside a
+	// function, so its own name is the only name a reader could write a pattern
+	// for.
+	RequireReturnType         []string `json:"require-return-type,omitempty"`
+	RequireArgumentType       []string `json:"require-argument-type,omitempty"`
+	RequireVariableType       []string `json:"require-variable-type,omitempty"`
+	RequireTypedCollection    []string `json:"require-typed-collection,omitempty"`
+	RequireSignalArgumentType []string `json:"require-signal-argument-type,omitempty"`
+	RequireTypedLoopVariable  []string `json:"require-typed-loop-variable,omitempty"`
+
 	// MissingDocstring lists the member kinds that require a "##"
 	// documentation comment. It is empty by default, which makes the
 	// missing-docstring rule inert, so a project opts in one kind at a time.
@@ -101,9 +141,10 @@ type NoEngineLoggingConfig struct {
 // DefaultConfig is gdlint's default policy, expressed in gdkit's config shape.
 func DefaultConfig() Config {
 	return Config{
-		Version:     1,
-		SourceRoots: []string{"."},
-		Exclude:     []string{".git/**", ".godot/**", ".gdkit/**", "addons/**"},
+		Version:      1,
+		SourceRoots:  []string{"."},
+		Exclude:      []string{".git/**", ".godot/**", ".gdkit/**", "addons/**"},
+		GodotVersion: "4.7",
 
 		FunctionName:                fmt.Sprintf(`(_on_%s(_[a-z0-9]+)*|%s)`, pascalCase, privateSnakeCase),
 		ClassName:                   pascalCase,
@@ -164,6 +205,34 @@ func (c Config) namePatterns() map[string]string {
 	}
 }
 
+// exemptPatterns maps each typing rule to its configured exempt patterns.
+func (c Config) exemptPatterns() map[string][]string {
+	return map[string][]string{
+		ruleRequireReturnType:         c.RequireReturnType,
+		ruleRequireArgumentType:       c.RequireArgumentType,
+		ruleRequireVariableType:       c.RequireVariableType,
+		ruleRequireTypedCollection:    c.RequireTypedCollection,
+		ruleRequireSignalArgumentType: c.RequireSignalArgumentType,
+		ruleRequireTypedLoopVariable:  c.RequireTypedLoopVariable,
+	}
+}
+
+// compileExemptPatterns compiles every exempt pattern once, so no rule compiles
+// one per file.
+func (c Config) compileExemptPatterns() (map[string][]glob.Pattern, error) {
+	compiled := make(map[string][]glob.Pattern)
+	for rule, patterns := range c.exemptPatterns() {
+		for _, pattern := range patterns {
+			parsed, err := glob.Compile(pattern)
+			if err != nil {
+				return nil, fmt.Errorf("%s exempt pattern %q: %w", rule, pattern, err)
+			}
+			compiled[rule] = append(compiled[rule], parsed)
+		}
+	}
+	return compiled, nil
+}
+
 // compileNamePatterns compiles every name rule's pattern, anchored to the whole
 // identifier. An empty or invalid pattern is a configuration error.
 func (c Config) compileNamePatterns() (map[string]*regexp.Regexp, error) {
@@ -219,9 +288,19 @@ func (c Config) Validate() error {
 	return err
 }
 
-// validate is Validate, also returning the compiled name patterns so a caller
-// that needs them does not compile twice.
-func (c Config) validate() (map[string]*regexp.Regexp, error) {
+// compiledConfig holds everything validate compiles once, so no rule compiles
+// anything per file. Context carries it, and a rule reads it through Context's
+// accessors by convention rather than by enforcement: every rule lives in this
+// package, so an unexported field is reachable either way.
+type compiledConfig struct {
+	patterns     map[string]*regexp.Regexp
+	godotVersion versiongate.Version
+	exempt       map[string][]glob.Pattern
+}
+
+// validate is Validate, also returning the compiled configuration so a caller
+// that needs it does not compile twice.
+func (c Config) validate() (*compiledConfig, error) {
 	if c.Version != 1 {
 		return nil, fmt.Errorf("unsupported lint config version %d", c.Version)
 	}
@@ -291,5 +370,17 @@ func (c Config) validate() (map[string]*regexp.Regexp, error) {
 			return nil, fmt.Errorf("%s must not be negative, got %d", limit.name, limit.value)
 		}
 	}
-	return c.compileNamePatterns()
+	godotVersion, err := versiongate.ParseEngineVersion(c.GodotVersion)
+	if err != nil {
+		return nil, fmt.Errorf("godot_version: %w", err)
+	}
+	exempt, err := c.compileExemptPatterns()
+	if err != nil {
+		return nil, err
+	}
+	patterns, err := c.compileNamePatterns()
+	if err != nil {
+		return nil, err
+	}
+	return &compiledConfig{patterns: patterns, godotVersion: godotVersion, exempt: exempt}, nil
 }

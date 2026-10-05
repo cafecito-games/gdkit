@@ -245,10 +245,47 @@ func TestDocstringFixtureDiagnostics(t *testing.T) {
 	checkFixtures(t, lintFixtures(t, "docstrings", docstringFixtureConfig()), docstringFixtureExpectations)
 }
 
+// typingFixtureExpectations is the complete set of diagnostics the files in
+// testdata/typing must produce once the typing rules are enabled.
+var typingFixtureExpectations = map[string][]fixtureFinding{
+	"signatures.gd": {
+		// A class-scope lambda: no function body reaches it. The variable
+		// holding it is itself untyped, so both rules fire on the one line.
+		{3, "require-argument-type"},
+		{3, "require-variable-type"},
+		{6, "require-return-type"},
+		// "first" only: "second" is annotated.
+		{11, "require-argument-type"},
+		// The lambda's parameter, not its missing return type.
+		{16, "require-argument-type"},
+	},
+	"variables.gd": {
+		{5, "require-variable-type"},
+		// "items" is annotated, so only its bare Array is reported.
+		{7, "require-typed-collection"},
+		{12, "require-variable-type"},
+		{13, "require-typed-loop-variable"},
+	},
+	"signals.gd": {
+		{3, "require-signal-argument-type"},
+		// A bare collection in a payload, named for the signal rather than for
+		// any function.
+		{5, "require-typed-collection"},
+	},
+}
+
 // TestLoggingFixtureDiagnostics is TestFixtureDiagnostics for the fixtures that
 // only produce diagnostics once no-engine-logging is enabled.
 func TestLoggingFixtureDiagnostics(t *testing.T) {
 	checkFixtures(t, lintFixtures(t, "logging", loggingFixtureConfig()), loggingFixtureExpectations)
+}
+
+// TestTypingFixtureDiagnostics is TestFixtureDiagnostics for the fixtures that
+// only produce diagnostics once the typing rules are enabled. It shares
+// typingConfig with the per-rule tests, so the two cannot drift into enabling
+// different sets.
+func TestTypingFixtureDiagnostics(t *testing.T) {
+	checkFixtures(t, lintFixtures(t, "typing", typingConfig()), typingFixtureExpectations)
 }
 
 func checkFixtures(t *testing.T, found map[string][]fixtureFinding, expectations map[string][]fixtureFinding) {
@@ -290,7 +327,10 @@ func TestFixturesExerciseEveryRule(t *testing.T) {
 	driverReported := map[string]bool{"source-parse": true, "unknown-ignore": true}
 
 	exercised := make(map[string]bool)
-	for _, group := range []map[string][]fixtureFinding{fixtureExpectations, docstringFixtureExpectations, loggingFixtureExpectations} {
+	for _, group := range []map[string][]fixtureFinding{
+		fixtureExpectations, docstringFixtureExpectations,
+		loggingFixtureExpectations, typingFixtureExpectations,
+	} {
 		for _, findings := range group {
 			for _, finding := range findings {
 				exercised[finding.rule] = true

@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"sort"
 
+	"github.com/cafecito-games/gdkit/internal/versiongate"
 	"github.com/cafecito-games/gdkit/project"
 )
 
@@ -36,11 +37,41 @@ type PendingRule interface {
 type Context struct {
 	Config Config
 
-	patterns map[string]*regexp.Regexp
+	compiled *compiledConfig
 }
 
 // Pattern returns the compiled, anchored pattern for a name rule.
-func (c *Context) Pattern(rule string) *regexp.Regexp { return c.patterns[rule] }
+func (c *Context) Pattern(rule string) *regexp.Regexp {
+	if c.compiled == nil {
+		return nil
+	}
+	return c.compiled.patterns[rule]
+}
+
+// supports reports whether the project's configured Godot version is at least
+// floor. A typing site names the version that first accepts the annotation it
+// wants, so a site is dropped rather than reported when the engine is older.
+func (c *Context) supports(floor versiongate.Version) bool {
+	if c.compiled == nil {
+		return false
+	}
+	return !c.compiled.godotVersion.Less(floor)
+}
+
+// exempt reports whether name matches one of the rule's exempt patterns. A site
+// with no such name — a class-scope declaration, which has no enclosing
+// function — is never exempt, and is suppressed with a comment instead.
+func (c *Context) exempt(rule, name string) bool {
+	if c.compiled == nil || name == "" {
+		return false
+	}
+	for _, pattern := range c.compiled.exempt[rule] {
+		if matched, _ := pattern.Match(name); matched {
+			return true
+		}
+	}
+	return false
+}
 
 var registry = map[string]Rule{}
 
@@ -128,7 +159,7 @@ func New(config Config) (*Linter, error) {
 // newLinter builds a linter over an explicit rule set, bypassing the global
 // registry so the driver can be tested in isolation.
 func newLinter(config Config, rules []Rule) (*Linter, error) {
-	patterns, err := config.validate()
+	compiled, err := config.validate()
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +186,7 @@ func newLinter(config Config, rules []Rule) (*Linter, error) {
 		enabled = append(enabled, rule)
 	}
 	return &Linter{
-		context:  Context{Config: config, patterns: patterns},
+		context:  Context{Config: config, compiled: compiled},
 		enabled:  enabled,
 		disabled: disabled,
 		severity: config.Severity,
