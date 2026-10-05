@@ -362,7 +362,7 @@ func (i *ScopeIndex) buildClass(class *ClassDecl) {
 		case *ast.VariableDeclaration:
 			// A lambda held in a class property is still an indexed lambda,
 			// even though it has no enclosing function frame to capture.
-			propertyScope := i.newScope(nil, scopeContext{classID: class.ID, static: node.Static})
+			propertyScope := i.newScope(nil, scopeContext{classID: class.ID, static: node.Static || node.Constant})
 			i.visitExpression(node.Value, propertyScope)
 			i.buildAccessors(class.ID, node)
 		case *ast.EnumDeclaration:
@@ -563,8 +563,7 @@ func (i *ScopeIndex) visitStatement(statement ast.Statement, scope *Scope) *Scop
 		i.visitExpression(node.Expression, scope)
 	case *ast.VariableDeclaration:
 		if node.Getter != nil || node.Setter != nil {
-			i.visitUnsupported(node, scope, "unsupported local property accessor has no established lexical scope boundary")
-			return scope
+			return i.ambiguousUnsupported(scope, node, "unsupported local property accessor has no established lexical scope boundary", node.Name)
 		}
 		i.visitExpression(node.Value, scope)
 		binding := i.newBinding(
@@ -609,7 +608,21 @@ func (i *ScopeIndex) visitStatement(statement ast.Statement, scope *Scope) *Scop
 		i.visitStatements(node.Body, body)
 	case *ast.MatchStatement:
 		i.visitMatch(node, scope)
-	case *ast.FunctionDeclaration, *ast.ClassDeclaration, *ast.SignalDeclaration, *ast.EnumDeclaration, *ast.Directive:
+	case *ast.FunctionDeclaration:
+		return i.ambiguousUnsupported(scope, node, fmt.Sprintf("unsupported nested %T has no established lexical scope boundary", statement), node.Name)
+	case *ast.ClassDeclaration:
+		return i.ambiguousUnsupported(scope, node, fmt.Sprintf("unsupported nested %T has no established lexical scope boundary", statement), node.Name)
+	case *ast.SignalDeclaration:
+		return i.ambiguousUnsupported(scope, node, fmt.Sprintf("unsupported nested %T has no established lexical scope boundary", statement), node.Name)
+	case *ast.EnumDeclaration:
+		names := []string{node.Name}
+		if node.Name == "" {
+			for _, member := range node.Members {
+				names = append(names, member.Name)
+			}
+		}
+		return i.ambiguousUnsupported(scope, node, fmt.Sprintf("unsupported nested %T has no established lexical scope boundary", statement), names...)
+	case *ast.Directive:
 		i.visitUnsupported(statement, scope, fmt.Sprintf("unsupported nested %T has no established lexical scope boundary", statement))
 	default:
 		i.visitChildren(statement, scope)
@@ -675,6 +688,9 @@ func compatibleMatchBindings(patterns []map[string][]*ast.BindingPattern) ([]str
 		ordered = append(ordered, name)
 	}
 	sort.Strings(ordered)
+	if len(patterns) > 1 && len(ordered) > 0 {
+		return ordered, false
+	}
 	for _, pattern := range patterns {
 		if len(pattern) != len(names) {
 			return ordered, false
@@ -770,6 +786,20 @@ func (i *ScopeIndex) visitUnsupported(node ast.Node, scope *Scope, reason string
 		i.record(child, blocked)
 		return true
 	})
+}
+
+func (i *ScopeIndex) ambiguousUnsupported(scope *Scope, node ast.Node, reason string, names ...string) *Scope {
+	i.visitUnsupported(node, scope, reason)
+	current := scope
+	seen := map[string]bool{}
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		current = i.ambiguous(current, name, reason)
+	}
+	return current
 }
 
 func (i *ScopeIndex) resolveNamespace(scope *Scope, name string) BindingResult {

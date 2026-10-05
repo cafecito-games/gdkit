@@ -257,22 +257,75 @@ func TestScopesFailClosedForMalformedDuplicateBindings(t *testing.T) {
 	incompatibleScopes := BuildScopes(BuildInterfaces(BuildIndex(incompatibleSource), richInterfaceTestEngine(t)))
 	scopeRequireUnknown(t, incompatibleScopes, firstUse, "incompatible match alternatives")
 	scopeRequireUnknown(t, incompatibleScopes, secondUse, "incompatible match alternatives")
+
+	multiPatternSource := sources(t, map[string]string{
+		"match.gd": "class_name Match\nfunc run(input):\n\tmatch input:\n\t\t_:\n\t\t\tpass\n",
+	})
+	multiPatternFunction := multiPatternSource.File("match.gd").Statements[1].(*ast.FunctionDeclaration)
+	multiPatternMatch := multiPatternFunction.Body[0].(*ast.MatchStatement)
+	multiPatternUse := &ast.Identifier{Name: "bound"}
+	multiPatternMatch.Cases[0].Patterns = []ast.Expression{
+		&ast.BindingPattern{Name: "bound"},
+		&ast.BindingPattern{Name: "bound"},
+	}
+	multiPatternMatch.Cases[0].Body = []ast.Statement{&ast.ExpressionStatement{Expression: multiPatternUse}}
+	multiPatternScopes := BuildScopes(BuildInterfaces(BuildIndex(multiPatternSource), richInterfaceTestEngine(t)))
+	scopeRequireUnknown(t, multiPatternScopes, multiPatternUse, "variable binding across multiple match patterns")
 }
 
 func TestScopesFailClosedForUnsupportedStatementBoundaries(t *testing.T) {
 	source := sources(t, map[string]string{
-		"player.gd": "class_name Player\nfunc run():\n\tpass\n",
+		"player.gd": "class_name Player\nvar illegal: int\nfunc run():\n\tpass\n",
 	})
-	function := source.File("player.gd").Statements[1].(*ast.FunctionDeclaration)
+	function := source.File("player.gd").Statements[2].(*ast.FunctionDeclaration)
 	unsupportedUse := &ast.Identifier{Name: "Native"}
 	accessorUse := &ast.Identifier{Name: "Native"}
+	accessorSibling := &ast.Identifier{Name: "illegal"}
+	functionSibling := &ast.Identifier{Name: "utility"}
+	classSibling := &ast.Identifier{Name: "Native"}
+	signalSibling := &ast.Identifier{Name: "Single"}
+	enumSibling := &ast.Identifier{Name: "Global"}
 	function.Body = []ast.Statement{
 		&ast.EnumDeclaration{Members: []ast.EnumMember{{Name: "VALUE", Value: unsupportedUse}}},
 		&ast.VariableDeclaration{Name: "illegal", Getter: []ast.Statement{&ast.ExpressionStatement{Expression: accessorUse}}},
+		&ast.ExpressionStatement{Expression: accessorSibling},
+		&ast.FunctionDeclaration{Name: "utility"},
+		&ast.ExpressionStatement{Expression: functionSibling},
+		&ast.ClassDeclaration{Name: "Native"},
+		&ast.ExpressionStatement{Expression: classSibling},
+		&ast.SignalDeclaration{Name: "Single"},
+		&ast.ExpressionStatement{Expression: signalSibling},
+		&ast.EnumDeclaration{Name: "Global"},
+		&ast.ExpressionStatement{Expression: enumSibling},
 	}
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeNamespaceEngine(t)))
 	scopeRequireUnknown(t, scopes, unsupportedUse, "unsupported nested enum")
 	scopeRequireUnknown(t, scopes, accessorUse, "unsupported local accessor")
+	for _, testCase := range []struct {
+		name string
+		node *ast.Identifier
+	}{
+		{name: "unsupported accessor sibling", node: accessorSibling},
+		{name: "unsupported function sibling", node: functionSibling},
+		{name: "unsupported class sibling", node: classSibling},
+		{name: "unsupported signal sibling", node: signalSibling},
+		{name: "unsupported enum sibling", node: enumSibling},
+	} {
+		scopeRequireUnknown(t, scopes, testCase.node, testCase.name)
+	}
+}
+
+func TestScopesUseStaticContextForConstantInitializers(t *testing.T) {
+	source := sources(t, map[string]string{
+		"player.gd": "class_name Player\nvar field: int\nconst SELF_VALUE = self\nconst FIELD_VALUE = field\n",
+	})
+	if got := source.ParseFailures(); len(got) != 0 {
+		t.Fatalf("constant fixture did not parse: %v", got)
+	}
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeStaticEngine(t)))
+	file := source.File("player.gd")
+	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "self", 3), "constant self")
+	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "field", 4), "constant instance member")
 }
 
 func TestScopesDoNotLetMalformedLexicalBindingsShadowReservedNames(t *testing.T) {
