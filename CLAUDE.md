@@ -68,8 +68,31 @@ the default branch.
   omits `z` and `9` because Godot's own encoder is off by one and cannot be
   fixed; see the comment on `alphabet`. Ids are random, not derived from the
   path, so `Generator` takes an `io.Reader` and tests seed it. `Check` is pure
-  and `Apply` is the only writer. `uid.missing`, `uid.malformed`, and
-  `uid.duplicate` are its public diagnostic names.
+  and `Apply` is the only writer. `uid.missing`, `uid.malformed`,
+  `uid.duplicate`, `uid.dangling`, and `uid.crossed` are its public diagnostic
+  names.
+  It speaks for every identity Godot declares, not only a `.gd` sidecar, so
+  `uid.malformed` covers a `.tscn`/`.tres` header and a `.import` line too —
+  but `uid.missing` stays `.gd`-only, because gdkit does not know which other
+  files Godot would have given a sidecar. `uid.duplicate` stays scoped to
+  scripts as well: a scene and a script that collide are reported from the
+  reference side, as `uid.crossed`, which names the line that loads the wrong
+  file.
+  `Check` plans the writes as well as reporting them, in an unexported
+  `Report.work`, because the identity table it resolves against lives there and
+  a report decoded from JSON must not be writable. `Apply` reads and verifies
+  every line it will touch before it writes anything, so a reference that moved
+  under the run abandons it rather than splitting it; a reference rewrite needs
+  no `--repair`, because the `path=` beside it is the authority and is what
+  Godot already falls back to, while reissuing a *declaration* does, because
+  that changes what every reference resolves to including one gdkit cannot see.
+  A reissue moves the references to the old value in the same run, and `path=`
+  is the stronger attribution: an `[ext_resource]` follows the file it names
+  however many others hold the same text, while a pathless reference is
+  attributed by text alone and so is left alone when the text is shared —
+  which a duplicated value always is, so a pathless reference to a reissued
+  duplicate keeps resolving to the first claimant, which is what it already
+  did.
 - `project/` — discovery and parsing. The only package that reads a project from
   disk, so every tool agrees on scope and parses once. `Config.HonorIgnoreFile`
   is how lint, format, and uid share the root `.gdkitignore`; `architecture`
@@ -85,6 +108,15 @@ the default branch.
   `.import` file — so a sidecar is not the only way a `uid://` load resolves; it
   loses malformed and duplicated sidecars, while `Snapshot.Sidecars` keeps every
   `.uid` file as read, which is what `uid` reports on.
+  `Config.Identities` is the fourth option, and only `uid` sets it:
+  `Snapshot.Claims` is every declaration of a `uid://` identity, including the
+  mechanism and the line it sits on, and `Snapshot.References` is every use of
+  one. It is opt-in because collecting the references means reading every
+  `.tscn` and `.tres` through rather than only its header, and because it
+  prunes nothing: an ignored directory is walked so a hidden file's claim is
+  still indexed, carrying `Claim.Ignored`, since dropping a claimant is what
+  would make every reference to it look dangling. A reference inside an ignored
+  path is not collected at all, because nothing reports or rewrites one.
 - `generate/` — the code generator behind `gdkit gen`: writes `_to_string`,
   `equals`, and `deep_equals` into a class that opted in, inside a
   sentinel-delimited region it owns. Unlike `lint` it is a whole-project analysis, because `equals` composes
@@ -110,8 +142,8 @@ the default branch.
   Godot 4 evaluates by value, so the emitted code never recurses into elements
   and following it would refuse cycles the code cannot reach.
 - `internal/atomicwrite/` — the write-beside-and-rename replacement shared by
-  `format` and `generate`, including the re-read before the rename that keeps a
-  concurrent edit from being lost.
+  `format`, `generate`, and `uid`, including the re-read before the rename that
+  keeps a concurrent edit from being lost.
 - `internal/glob/` — the shared glob engine.
 - `internal/versiongate/` — the `major.minor.patch` comparison behind
   `--minimum-version` and `minimum_gdkit_version`. Comparison is on the numeric

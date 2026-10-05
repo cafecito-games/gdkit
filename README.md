@@ -18,7 +18,7 @@ parse the same way, so every tool agrees on which files are in scope.
 | [`gdkit arch`](#architecture-checks) | Enforces layer, feature, and engine-purity boundaries, and finds dependency cycles |
 | [`gdkit lint`](#linting) | Reports 30 naming, structural, design, documentation, and formatting problems, and 7 more a project can opt in to |
 | [`gdkit format`](#formatting) | Rewrites GDScript into one canonical style, verifying every rewrite first |
-| [`gdkit uid`](#uid-sidecars) | Creates the `uid://` sidecars Godot would have created |
+| [`gdkit uid`](#uid-identities) | Creates the `uid://` sidecars Godot would have created, and finds and repairs broken `uid://` references |
 | [`gdkit gen`](#code-generation) | Generates `_to_string`, `equals`, and `deep_equals` into the classes that opt in |
 
 The analyzer uses [`gdparser`](https://github.com/cafecito-games/gdparser) and
@@ -36,7 +36,7 @@ cd /path/to/godot-project
 gdkit arch check .      # layer, feature, and engine-purity boundaries
 gdkit lint check .      # GDScript style and correctness
 gdkit format check .    # canonical formatting; writes nothing
-gdkit uid check .       # scripts with no uid:// identity
+gdkit uid check .       # missing, unusable, and unresolvable uid:// identities
 gdkit gen check .       # generated methods that are missing or out of date
 ```
 
@@ -77,7 +77,7 @@ SHA-256 manifest.
 - [Architecture checks](#architecture-checks) — `gdkit arch`
 - [Linting](#linting) — `gdkit lint`
 - [Formatting](#formatting) — `gdkit format`
-- [UID sidecars](#uid-sidecars) — `gdkit uid`
+- [UID identities](#uid-identities) — `gdkit uid`
 - [Code generation](#code-generation) — `gdkit gen`
 
 **Across every tool**
@@ -690,7 +690,7 @@ default:
   `gdkit format check` and `gdkit format write` also skip the paths listed in
   [`.gdkitignore`](#ignoring-files-with-gdkitignore).
 
-## UID sidecars
+## UID identities
 
 Godot 4 gives every script a `uid://` identity and keeps it in a `.uid` file
 beside the source, so a scene can reference the script by identity rather than
@@ -700,13 +700,17 @@ means a script added without the editor open — by a generator, a merge, or a
 that references it by `uid://` cannot resolve it, and `gdkit arch check`
 reports a `resource.missing` error for the dangling reference.
 
-`gdkit uid` creates the missing sidecars itself:
+`gdkit uid` creates the missing sidecars itself, and it checks both halves of
+every identity the project holds: the identifiers files **declare** and the
+`uid://` references that **resolve** against them.
 
 ```sh
-# Report scripts whose identity is missing or unusable, writing nothing
+# Report identities that are missing or unusable and references that are
+# broken, writing nothing
 gdkit uid check /path/to/godot-project
 
-# Create the sidecars Godot would have created
+# Create the sidecars Godot would have created, and repoint the broken
+# references that name a path
 gdkit uid write /path/to/godot-project
 
 # Refuse to run unless the binary is at least 0.3.0
@@ -714,7 +718,31 @@ gdkit uid check --minimum-version 0.3.0 /path/to/godot-project
 ```
 
 `check` exits 1 when it finds a problem, so it works as a CI gate. `write`
-creates every missing sidecar and exits 1 if it had to leave a problem behind.
+creates every missing sidecar, repoints what it can, and exits 1 if it had to
+leave a problem behind.
+
+### What declares an identity, and what references one
+
+A `uid://` identifier is declared in one of three places, and `gdkit uid` reads
+all of them, so it speaks for more than `.gd`:
+
+- a `.uid` sidecar beside a file, which is how a script and a shader carry
+  theirs;
+- the `[gd_scene]` or `[gd_resource]` header of a `.tscn` or `.tres` file,
+  which is where a scene and a resource carry their own;
+- the `uid=` line in the `[remap]` section of a `.import` file, which carries
+  an imported asset's.
+
+A reference is an `[ext_resource]` line in a `.tscn` or `.tres` file, which
+names a `uid://` and a `path=` together, or a `load`, `preload`, or
+`ResourceLoader.load` call in a script whose first argument is a `uid://`
+string literal. A script's call names no path, which makes it the sharpest
+case: there is nothing to fall back to and nothing to repair it from.
+
+Only `.gd` files are reported for *having* no identity. `gdkit` does not know
+which other files Godot would have given one, so a shader with no sidecar is
+not a finding — but a shader sidecar that exists is checked and resolved like
+any other.
 
 Identifiers are generated exactly as Godot generates them: 63 random bits,
 rendered in base 34 over the alphabet `abcdefghijklmnopqrstuvwxy012345678`.
@@ -729,31 +757,66 @@ present in the project.
 
 ### UID diagnostics
 
-| Rule            | Meaning                                                          |
-| --------------- | ---------------------------------------------------------------- |
-| `uid.missing`   | The script has no `.uid` sidecar, so it has no stable identity.   |
-| `uid.malformed` | The sidecar does not hold an identifier Godot could have written. |
-| `uid.duplicate` | Two scripts' sidecars claim the same identifier.                  |
+| Rule            | Meaning                                                                         |
+| --------------- | ------------------------------------------------------------------------------- |
+| `uid.missing`   | The script has no `.uid` sidecar, so it has no stable identity.                 |
+| `uid.malformed` | A declared identity does not name an identifier Godot could have written.       |
+| `uid.duplicate` | Two scripts' sidecars claim the same identifier.                                |
+| `uid.dangling`  | A `uid://` reference is no file's declared identity.                            |
+| `uid.crossed`   | A reference's `uid://` is the identity of a file other than the one `path=` names. |
 
-A malformed or duplicated sidecar is reported but not rewritten, because a new
-identifier changes what every existing `uid://` reference to that script
-resolves to and `gdkit` does not rewrite references. Pass `--repair` to reissue
-them anyway:
+`uid.crossed` is the dangerous one. A dangling reference makes Godot warn and
+fall back to the `path=` beside it, so the project still loads; a crossed one
+resolves, so Godot loads the wrong resource and says nothing.
+
+### Repairing a reference
+
+A broken reference that names a `path=` is repaired without being asked:
+
+```sh
+gdkit uid write /path/to/godot-project
+```
+
+The path is the authority — it is what Godot already falls back to — so
+rewriting the identifier to the identity that path declares cannot change what
+the project loads. If the path names a script whose sidecar is missing, the
+reference adopts the identifier the same run mints for it, so one run is enough.
+A reference that names no path is reported and left alone, because nothing in
+the source says what it meant.
+
+### Reissuing an identity
+
+A malformed or duplicated identity is reported but not replaced, because a new
+identifier changes what every existing `uid://` reference resolves to,
+including one in a file `gdkit` cannot see. Pass `--repair` to reissue it
+anyway:
 
 ```sh
 gdkit uid write --repair /path/to/godot-project
 ```
 
-With `--repair`, a malformed sidecar is replaced, and for a duplicated
-identifier the first claimant in path order keeps it while the rest are
-reissued. Check the result before committing it, and grep for the old
-identifiers if anything else in the project might still point at them.
+With `--repair`, a malformed identity is replaced wherever it is declared —
+sidecar, scene or resource header, or `.import` file — and **every reference to
+the old value is rewritten in the same run**, so the old identifier is left
+nowhere in the tree. That is the half `--repair` used to leave to the caller.
 
-`gdkit uid` has no configuration file. It covers `.gd` files only — Godot also
-writes sidecars for shaders, which `gdkit` does not parse and so does not speak
-for — and it skips the paths listed in
+An `[ext_resource]` names a `path=` beside the identifier, so it follows the
+file it names however many others hold the same text. A reference that names no
+path — every one in a script — is followed by its text alone, and is left alone
+when more than one file claims that text, rather than pointed at a guess. For a
+duplicated identifier the first claimant in path order keeps it while the rest
+are reissued; the old value is shared by construction, so a pathless reference
+to it keeps resolving to the first claimant, exactly as it already did.
+
+A run that cannot rewrite a reference safely — because the line it was read
+from has changed since — writes nothing at all rather than leaving half a
+repair behind, in the spirit of [`format.unsafe`](#formatting).
+
+`gdkit uid` has no configuration file. It skips the paths listed in
 [`.gdkitignore`](#ignoring-files-with-gdkitignore), so a vendored script is
-left without an identity just as it is left unlinted.
+left without an identity just as it is left unlinted — but an ignored file is
+still indexed as a *claimant* of the identifier it declares, so excluding
+`addons/` does not turn every reference into a vendored addon dangling.
 
 ## Code generation
 
@@ -940,6 +1003,10 @@ addons/
 # Generated protocol code
 *.pb.gd
 ```
+
+`gdkit uid` is one step further: a path it hides is neither checked nor
+written, but the identifier it declares is still indexed, because a reference
+to a vendored addon is not dangling just because the addon is not linted.
 
 `gdkit arch` does not read it. Hiding a file from the architecture analyzer
 would remove its `class_name` from the index, and every reference to that class

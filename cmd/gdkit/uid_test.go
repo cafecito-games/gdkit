@@ -250,3 +250,142 @@ func TestRunUIDHelp(t *testing.T) {
 		t.Fatalf("help does not document uid check: %s", stdout.String())
 	}
 }
+
+// sceneWithScript renders a .tscn whose only ext_resource names a script by
+// identity and path.
+func sceneWithScript(identity, reference, path string) string {
+	return "[gd_scene load_steps=2 format=3 uid=\"" + identity + "\"]\n\n" +
+		"[ext_resource type=\"Script\" uid=\"" + reference + "\" path=\"res://" + path + "\" id=\"1_a\"]\n\n" +
+		"[node name=\"Root\" type=\"Node\"]\n"
+}
+
+func TestRunUIDCheckReportsBrokenReferences(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", formattedScript)
+	writeCLIFile(t, root, "player.gd.uid", "uid://bbb\n")
+	writeCLIFile(t, root, "main.tscn", sceneWithScript("uid://ddd", "uid://xxx", "player.gd"))
+	writeCLIFile(t, root, "loader.gd", "extends Node\n\nconst Scene := preload(\"uid://xyy\")\n")
+	writeCLIFile(t, root, "loader.gd.uid", "uid://ccc\n")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"uid", "check", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		"main.tscn:3: Error:", "(uid.dangling)", "loader.gd:3: Error:",
+		"uid check failed (0 missing, 0 to repair, 2 broken references)",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output = %q, want it to contain %q", output, want)
+		}
+	}
+	// check writes nothing.
+	if got := readCLIFile(t, root, "main.tscn"); !strings.Contains(got, "uid://xxx") {
+		t.Errorf("main.tscn = %q, want it untouched", got)
+	}
+}
+
+func TestRunUIDCheckJSONCarriesAReferencePosition(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", formattedScript)
+	writeCLIFile(t, root, "player.gd.uid", "uid://bbb\n")
+	writeCLIFile(t, root, "enemy.gd", formattedScript)
+	writeCLIFile(t, root, "enemy.gd.uid", "uid://ccc\n")
+	writeCLIFile(t, root, "main.tscn", sceneWithScript("uid://ddd", "uid://ccc", "player.gd"))
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"uid", "check", "--format", "json", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d: stderr=%s", code, stderr.String())
+	}
+	var report uid.Report
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v (%s)", err, stdout.String())
+	}
+	if len(report.Diagnostics) != 1 {
+		t.Fatalf("diagnostics = %+v, want one", report.Diagnostics)
+	}
+	diagnostic := report.Diagnostics[0]
+	if diagnostic.Rule != uid.RuleCrossed || diagnostic.Path != "main.tscn" ||
+		diagnostic.Line != 3 || diagnostic.Target != "player.gd" || diagnostic.UID != "uid://ccc" {
+		t.Errorf("diagnostic = %+v, want a crossed reference at main.tscn:3", diagnostic)
+	}
+}
+
+func TestRunUIDWriteRepointsBrokenReferences(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", formattedScript)
+	writeCLIFile(t, root, "player.gd.uid", "uid://bbb\n")
+	writeCLIFile(t, root, "main.tscn", sceneWithScript("uid://ddd", "uid://xxx", "player.gd"))
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"uid", "write", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "wrote main.tscn") {
+		t.Fatalf("output = %q, want the scene listed", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "1 references rewritten") {
+		t.Fatalf("output = %q, want the rewrite counted", stdout.String())
+	}
+	if got := readCLIFile(t, root, "main.tscn"); !strings.Contains(got, "uid://bbb") {
+		t.Errorf("main.tscn = %q, want the reference repointed", got)
+	}
+	stdout.Reset()
+	if code := run([]string{"uid", "check", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("check after write exited %d: %s", code, stdout.String())
+	}
+}
+
+// A pathless reference cannot be repaired, so the run reports it and fails
+// even though it had nothing else to leave behind.
+func TestRunUIDWriteFailsOnAReferenceItCannotRepair(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "loader.gd", "extends Node\n\nconst Scene := preload(\"uid://xyy\")\n")
+	writeCLIFile(t, root, "loader.gd.uid", "uid://bbb\n")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"uid", "write", "--repair", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "(uid.dangling)") || !strings.Contains(output, "1 to fix by hand") {
+		t.Fatalf("output = %q, want the dangling preload reported and counted", output)
+	}
+}
+
+// Repairing a malformed scene identity moves the references to it in the same
+// run, so the old value is left nowhere in the project.
+func TestRunUIDWriteRepairMovesReferencesToAReissuedIdentity(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "main.tscn", "[gd_scene format=3 uid=\"uid://b_local_screen\"]\n")
+	writeCLIFile(t, root, "other.tscn",
+		"[gd_scene load_steps=2 format=3 uid=\"uid://ccc\"]\n\n"+
+			"[ext_resource type=\"PackedScene\" uid=\"uid://b_local_screen\" path=\"res://main.tscn\" id=\"1_a\"]\n")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"uid", "write", "--repair", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	for _, name := range []string{"main.tscn", "other.tscn"} {
+		if got := readCLIFile(t, root, name); strings.Contains(got, "b_local_screen") {
+			t.Errorf("%s = %q, want the old value gone", name, got)
+		}
+	}
+	stdout.Reset()
+	if code := run([]string{"uid", "check", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("check after repair exited %d: %s", code, stdout.String())
+	}
+}
+
+// An ignored addon still owns its identifier, so a reference to it is not
+// dangling. Nothing about it is written either.
+func TestRunUIDResolvesAgainstAnIgnoredClaimant(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, ".gdkitignore", "addons/\n")
+	writeCLIFile(t, root, "addons/vendor/plugin.gd", formattedScript)
+	writeCLIFile(t, root, "addons/vendor/plugin.gd.uid", "uid://fff\n")
+	writeCLIFile(t, root, "main.tscn", sceneWithScript("uid://ddd", "uid://fff", "addons/vendor/plugin.gd"))
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"uid", "check", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if stdout.String() != "uid check passed (0 files)\n" {
+		t.Fatalf("output = %q, want a clean run", stdout.String())
+	}
+}
