@@ -407,3 +407,27 @@ func TestAnalyzerIndexesReferencesBesideAOneLineClassBody(t *testing.T) {
 	}
 	assertEdge(t, report, "features/catalog/application/use.gd", "features/catalog/domain/item.gd")
 }
+
+// The generated helpers class is tool infrastructure, not part of the
+// architecture: it is excluded by default so a zero-config project does not
+// have to classify a file gdkit told it to create, and so a call to it is not
+// a dependency edge every layer has to be allowed to make.
+func TestTheGeneratedHelpersClassIsExcludedByDefault(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, map[string]string{
+		"gdkit_helpers.gd": "class_name GDKitHelpers\nextends RefCounted\n\n" +
+			"static func deep_equals(p_lhs: Variant, p_rhs: Variant) -> bool:\n\treturn p_lhs == p_rhs\n",
+		"features/cart/domain/line.gd": "class_name Line\nextends RefCounted\n\nvar count: int\n\n" +
+			"func deep_equals(p_other: Variant) -> bool:\n" +
+			"\treturn GDKitHelpers.deep_equals(self.count, p_other.count)\n",
+	})
+	report := analyzeDefault(t, root)
+	if len(report.Diagnostics) != 0 {
+		t.Errorf("diagnostics = %v, want none", report.Diagnostics)
+	}
+	for _, edge := range report.Edges {
+		if strings.Contains(edge.To, "gdkit_helpers.gd") {
+			t.Errorf("an edge to the helpers class was recorded: %+v", edge)
+		}
+	}
+}
