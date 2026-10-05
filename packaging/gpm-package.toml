@@ -1,0 +1,7 @@
+# The version here is a placeholder, never a release number. The release
+# workflow and scripts/package-addon always pass --version, so the addon is
+# versioned by the gdkit tag that published it and this value cannot go stale.
+[package]
+name       = "gdkit"
+addon_path = "addons/gdkit"
+version    = "0.0.0"

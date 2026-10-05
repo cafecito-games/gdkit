@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Verifies the addon packages as a reproducible, binary-free `core` slice.
+#
+# Usage: scripts/test-package-addon
+set -euo pipefail
+
+repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+work="$(mktemp -d)"
+trap 'rm -rf "${work}"' EXIT
+
+version="0.0.0-test"
+"${repository}/scripts/package-addon" "${version}" "${work}/first" >/dev/null
+"${repository}/scripts/package-addon" "${version}" "${work}/second" >/dev/null
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+index="${work}/first/gpm-index.toml"
+[[ -f "${index}" ]] || fail "no gpm-index.toml was written"
+
+slices="$(sed -n 's/^ *\[slices\.\([^].]*\)\]$/\1/p' "${index}")"
+[[ "${slices}" == "core" ]] || fail "expected a core-only index, found slices: ${slices:-none}"
+if grep -q '^\[artifacts' "${index}"; then
+  fail "a pure-GDScript addon must publish no shared artifacts"
+fi
+
+archives="$(cd "${work}/first" && ls ./*.zip)"
+[[ "$(wc -l <<<"${archives}")" -eq 1 ]] || fail "expected exactly one archive, found: ${archives}"
+
+# Materialized before matching: a pipe into `grep -q` under pipefail reports the
+# writer's SIGPIPE as a failure.
+listing="$(unzip -Z1 "${work}/first/gdkit-${version}-core.zip")"
+entries="$(grep -v '/$' <<<"${listing}" | sort)"
+expected=$'equality_helpers.gd\nequality_helpers.gd.uid'
+[[ "${entries}" == "${expected}" ]] || fail "core carries unexpected entries:"$'\n'"${listing}"
+
+if grep -Eiq '\.(so|dll|dylib|a|lib|exe|framework|aar|xcframework|wasm|gdextension)$' <<<"${listing}"; then
+  fail "core carries a binary or native-library entry:"$'\n'"${listing}"
+fi
+
+diff -r "${work}/first" "${work}/second" >/dev/null || fail "two runs over the same tree wrote different bytes"
+
+echo "ok: core-only index, shippable GDScript only, reproducible archives"

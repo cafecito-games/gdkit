@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Copies the shippable addon tree and its packaging manifest into a staging
+# directory laid out the way `gpm package --dir` expects. gpm has no exclusion
+# mechanism, so packaging from a staged copy keeps anything that is not shipped
+# GDScript out of the archive even if it is later added beside the addon.
+#
+# Usage: scripts/stage-addon-tree <staging-dir>
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: ${0##*/} <staging-dir>" >&2
+  exit 2
+fi
+
+repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+staging="$1"
+
+rm -rf "${staging}"
+mkdir -p "${staging}/addons"
+cp -R "${repository}/addons/gdkit" "${staging}/addons/gdkit"
+cp "${repository}/packaging/gpm-package.toml" "${staging}/gpm-package.toml"

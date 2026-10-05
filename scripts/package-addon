@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Builds the gpm slice archives and gpm-index.toml for the addon.
+#
+# Usage: scripts/package-addon <version> <output-dir>
+#
+# <version> is the gdkit release the archives belong to, without a leading v.
+# The index and its archives must be published side by side, because a consumer
+# resolves each archive by joining the index's file name to the index's own
+# directory.
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+  echo "usage: ${0##*/} <version> <output-dir>" >&2
+  exit 2
+fi
+
+minimum_gpm="0.5.1"
+version="$1"
+output="$2"
+repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if ! command -v gpm >/dev/null 2>&1; then
+  echo "gpm is not installed; see https://github.com/cafecito-games/godot-package-manager" >&2
+  exit 1
+fi
+
+installed="$(gpm --version | sed -n 's/^gpm version \([0-9][0-9.]*\).*/\1/p')"
+if [[ -z "${installed}" ]] || [[ "$(printf '%s\n%s\n' "${minimum_gpm}" "${installed}" | sort -V | head -n 1)" != "${minimum_gpm}" ]]; then
+  echo "gpm ${minimum_gpm} or newer is required, found '${installed:-unknown}'" >&2
+  exit 1
+fi
+
+staging="$(mktemp -d)"
+trap 'rm -rf "${staging}"' EXIT
+
+"${repository}/scripts/stage-addon-tree" "${staging}/tree"
+mkdir -p "${output}"
+gpm package --dir "${staging}/tree" --out "${output}" --version "${version}"
