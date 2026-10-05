@@ -38,7 +38,7 @@ the default branch.
 
 ## Architecture
 
-`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Fifteen packages:
+`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Sixteen packages:
 
 - `architecture/` — the dependency analyzer: layer and feature boundaries, cycles,
   and engine purity (the substance of `gdkit arch`).
@@ -143,6 +143,9 @@ the default branch.
   from a package that does not label one yet still reports something stable.
 - `internal/buildinfo/` — version metadata, injected by GoReleaser `-ldflags` and
   falling back to the Go toolchain's embedded VCS settings for local builds.
+- `internal/semantic/` — the immutable resolved type vocabulary. It has no
+  parsing or diagnostic policy; `AssignableTo` is three-valued, and
+  `Indeterminate` means analysis was inconclusive so consumers stay silent.
 
 A rule may **ship inert**: if it implements `lint.PendingRule` it does not run
 until a project names it in `enable` or sets `enable_new_rules`. This exists so
