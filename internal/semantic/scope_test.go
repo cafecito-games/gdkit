@@ -275,12 +275,13 @@ func TestScopesFailClosedForMalformedDuplicateBindings(t *testing.T) {
 
 func TestScopesFailClosedForUnsupportedStatementBoundaries(t *testing.T) {
 	source := sources(t, map[string]string{
-		"player.gd": "class_name Player\nvar illegal: int\nfunc run():\n\tpass\n",
+		"player.gd": "class_name Player\nvar illegal: int\nvar shorthand: int\nfunc run():\n\tpass\n",
 	})
-	function := source.File("player.gd").Statements[2].(*ast.FunctionDeclaration)
+	function := source.File("player.gd").Statements[3].(*ast.FunctionDeclaration)
 	unsupportedUse := &ast.Identifier{Name: "Native"}
 	accessorUse := &ast.Identifier{Name: "Native"}
 	accessorSibling := &ast.Identifier{Name: "illegal"}
+	shorthandSibling := &ast.Identifier{Name: "shorthand"}
 	functionSibling := &ast.Identifier{Name: "utility"}
 	classSibling := &ast.Identifier{Name: "Native"}
 	signalSibling := &ast.Identifier{Name: "Single"}
@@ -289,6 +290,8 @@ func TestScopesFailClosedForUnsupportedStatementBoundaries(t *testing.T) {
 		&ast.EnumDeclaration{Members: []ast.EnumMember{{Name: "VALUE", Value: unsupportedUse}}},
 		&ast.VariableDeclaration{Name: "illegal", Getter: []ast.Statement{&ast.ExpressionStatement{Expression: accessorUse}}},
 		&ast.ExpressionStatement{Expression: accessorSibling},
+		&ast.VariableDeclaration{Name: "shorthand", GetterName: "getter"},
+		&ast.ExpressionStatement{Expression: shorthandSibling},
 		&ast.FunctionDeclaration{Name: "utility"},
 		&ast.ExpressionStatement{Expression: functionSibling},
 		&ast.ClassDeclaration{Name: "Native"},
@@ -306,6 +309,7 @@ func TestScopesFailClosedForUnsupportedStatementBoundaries(t *testing.T) {
 		node *ast.Identifier
 	}{
 		{name: "unsupported accessor sibling", node: accessorSibling},
+		{name: "unsupported shorthand accessor sibling", node: shorthandSibling},
 		{name: "unsupported function sibling", node: functionSibling},
 		{name: "unsupported class sibling", node: classSibling},
 		{name: "unsupported signal sibling", node: signalSibling},
@@ -317,7 +321,7 @@ func TestScopesFailClosedForUnsupportedStatementBoundaries(t *testing.T) {
 
 func TestScopesUseStaticContextForConstantInitializers(t *testing.T) {
 	source := sources(t, map[string]string{
-		"player.gd": "class_name Player\nvar field: int\nconst SELF_VALUE = self\nconst FIELD_VALUE = field\n",
+		"player.gd": "class_name Player\nvar field: int\nconst SELF_VALUE = self\nconst FIELD_VALUE = field\nfunc run():\n\tconst LOCAL_SELF = self\n\tconst LOCAL_FIELD = field\n",
 	})
 	if got := source.ParseFailures(); len(got) != 0 {
 		t.Fatalf("constant fixture did not parse: %v", got)
@@ -326,6 +330,20 @@ func TestScopesUseStaticContextForConstantInitializers(t *testing.T) {
 	file := source.File("player.gd")
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "self", 3), "constant self")
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "field", 4), "constant instance member")
+	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "self", 6), "local constant self")
+	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "field", 7), "local constant instance member")
+}
+
+func TestScopesDoNotResolveSuperInConstantInitializers(t *testing.T) {
+	source := sources(t, map[string]string{
+		"base.gd":  "class_name Base\nstatic func inherited():\n\tpass\n",
+		"child.gd": "class_name Child extends Base\nstatic func inherited():\n\tconst VALUE = super()\n",
+	})
+	if got := source.ParseFailures(); len(got) != 0 {
+		t.Fatalf("constant super fixture did not parse: %v", got)
+	}
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeStaticEngine(t)))
+	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, source.File("child.gd"), "super", 3), "constant super")
 }
 
 func TestScopesDoNotLetMalformedLexicalBindingsShadowReservedNames(t *testing.T) {

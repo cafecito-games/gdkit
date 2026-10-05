@@ -562,10 +562,17 @@ func (i *ScopeIndex) visitStatement(statement ast.Statement, scope *Scope) *Scop
 	case *ast.ExpressionStatement:
 		i.visitExpression(node.Expression, scope)
 	case *ast.VariableDeclaration:
-		if node.Getter != nil || node.Setter != nil {
+		if node.Getter != nil || node.Setter != nil || node.GetterName != "" || node.SetterName != "" || node.AccessorBlock {
 			return i.ambiguousUnsupported(scope, node, "unsupported local property accessor has no established lexical scope boundary", node.Name)
 		}
-		i.visitExpression(node.Value, scope)
+		initializerScope := scope
+		if node.Constant {
+			context := scope.context
+			context.static = true
+			context.methodName = ""
+			initializerScope = i.newScope(scope, context)
+		}
+		i.visitExpression(node.Value, initializerScope)
 		binding := i.newBinding(
 			BindingLocal,
 			node.Name,
