@@ -303,6 +303,39 @@ func TestDeepEqualsRefusesWithoutTheCompanionAddon(t *testing.T) {
 	}
 }
 
+// The command the refusal prints has to be runnable as printed: gpm uses
+// --version verbatim as the release tag, so an argument without the leading "v"
+// fails against a tag that exists.
+func TestTheAddonInstallCommandNamesAReleaseTag(t *testing.T) {
+	old := detectedVersion
+	t.Cleanup(func() { detectedVersion = old })
+
+	for _, testCase := range []struct {
+		version string
+		want    string
+	}{
+		{version: "0.6.0", want: "--version v0.6.0"},
+		{version: "1.0.10", want: "--version v1.0.10"},
+		{version: "dev", want: `--version <tag>, where <tag> is the gdkit release matching this build, including its leading "v"`},
+		{version: "0.7.0-SNAPSHOT-abc1234", want: "--version <tag>"},
+		// What a local build of a dirty tree at a tag reports about itself.
+		{version: "0.6.0+dirty", want: "--version <tag>"},
+		{version: "", want: "--version <tag>"},
+	} {
+		detectedVersion = func() string { return testCase.version }
+		report := checkProject(t, DefaultConfig(), map[string]string{
+			"a.gd": "class_name Thing\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar x: int\n",
+		})
+		diagnostic := assertDiagnostic(t, report, ruleUnsupported)
+		if !strings.Contains(diagnostic.Message, testCase.want) {
+			t.Errorf("version %q: message = %q, want it to contain %q", testCase.version, diagnostic.Message, testCase.want)
+		}
+		if strings.Contains(diagnostic.Message, "--version vdev") {
+			t.Errorf("version %q: message offers a tag no release carries: %q", testCase.version, diagnostic.Message)
+		}
+	}
+}
+
 func TestDeepEqualsRefusesAnAddonWithoutTheStaticComparison(t *testing.T) {
 	report := checkProject(t, DefaultConfig(), map[string]string{
 		"addons/gdkit/equality_helpers.gd": "class_name GDKitEquality\nextends RefCounted\n\n\n" +

@@ -1059,14 +1059,19 @@ it is installed with
 GitHub release as the `gdkit` binary:
 
 ```sh
-gpm add --name gdkit --source github-release --repo cafecito-games/gdkit --version <tag>
+gpm add --name gdkit --source github-release --repo cafecito-games/gdkit --version v0.6.0
 ```
 
-Use the tag of the gdkit release you run (`gdkit version`): the addon is
-versioned with the tool because the generated call and the helper must agree on
-one signature. The release carries a `gpm-index.toml` beside a `core` archive,
-which is how gpm recognises it, so no `--asset` is needed. The addon is pure
-GDScript, so it publishes no platform slices and needs no `platforms` entry.
+Install the release you run: the addon is versioned with the tool because the
+generated call and the helper must agree on one signature. `--version` is the
+git tag, so it carries the leading `v` that `gdkit version` prints without — a
+tag that does not exist is reported as an HTTP 404 and a suggestion to set
+`GITHUB_TOKEN`, which is not the problem. The refusal below prints the command
+with this binary's own version filled in, so it can be copied as it stands.
+
+The release carries a `gpm-index.toml` beside a `core` archive, which is how
+gpm recognises it, so no `--asset` is needed. The addon is pure GDScript, so it
+publishes no platform slices and needs no `platforms` entry.
 
 To track the repository instead of a release, install from a source tree; the
 subdirectory is required because the repository holds more than the addon:
@@ -1083,7 +1088,7 @@ A class that opts into `deep_equals` while the project declares no
 `GDKitEquality` is refused as `generate.unsupported`, naming the release form:
 
 ```
-deep_equals calls GDKitEquality, which this project does not declare; install the gdkit addon (gpm add --name gdkit --source github-release --repo cafecito-games/gdkit --version <tag>, where <tag> is the release matching this gdkit)
+deep_equals calls GDKitEquality, which this project does not declare; install the gdkit addon (gpm add --name gdkit --source github-release --repo cafecito-games/gdkit --version v0.6.0)
 ```
 
 The class is found by its `class_name`, wherever the addon is installed, so a
