@@ -112,6 +112,7 @@ type Binding struct {
 	line        int
 	column      int
 	typeValue   Type
+	constant    bool
 	member      *Member
 	superMember *Member
 }
@@ -221,9 +222,10 @@ type scopeEntry struct {
 }
 
 type scopeContext struct {
-	classID    string
-	static     bool
-	methodName string
+	classID            string
+	static             bool
+	methodName         string
+	constantExpression bool
 }
 
 // Scope is one immutable lexical view. Successive declarations create a new
@@ -276,11 +278,18 @@ func (s *Scope) Lookup(name string) BindingResult {
 			continue
 		}
 		if entry.binding != nil {
+			if s.context.constantExpression && !entry.binding.constantExpressionBinding() {
+				return unknownBinding(fmt.Sprintf("non-constant lexical binding %q is unavailable in a constant initializer", name))
+			}
 			return foundBinding(*entry.binding)
 		}
 		return unknownBinding(entry.reason)
 	}
 	return s.index.resolveNamespace(s, name)
+}
+
+func (b Binding) constantExpressionBinding() bool {
+	return b.kind == BindingLocal && b.constant
 }
 
 func (s *Scope) lexicalEntry(name string) (scopeEntry, bool) {
@@ -362,7 +371,7 @@ func (i *ScopeIndex) buildClass(class *ClassDecl) {
 		case *ast.VariableDeclaration:
 			// A lambda held in a class property is still an indexed lambda,
 			// even though it has no enclosing function frame to capture.
-			propertyScope := i.newScope(nil, scopeContext{classID: class.ID, static: node.Static || node.Constant})
+			propertyScope := i.newScope(nil, scopeContext{classID: class.ID, static: node.Static || node.Constant, constantExpression: node.Constant})
 			i.visitExpression(node.Value, propertyScope)
 			i.buildAccessors(class.ID, node)
 		case *ast.EnumDeclaration:
@@ -562,6 +571,9 @@ func (i *ScopeIndex) visitStatement(statement ast.Statement, scope *Scope) *Scop
 	case *ast.ExpressionStatement:
 		i.visitExpression(node.Expression, scope)
 	case *ast.VariableDeclaration:
+		if node.Static {
+			return i.ambiguousUnsupported(scope, node, "unsupported local static declaration has no established lexical scope boundary", node.Name)
+		}
 		if node.Getter != nil || node.Setter != nil || node.GetterName != "" || node.SetterName != "" || node.AccessorBlock {
 			return i.ambiguousUnsupported(scope, node, "unsupported local property accessor has no established lexical scope boundary", node.Name)
 		}
@@ -570,6 +582,7 @@ func (i *ScopeIndex) visitStatement(statement ast.Statement, scope *Scope) *Scop
 			context := scope.context
 			context.static = true
 			context.methodName = ""
+			context.constantExpression = true
 			initializerScope = i.newScope(scope, context)
 		}
 		i.visitExpression(node.Value, initializerScope)
@@ -583,6 +596,7 @@ func (i *ScopeIndex) visitStatement(statement ast.Statement, scope *Scope) *Scop
 			node.NameSpan.Start.Column,
 			i.variableType(scope.context.classID, node),
 		)
+		binding.constant = node.Constant
 		return i.install(scope, binding, false)
 	case *ast.Assignment:
 		i.visitExpression(node.Target, scope)

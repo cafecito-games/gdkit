@@ -275,13 +275,15 @@ func TestScopesFailClosedForMalformedDuplicateBindings(t *testing.T) {
 
 func TestScopesFailClosedForUnsupportedStatementBoundaries(t *testing.T) {
 	source := sources(t, map[string]string{
-		"player.gd": "class_name Player\nvar illegal: int\nvar shorthand: int\nfunc run():\n\tpass\n",
+		"player.gd": "class_name Player\nvar illegal: int\nvar shorthand: int\nvar static_illegal: int\nfunc run():\n\tpass\n",
 	})
-	function := source.File("player.gd").Statements[3].(*ast.FunctionDeclaration)
+	function := source.File("player.gd").Statements[4].(*ast.FunctionDeclaration)
 	unsupportedUse := &ast.Identifier{Name: "Native"}
 	accessorUse := &ast.Identifier{Name: "Native"}
 	accessorSibling := &ast.Identifier{Name: "illegal"}
 	shorthandSibling := &ast.Identifier{Name: "shorthand"}
+	staticInitializer := &ast.Identifier{Name: "Native"}
+	staticSibling := &ast.Identifier{Name: "static_illegal"}
 	functionSibling := &ast.Identifier{Name: "utility"}
 	classSibling := &ast.Identifier{Name: "Native"}
 	signalSibling := &ast.Identifier{Name: "Single"}
@@ -292,6 +294,8 @@ func TestScopesFailClosedForUnsupportedStatementBoundaries(t *testing.T) {
 		&ast.ExpressionStatement{Expression: accessorSibling},
 		&ast.VariableDeclaration{Name: "shorthand", GetterName: "getter"},
 		&ast.ExpressionStatement{Expression: shorthandSibling},
+		&ast.VariableDeclaration{Name: "static_illegal", Static: true, Value: staticInitializer},
+		&ast.ExpressionStatement{Expression: staticSibling},
 		&ast.FunctionDeclaration{Name: "utility"},
 		&ast.ExpressionStatement{Expression: functionSibling},
 		&ast.ClassDeclaration{Name: "Native"},
@@ -310,6 +314,8 @@ func TestScopesFailClosedForUnsupportedStatementBoundaries(t *testing.T) {
 	}{
 		{name: "unsupported accessor sibling", node: accessorSibling},
 		{name: "unsupported shorthand accessor sibling", node: shorthandSibling},
+		{name: "unsupported static initializer", node: staticInitializer},
+		{name: "unsupported static sibling", node: staticSibling},
 		{name: "unsupported function sibling", node: functionSibling},
 		{name: "unsupported class sibling", node: classSibling},
 		{name: "unsupported signal sibling", node: signalSibling},
@@ -321,7 +327,7 @@ func TestScopesFailClosedForUnsupportedStatementBoundaries(t *testing.T) {
 
 func TestScopesUseStaticContextForConstantInitializers(t *testing.T) {
 	source := sources(t, map[string]string{
-		"player.gd": "class_name Player\nvar field: int\nconst SELF_VALUE = self\nconst FIELD_VALUE = field\nfunc run():\n\tconst LOCAL_SELF = self\n\tconst LOCAL_FIELD = field\n",
+		"player.gd": "class_name Player\nvar field: int\nconst SELF_VALUE = self\nconst FIELD_VALUE = field\nfunc run():\n\tconst LOCAL_SELF = self\n\tconst LOCAL_FIELD = field\nfunc values(parameter):\n\tvar mutable = 1\n\tconst FROM_PARAMETER = parameter\n\tconst FROM_MUTABLE = mutable\n\tconst FIRST = 1\n\tconst FROM_CONST = FIRST\n",
 	})
 	if got := source.ParseFailures(); len(got) != 0 {
 		t.Fatalf("constant fixture did not parse: %v", got)
@@ -332,6 +338,9 @@ func TestScopesUseStaticContextForConstantInitializers(t *testing.T) {
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "field", 4), "constant instance member")
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "self", 6), "local constant self")
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "field", 7), "local constant instance member")
+	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "parameter", 10), "local constant parameter")
+	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "mutable", 11), "local constant mutable local")
+	scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "FIRST", 13), BindingLocal)
 }
 
 func TestScopesDoNotResolveSuperInConstantInitializers(t *testing.T) {
@@ -344,6 +353,17 @@ func TestScopesDoNotResolveSuperInConstantInitializers(t *testing.T) {
 	}
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeStaticEngine(t)))
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, source.File("child.gd"), "super", 3), "constant super")
+}
+
+func TestScopesFreezeConstantBindingFacts(t *testing.T) {
+	source := sources(t, map[string]string{
+		"player.gd": "class_name Player\nfunc run():\n\tconst FIRST = 1\n\tconst SECOND = FIRST\n",
+	})
+	function := source.File("player.gd").Statements[1].(*ast.FunctionDeclaration)
+	first := function.Body[0].(*ast.VariableDeclaration)
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
+	first.Constant = false
+	scopeRequireBinding(t, scopes, scopeIdentifierAt(t, source.File("player.gd"), "FIRST", 4), BindingLocal)
 }
 
 func TestScopesDoNotLetMalformedLexicalBindingsShadowReservedNames(t *testing.T) {
