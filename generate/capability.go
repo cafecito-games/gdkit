@@ -12,7 +12,18 @@ var (
 	// deepEqualsSignature is the shape the generated code dispatches on at
 	// runtime, so a hand-written method of this shape participates too.
 	deepEqualsSignature = Signature{Name: "deep_equals", Arity: 1}
+	// helpersSignature is the shared static comparison. Its arity is what
+	// keeps it distinct from deepEqualsSignature, which is the instance
+	// method it dispatches to.
+	helpersSignature = Signature{Name: "deep_equals", Static: true, Arity: 2}
 )
+
+// helpersClassName is the global the generated comparison calls. It is the
+// class_name of the companion addon rather than a configured path, because the
+// name is what the emitted code actually depends on: resolving it this way
+// works wherever the addon is installed, and works for a project that vendors
+// the file by hand.
+const helpersClassName = "GDKitEquality"
 
 type pair struct {
 	class     string
@@ -209,6 +220,12 @@ func (c *Capabilities) demote(index *Index, key pair, blockers map[string]bool) 
 	if c.UniverseCause != "" || index.ReachesCycle(key.class) {
 		return true
 	}
+	// The generated comparison calls a static method on the helpers class, so
+	// without one it would not compile. This is the only demotion a single
+	// command fixes, which is why whyRefused names that command.
+	if key.signature == deepEqualsSignature && !hasHelpersClass(index) {
+		return true
+	}
 	// A cyclic field-type graph cannot be shown to terminate: comparing two
 	// independently built cyclic graphs never finds an identical pair, so the
 	// identity check that settles every realistic recursive shape never fires.
@@ -241,6 +258,21 @@ func (c *Capabilities) demote(index *Index, key pair, blockers map[string]bool) 
 		}
 	}
 	return false
+}
+
+// hasHelpersClass reports a usable companion addon: the class is installed and
+// declares the static comparison the generated code calls.
+//
+// Checking the declaration rather than a version is deliberate. The generated
+// call depends on one signature, not on a release number, so asking the index
+// what the class declares answers the real question and needs no knowledge of
+// how the addon was installed.
+func hasHelpersClass(index *Index) bool {
+	if index.HelpersClass == nil {
+		return false
+	}
+	method, declared := index.HelpersClass.Methods[helpersSignature.Name]
+	return declared && method.Signature == helpersSignature
 }
 
 // ancestryHasFields reports whether any strict ancestor declares a selectable

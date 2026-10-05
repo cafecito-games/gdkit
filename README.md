@@ -908,6 +908,9 @@ there is no sibling-file equivalent of `go generate` here: the methods land in
 your own script, between sentinels, and `gen` owns everything between them. Run
 `gen write` on a clean tree and review the diff, as with `format write`.
 
+`deep_equals` also needs a companion addon; see
+[The companion addon](#the-companion-addon).
+
 ### Opting in
 
 | Form | Where | Meaning |
@@ -954,25 +957,68 @@ value object, that is usually not the answer you want — use `deep_equals`.
 
 ### What `deep_equals` compares
 
-`deep_equals` asks each value what it can do instead of comparing it with `==`:
+`deep_equals` sends every field through one shared static helper rather than
+comparing it with `==`:
 
 ```gdscript
-if self.position != p_other.position:
-	if self.position == null or p_other.position == null:
+func deep_equals(p_other: Variant) -> bool:
+	if self == p_other:
+		return true
+	if not p_other is Object:
 		return false
-	if self.position is Object and self.position.has_method("deep_equals"):
-		if not self.position.deep_equals(p_other.position):
-			return false
-	elif self.position is Object and self.position.has_method("equals"):
-		if not self.position.equals(p_other.position):
-			return false
-	else:
+	if p_other.get_script() != get_script():
 		return false
+	if not GDKitEquality.deep_equals(self.children, p_other.children):
+		return false
+	if not GDKitEquality.deep_equals(self.label, p_other.label):
+		return false
+	return true
+```
+
+The helper is the static method of the companion addon's `GDKitEquality` class:
+
+```gdscript
+static func deep_equals(p_lhs: Variant, p_rhs: Variant) -> bool:
+	if p_lhs == p_rhs:
+		return true
+	if p_lhs is Array and p_rhs is Array:
+		if p_lhs.size() != p_rhs.size():
+			return false
+		for index in p_lhs.size():
+			if not deep_equals(p_lhs[index], p_rhs[index]):
+				return false
+		return true
+	if p_lhs is Dictionary and p_rhs is Dictionary:
+		if p_lhs.size() != p_rhs.size():
+			return false
+		for key in p_lhs:
+			if not p_rhs.has(key):
+				return false
+			if not deep_equals(p_lhs[key], p_rhs[key]):
+				return false
+		return true
+	if p_lhs == null or p_rhs == null:
+		return false
+	if p_lhs is Object and p_lhs.has_method("deep_equals"):
+		return p_lhs.deep_equals(p_rhs)
+	if p_lhs is Object and p_lhs.has_method("equals"):
+		return p_lhs.equals(p_rhs)
+	return false
 ```
 
 So two distinct instances carrying equal values compare equal, which is the
 whole point and what `equals` gets wrong. A field whose type has only a
-hand-written `equals` is used rather than refused.
+hand-written `equals` is used rather than refused. A container is compared
+element by element, so `Array[Position]`, `Dictionary[String, Position]`, and an
+untyped `var items = []` all compare by value, and a tree of value objects
+compares equal when its leaves do. Handing a container to `==` would have
+compared its object elements by reference, and the tree would have compared
+unequal.
+
+A dictionary's **keys** are matched with `has()`, which hashes, and for an
+object is reference identity. Two equal but distinct value objects used as keys
+will not pair up. Matching keys deeply needs quadratic pairing, and there is no
+sound answer when several keys are mutually equal, so the helper does not try.
 
 The method opens with `if self == p_other: return true` — the same instance is
 strictly equal. That is also what makes the realistic recursive shapes
@@ -989,10 +1035,43 @@ types form a cycle through node.gd (generate.unsupported)
 ```
 
 That check reads declared field types, so a field with no type, an explicit
-`Variant`, or a `:=`-inferred type is invisible to it; an untyped field in a
-cycle will still exhaust the stack. A field typed `Array[Branch]` is **not** a
-cycle — a container is handed to `==`, which Godot 4 evaluates by value, so the
-generated code never recurses into its elements.
+`Variant`, or a `:=`-inferred type is invisible to it. A field typed
+`Array[Branch]` inside `Branch` is **not** a cycle and still generates, even
+though the code now recurses into containers: tree-shaped data terminates
+through the identity check, and refusing that shape would refuse most of what
+`deep_equals` is for. The cost is that a genuinely cyclic graph reached through
+a container, or through an untyped, `Variant`, or `:=`-inferred field, exhausts
+the stack rather than being refused at check time.
+
+#### The companion addon
+
+The helper is hand-written GDScript that never varies per project, so it ships
+as a Godot addon rather than as code `gen` writes. The addon is
+`addons/gdkit/equality_helpers.gd`, declaring `class_name GDKitEquality`, and
+it is installed with [gpm](https://github.com/cafecito-games/gpm):
+
+```sh
+gpm add --name gdkit --source git --url https://github.com/cafecito-games/gdkit.git --source-path addons/gdkit
+```
+
+A class that opts into `deep_equals` while the project declares no
+`GDKitEquality` is refused as `generate.unsupported`, naming that command:
+
+```
+deep_equals calls GDKitEquality, which this project does not declare; install the gdkit addon (gpm add --name gdkit --source git --url https://github.com/cafecito-games/gdkit.git --source-path addons/gdkit)
+```
+
+The class is found by its `class_name`, wherever the addon is installed, so a
+project that vendors the file by hand works too. It must declare the static
+`deep_equals(p_lhs, p_rhs)` the generated code calls; an installed addon that
+does not is refused with its own message saying the addon is too old. The check
+is on that declaration rather than on a version number, because the generated
+call depends on one signature.
+
+`gdkit arch` needs no configuration for the addon: `addons/**` is already in its
+default `exclude`, so the class is not classified and a call to it is not a
+dependency edge. `gen` likewise never writes to it, because `addons/**` is
+excluded from the files it acts on.
 
 ### Generation diagnostics
 
@@ -1003,7 +1082,7 @@ generated code never recurses into its elements.
 | `generate.stale` | a region that is missing or out of date |
 | `generate.marker` | a malformed directive, an unknown generator name, or a second region in one class |
 | `generate.conflict` | a method of the same name already declared with a different signature |
-| `generate.unsupported` | a class `gen` refuses, with the reason: an unopened ancestor, a field-adding subclass, or a cyclic field-type graph |
+| `generate.unsupported` | a class `gen` refuses, with the reason: an unopened ancestor, a field-adding subclass, a cyclic field-type graph, or a `deep_equals` whose companion addon is missing or too old |
 | `generate.orphaned` | a region whose class no longer opts in |
 | `generate.unsafe` | a rewrite that verification refused |
 

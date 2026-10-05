@@ -15,7 +15,8 @@ func emitOf(t *testing.T, emitter Emitter, source string) string {
 // emitFor runs one generator over the named class of a multi-file project.
 func emitFor(t *testing.T, id string, emitter Emitter, files map[string]string) string {
 	t.Helper()
-	index := indexOf(t, files)
+	index := indexOf(t, withCompanionAddon(files))
+	index.HelpersClass = index.ByClassName[helpersClassName]
 	capabilities := Resolve(index, map[string][]string{id: {emitter.Name()}}, nil)
 	text, diagnostics := emitter.Emit(index.Classes[id], index, capabilities)
 	if len(diagnostics) > 0 {

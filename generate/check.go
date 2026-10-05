@@ -104,6 +104,7 @@ func (p Plan) HasBlockers() bool { return len(p.Diagnostics) > 0 }
 // so this terminates.
 func (g *Generator) Check(snapshot *project.Snapshot) Plan {
 	index := BuildIndex(snapshot)
+	index.HelpersClass = index.ByClassName[helpersClassName]
 	requested, markers := g.resolveOptIn(snapshot, index)
 	blockers := g.localBlockers(index, requested, markers)
 	// An unsafe refusal is reported from the pass that found it. A later pass
@@ -384,6 +385,15 @@ func (g *Generator) whyRefused(index *Index, class *Class, signature Signature, 
 	case capabilities.UniverseCause != "":
 		return fmt.Sprintf("%s needs the whole inheritance graph, and it is incomplete: %s",
 			signature.Name, capabilities.UniverseCause)
+	case signature == deepEqualsSignature && index.HelpersClass == nil:
+		return fmt.Sprintf(
+			"deep_equals calls %s, which this project does not declare; install the gdkit addon "+
+				"(gpm add --name gdkit --source git --url https://github.com/cafecito-games/gdkit.git "+
+				"--source-path addons/gdkit)", helpersClassName)
+	case signature == deepEqualsSignature && !hasHelpersClass(index):
+		return fmt.Sprintf(
+			"%s is declared at %s but has no static deep_equals(p_lhs, p_rhs), so the installed gdkit addon is too old",
+			helpersClassName, index.HelpersClass.Path)
 	case signature == deepEqualsSignature && index.FieldTypeCycle(class.ID):
 		return fmt.Sprintf(
 			"deep_equals cannot be shown to terminate: this class's field types form a cycle through %s",

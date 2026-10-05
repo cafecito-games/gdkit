@@ -407,3 +407,27 @@ func TestAnalyzerIndexesReferencesBesideAOneLineClassBody(t *testing.T) {
 	}
 	assertEdge(t, report, "features/catalog/application/use.gd", "features/catalog/domain/item.gd")
 }
+
+// The companion addon is not part of the architecture. addons/** is already
+// excluded by default, so the class is not classified and a call to it is no
+// edge, which is what lets a domain value object call it without any layer
+// having to be allowed to depend on it.
+func TestTheCompanionAddonIsNotADependency(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, map[string]string{
+		"addons/gdkit/equality_helpers.gd": "class_name GDKitEquality\nextends RefCounted\n\n\n" +
+			"static func deep_equals(p_lhs: Variant, p_rhs: Variant) -> bool:\n\treturn p_lhs == p_rhs\n",
+		"features/cart/domain/line.gd": "class_name Line\nextends RefCounted\n\nvar count: int\n\n\n" +
+			"func deep_equals(p_other: Variant) -> bool:\n" +
+			"\treturn GDKitEquality.deep_equals(self.count, p_other.count)\n",
+	})
+	report := analyzeDefault(t, root)
+	if len(report.Diagnostics) != 0 {
+		t.Errorf("diagnostics = %v, want none", report.Diagnostics)
+	}
+	for _, edge := range report.Edges {
+		if strings.Contains(edge.To, "addons/") {
+			t.Errorf("an edge to the addon was recorded: %+v", edge)
+		}
+	}
+}

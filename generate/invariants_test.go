@@ -50,13 +50,13 @@ var fixtures = map[string]map[string]string{
 		"a.gd": "class_name Holder\nextends RefCounted\n\n# gdkit:generate = to_string\nvar q: int\n\n\n" +
 			"class Nested:\n\tvar r: int\n",
 	},
-	"deep_equals over a value-object field": {
+	"deep_equals over a value-object field": withCompanionAddon(map[string]string{
 		"coordinate.gd": "class_name Coordinate\nextends RefCounted\n\n# gdkit:generate = equals, deep_equals\nvar q: int\nvar r: int\n",
 		"unit.gd":       "class_name Unit\nextends RefCounted\n\n# gdkit:generate = to_string, deep_equals\nvar name: String\nvar position: Coordinate\n",
-	},
-	"deep_equals with an untyped field": {
+	}),
+	"deep_equals with an untyped field": withCompanionAddon(map[string]string{
 		"a.gd": "class_name Bag\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar loose\nvar tagged: String\n",
-	},
+	}),
 	"property with accessors": {
 		"a.gd": "class_name Hex\nextends RefCounted\n\n# gdkit:generate = to_string\n" +
 			"var q: int\nvar doubled: int:\n\tget:\n\t\treturn self.q * 2\n",
