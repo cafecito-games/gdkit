@@ -84,8 +84,9 @@ func TestRunLintExtensionAPIFailuresUseJSONKindsPathsAndEmptyStdout(t *testing.T
 			}
 			writeCLIBytes(t, root, ".gdkit/lint.json", config)
 			body := runFailure(t, "lint", "check", "--format", "json", root)
-			if body.Kind != test.kind || body.Path != test.path {
-				t.Fatalf("failure = %+v, want kind %q path %q", body, test.kind, test.path)
+			wantPath := filepath.Join(root, filepath.FromSlash(test.path))
+			if body.Kind != test.kind || body.Path != wantPath || !strings.Contains(body.Message, test.path) {
+				t.Fatalf("failure = %+v, want kind %q path %q", body, test.kind, wantPath)
 			}
 		})
 	}
@@ -125,7 +126,7 @@ func TestRunLintResolvedExtensionAPIEscapeFailsClosedAsJSON(t *testing.T) {
 	}
 	writeCLIFile(t, root, ".gdkit/lint.json", `{"godot_version":"4.7","extension_api":"engine.json"}`)
 	body := runFailure(t, "lint", "check", "--format", "json", root)
-	if body.Kind != "config.invalid" || body.Path != configuredPath {
+	if body.Kind != "config.invalid" || body.Path != filepath.Join(root, configuredPath) {
 		t.Fatalf("failure = %+v", body)
 	}
 }
@@ -153,7 +154,7 @@ func TestRunLintNonRegularExtensionAPIFailsAsConfigInvalidJSON(t *testing.T) {
 	}
 	writeCLIFile(t, root, ".gdkit/lint.json", `{"extension_api":"engine.json"}`)
 	body := runFailure(t, "lint", "check", "--format", "json", root)
-	if body.Kind != "config.invalid" || body.Path != "engine.json" {
+	if body.Kind != "config.invalid" || body.Path != filepath.Join(root, "engine.json") {
 		t.Fatalf("failure = %+v", body)
 	}
 }

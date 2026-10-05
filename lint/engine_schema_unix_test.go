@@ -52,5 +52,5 @@ func TestExtensionAPIRejectsFIFOWithoutBlocking(t *testing.T) {
 	if err == nil || linter != nil {
 		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
 	}
-	assertFailure(t, err, failure.ConfigInvalid, path)
+	assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, path))
 }

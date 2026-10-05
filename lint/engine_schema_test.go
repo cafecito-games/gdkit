@@ -350,7 +350,7 @@ func TestExplicitExtensionAPIAcceptsForkBrandingButNotNumericMismatch(t *testing
 			if err == nil || linter != nil {
 				t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
 			}
-			assertFailure(t, err, failure.ConfigInvalid, path)
+			assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, filepath.FromSlash(path)))
 		})
 	}
 }
@@ -378,7 +378,7 @@ func TestExtensionAPIFailuresKeepStableKindsAndPaths(t *testing.T) {
 			if err == nil || linter != nil {
 				t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
 			}
-			assertFailure(t, err, test.kind, test.path)
+			assertFailure(t, err, test.kind, filepath.Join(root, filepath.FromSlash(test.path)))
 		})
 	}
 }
@@ -399,7 +399,7 @@ func TestExtensionAPIRejectsResolvedSymlinkEscape(t *testing.T) {
 	if err == nil || linter != nil {
 		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
 	}
-	assertFailure(t, err, failure.ConfigInvalid, path)
+	assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, path))
 }
 
 func TestExtensionAPIAcceptsAbsoluteSymlinkToFileWithinRoot(t *testing.T) {
@@ -433,7 +433,7 @@ func TestExtensionAPIRejectsNonRegularInput(t *testing.T) {
 	if err == nil || linter != nil {
 		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
 	}
-	assertFailure(t, err, failure.ConfigInvalid, path)
+	assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, path))
 }
 
 func TestEngineSchemaReportJSONIsOptional(t *testing.T) {

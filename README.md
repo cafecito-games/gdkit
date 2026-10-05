@@ -1214,7 +1214,9 @@ consumer can tell "no report" from "an empty report".
 consumer branches on it, so it is not renamed. `message` is the same text the
 command writes in text mode, so the two modes never describe a failure
 differently. `path` and `key` appear when the failure locates to a file or a
-configuration key.
+configuration key. For a lint `extension_api` failure, `path` is the configured
+file joined to the analyzed project root, matching lint-config failures; the
+literal configured value remains in `message`.
 
 | Kind | Meaning |
 | --- | --- |

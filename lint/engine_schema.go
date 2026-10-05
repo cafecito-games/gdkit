@@ -55,39 +55,40 @@ func rulesNeedEngineSchema(rules []Rule) bool {
 }
 
 func loadEngineOverride(root, configuredPath string, compiled *compiledConfig) (*engineschema.Loaded, error) {
+	failurePath := filepath.Join(root, filepath.FromSlash(configuredPath))
 	rootPath, err := filepath.Abs(root)
 	if err != nil {
-		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigRead, failurePath,
 			fmt.Errorf("resolve project root for extension_api %q: %w", configuredPath, err))
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(rootPath)
 	if err != nil {
-		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigRead, failurePath,
 			fmt.Errorf("resolve project root for extension_api %q: %w", configuredPath, err))
 	}
 	target := filepath.Join(resolvedRoot, filepath.FromSlash(configuredPath))
 	resolvedTarget, err := filepath.EvalSymlinks(target)
 	if err != nil {
-		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigRead, failurePath,
 			fmt.Errorf("resolve extension_api %q: %w", configuredPath, err))
 	}
 	inside, err := pathWithin(resolvedRoot, resolvedTarget)
 	if err != nil {
-		return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigInvalid, failurePath,
 			fmt.Errorf("validate extension_api %q: %w", configuredPath, err))
 	}
 	if !inside {
-		return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigInvalid, failurePath,
 			fmt.Errorf("extension_api %q resolves outside the project root", configuredPath))
 	}
 	resolvedRelative, err := filepath.Rel(resolvedRoot, resolvedTarget)
 	if err != nil {
-		return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigInvalid, failurePath,
 			fmt.Errorf("address resolved extension_api %q inside the project root: %w", configuredPath, err))
 	}
 	rootHandle, err := os.OpenRoot(resolvedRoot)
 	if err != nil {
-		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigRead, failurePath,
 			fmt.Errorf("open project root for extension_api %q: %w", configuredPath, err))
 	}
 	// Open the resolved relative target so an absolute symlink that stays inside
@@ -98,37 +99,37 @@ func loadEngineOverride(root, configuredPath string, compiled *compiledConfig) (
 	if openErr != nil {
 		if currentTarget, resolveErr := filepath.EvalSymlinks(target); resolveErr == nil {
 			if currentlyInside, withinErr := pathWithin(resolvedRoot, currentTarget); withinErr == nil && !currentlyInside {
-				return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
+				return nil, failure.WrapPath(failure.ConfigInvalid, failurePath,
 					fmt.Errorf("extension_api %q resolves outside the project root", configuredPath))
 			}
 		}
-		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigRead, failurePath,
 			fmt.Errorf("open extension_api %q inside project root: %w", configuredPath, openErr))
 	}
 	if rootCloseErr != nil {
 		_ = file.Close()
-		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigRead, failurePath,
 			fmt.Errorf("close project root for extension_api %q: %w", configuredPath, rootCloseErr))
 	}
 	openedInfo, statErr := file.Stat()
 	if statErr != nil {
 		_ = file.Close()
-		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigRead, failurePath,
 			fmt.Errorf("inspect open extension_api %q: %w", configuredPath, statErr))
 	}
 	if !openedInfo.Mode().IsRegular() {
 		_ = file.Close()
-		return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigInvalid, failurePath,
 			fmt.Errorf("extension_api %q is not a regular file", configuredPath))
 	}
 	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
 	if readErr != nil {
-		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigRead, failurePath,
 			fmt.Errorf("read extension_api %q: %w", configuredPath, readErr))
 	}
 	if closeErr != nil {
-		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
+		return nil, failure.WrapPath(failure.ConfigRead, failurePath,
 			fmt.Errorf("close extension_api %q: %w", configuredPath, closeErr))
 	}
 	loaded, err := engineschema.LoadRaw(data, engineschema.SourceOverride, "")
@@ -137,11 +138,12 @@ func loadEngineOverride(root, configuredPath string, compiled *compiledConfig) (
 		if errors.Is(err, engineschema.ErrRawParse) {
 			kind = failure.ConfigParse
 		}
-		return nil, failure.WrapPath(kind, configuredPath,
+		return nil, failure.WrapPath(kind, failurePath,
 			fmt.Errorf("load extension_api %q: %w", configuredPath, err))
 	}
 	if err := matchEngineVersion(compiled, loaded.Provenance.Version); err != nil {
-		return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath, err)
+		return nil, failure.WrapPath(failure.ConfigInvalid, failurePath,
+			fmt.Errorf("validate extension_api %q: %w", configuredPath, err))
 	}
 	return loaded, nil
 }
