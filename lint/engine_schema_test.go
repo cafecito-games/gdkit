@@ -402,6 +402,25 @@ func TestExtensionAPIRejectsResolvedSymlinkEscape(t *testing.T) {
 	assertFailure(t, err, failure.ConfigInvalid, path)
 }
 
+func TestExtensionAPIAcceptsAbsoluteSymlinkToFileWithinRoot(t *testing.T) {
+	root := t.TempDir()
+	target := "tools/extension_api.json"
+	writeEngineOverride(t, root, target, readEngineFixture(t))
+	path := "extension_api.json"
+	if err := os.Symlink(filepath.Join(root, filepath.FromSlash(target)), filepath.Join(root, path)); err != nil {
+		t.Fatal(err)
+	}
+	config := DefaultConfig()
+	config.ExtensionAPI = &path
+	linter, err := newLinterForProject(root, config, nil)
+	if err != nil || linter == nil {
+		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
+	}
+	if provenance := linter.Lint(emptySnapshot()).EngineSchema; provenance == nil || provenance.Source != engineschema.SourceOverride {
+		t.Fatalf("engine_schema = %+v", provenance)
+	}
+}
+
 func TestExtensionAPIRejectsNonRegularInput(t *testing.T) {
 	root := t.TempDir()
 	path := "extension_api.json"

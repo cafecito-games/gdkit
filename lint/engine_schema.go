@@ -80,12 +80,20 @@ func loadEngineOverride(root, configuredPath string, compiled *compiledConfig) (
 		return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
 			fmt.Errorf("extension_api %q resolves outside the project root", configuredPath))
 	}
+	resolvedRelative, err := filepath.Rel(resolvedRoot, resolvedTarget)
+	if err != nil {
+		return nil, failure.WrapPath(failure.ConfigInvalid, configuredPath,
+			fmt.Errorf("address resolved extension_api %q inside the project root: %w", configuredPath, err))
+	}
 	rootHandle, err := os.OpenRoot(resolvedRoot)
 	if err != nil {
 		return nil, failure.WrapPath(failure.ConfigRead, configuredPath,
 			fmt.Errorf("open project root for extension_api %q: %w", configuredPath, err))
 	}
-	file, openErr := rootHandle.OpenFile(filepath.FromSlash(configuredPath), os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	// Open the resolved relative target so an absolute symlink that stays inside
+	// the project names the same file we checked. os.Root still confines a path
+	// component replaced with an escaping symlink between validation and open.
+	file, openErr := rootHandle.OpenFile(resolvedRelative, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	rootCloseErr := rootHandle.Close()
 	if openErr != nil {
 		if currentTarget, resolveErr := filepath.EvalSymlinks(target); resolveErr == nil {
