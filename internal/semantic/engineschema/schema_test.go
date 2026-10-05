@@ -492,6 +492,48 @@ func TestCorruptArtifactNeverPublishesPartialState(t *testing.T) {
 }
 
 func TestOfficialArtifactResolvesOrExplainsEveryRetainedTypeSpelling(t *testing.T) {
+	// Godot's 4.7 dump retains two vocabularies that are intentionally outside
+	// gdkit's semantic type model: native ABI pointers and comma-separated
+	// resource constraints. Pin every such spelling so a newly unresolved type
+	// fails this test, and so adding support requires removing its exact entry.
+	wantUnknown := map[string]bool{}
+	for _, spelling := range []string{
+		"AudioFrame*",
+		"BaseMaterial3D,ShaderMaterial",
+		"CameraAttributesPractical,CameraAttributesPhysical",
+		"CanvasItemMaterial,ShaderMaterial",
+		"CaretInfo*",
+		"Cubemap,CompressedCubemap,PlaceholderCubemap,TextureCubemapRD",
+		"CurveTexture,CurveXYZTexture",
+		"FogMaterial,ShaderMaterial",
+		"Mesh,-PlaneMesh,-PointMesh,-QuadMesh,-RibbonTrailMesh",
+		"PanoramaSkyMaterial,ProceduralSkyMaterial,PhysicalSkyMaterial,ShaderMaterial",
+		"ParticleProcessMaterial,ShaderMaterial",
+		"PhysicsServer2DExtensionMotionResult*",
+		"PhysicsServer2DExtensionRayResult*",
+		"PhysicsServer2DExtensionShapeRestInfo*",
+		"PhysicsServer2DExtensionShapeResult*",
+		"PhysicsServer3DExtensionMotionResult*",
+		"PhysicsServer3DExtensionRayResult*",
+		"PhysicsServer3DExtensionShapeRestInfo*",
+		"PhysicsServer3DExtensionShapeResult*",
+		"ScriptLanguageExtensionProfilingInfo*",
+		"Texture2D,-AnimatedTexture,-AtlasTexture,-CameraTexture,-CanvasTexture,-MeshTexture,-Texture2DRD,-ViewportTexture",
+		"Texture2D,Texture3D",
+		"Texture2DArray,CompressedTexture2DArray,PlaceholderTexture2DArray,Texture2DArrayRD",
+		"const GDExtensionInitializationFunction*",
+		"const Glyph*",
+		"const uint8_t **",
+		"const uint8_t*",
+		"const void*",
+		"float*",
+		"int32_t*",
+		"uint8_t*",
+		"void*",
+	} {
+		wantUnknown[spelling] = true
+	}
+
 	loaded, err := LoadEmbedded(4, 7)
 	if err != nil {
 		t.Fatal(err)
@@ -531,12 +573,23 @@ func TestOfficialArtifactResolvesOrExplainsEveryRetainedTypeSpelling(t *testing.
 			spellings[argument.Type] = true
 		}
 	}
+	gotUnknown := map[string]string{}
 	for spelling := range spellings {
 		resolved := loaded.Engine.ResolveType(spelling)
-		if resolved.Kind() == semantic.KindUnknown && !strings.Contains(resolved.Reason(), spelling) {
-			t.Errorf("official retained type %q became an unexplained Unknown: %s", spelling, resolved.Reason())
+		if resolved.Kind() == semantic.KindUnknown {
+			gotUnknown[spelling] = resolved.Reason()
 		}
 		assertContainerComponentsResolved(t, spelling, resolved)
+	}
+	for spelling, reason := range gotUnknown {
+		if !wantUnknown[spelling] {
+			t.Errorf("official retained type %q unexpectedly became Unknown: %s", spelling, reason)
+		}
+	}
+	for spelling := range wantUnknown {
+		if _, found := gotUnknown[spelling]; !found {
+			t.Errorf("official retained type %q is no longer Unknown; remove it from the explicit allowlist", spelling)
+		}
 	}
 }
 
