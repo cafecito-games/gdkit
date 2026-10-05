@@ -164,9 +164,12 @@ func TestAssignableTo(t *testing.T) {
 	floatType := Builtin("float")
 	stringType := Builtin("String")
 	base := Class("Base", nil, false)
+	otherBase := Class("OtherBase", nil, false)
 	child := Class("Child", &base, false)
 	grandchild := Class("Grandchild", &child, false)
 	metaBase := Class("Base", nil, true)
+	sharedWithBase := Class("Shared", &base, false)
+	sharedWithOtherBase := Class("Shared", &otherBase, false)
 
 	tests := []struct {
 		name string
@@ -187,6 +190,7 @@ func TestAssignableTo(t *testing.T) {
 		{"class to parent", child, base, AssignabilityYes},
 		{"class to distant ancestor", grandchild, base, AssignabilityYes},
 		{"parent to child", base, child, AssignabilityNo},
+		{"same name with different ancestry", sharedWithBase, sharedWithOtherBase, AssignabilityNo},
 		{"instance to meta", base, metaBase, AssignabilityNo},
 		{"meta to instance", metaBase, base, AssignabilityNo},
 		{"typed array to untyped", Array(&intType), Array(nil), AssignabilityYes},

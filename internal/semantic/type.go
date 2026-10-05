@@ -326,7 +326,7 @@ func assignable(source, target Type) Assignability {
 			return AssignabilityNo
 		}
 		for current := source; ; {
-			if current.node.name == target.node.name {
+			if current.Equal(target) {
 				return AssignabilityYes
 			}
 			if !current.node.hasBase {
