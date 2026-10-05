@@ -436,6 +436,29 @@ func TestExtensionAPIRejectsNonRegularInput(t *testing.T) {
 	assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, path))
 }
 
+func TestExtensionAPIRejectsOversizedInputAsInvalid(t *testing.T) {
+	root := t.TempDir()
+	path := "extension_api.json"
+	file, err := os.Create(filepath.Join(root, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(engineschema.MaxRawJSONBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	config := DefaultConfig()
+	config.ExtensionAPI = &path
+	linter, err := newLinterForProject(root, config, nil)
+	if err == nil || linter != nil {
+		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
+	}
+	assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, path))
+}
+
 func TestEngineSchemaReportJSONIsOptional(t *testing.T) {
 	without, err := json.Marshal(Report{Diagnostics: []Diagnostic{}})
 	if err != nil {

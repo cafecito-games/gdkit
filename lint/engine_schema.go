@@ -3,7 +3,6 @@ package lint
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,10 +133,14 @@ func loadEngineOverride(root, configuredPath string, compiled *compiledConfig) (
 		return nil, failure.WrapPath(failure.ConfigInvalid, failurePath,
 			fmt.Errorf("extension_api %q is not a regular file", configuredPath))
 	}
-	data, readErr := io.ReadAll(file)
+	data, readErr := engineschema.ReadRawJSON(file)
 	closeErr := file.Close()
 	if readErr != nil {
-		return nil, failure.WrapPath(failure.ConfigRead, failurePath,
+		kind := failure.ConfigRead
+		if errors.Is(readErr, engineschema.ErrRawInvalid) {
+			kind = failure.ConfigInvalid
+		}
+		return nil, failure.WrapPath(kind, failurePath,
 			fmt.Errorf("read extension_api %q: %w", configuredPath, readErr))
 	}
 	if closeErr != nil {

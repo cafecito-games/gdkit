@@ -197,9 +197,12 @@ the default branch.
   deterministic artifact generator, validator, and lazy exact-minor registry.
   Built-in support starts at `4.7`, using the official 4.7.2 artifact; there is
   no nearest/newest fallback and no embedded 4.0–4.6 history. Raw overrides are
-  wholesale and numeric-version-matched. Every retained row is validated before
-  the immutable `semantic.Engine` is published, and generated records/digests
-  contain semantic identity and provenance but no paths or timestamps.
+  wholesale and numeric-version-matched. Reads are capped at 64 MiB, container
+  spellings at 32 levels, and each inheritance chain at 256 in-schema classes;
+  the inheritance limit does not cap the schema's total class count. Every
+  retained row is validated before the immutable `semantic.Engine` is
+  published, and generated records/digests contain semantic identity and
+  provenance but no paths or timestamps.
 - `internal/semanticsource/` — the adapter from `project.Snapshot` to the
   semantic analyzer's source boundary. It exposes the full `Snapshot.Paths`
   universe rather than the filtered `Selected` action subset, never reparses

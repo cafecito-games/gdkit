@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -20,6 +21,26 @@ var ErrRawParse = errors.New("malformed extension API JSON")
 // ErrRawInvalid reports a well-formed input that cannot publish a complete
 // engine schema.
 var ErrRawInvalid = errors.New("invalid extension API schema")
+
+// MaxRawJSONBytes bounds project-controlled extension_api.json input before
+// decoding. The official 4.7.2 dump is 6,965,057 bytes; 64 MiB leaves generous
+// headroom for future supported minors without permitting unbounded reads.
+const MaxRawJSONBytes = 64 << 20
+
+// ReadRawJSON reads one raw dump with the same ceiling enforced by LoadRaw and
+// GenerateArtifact. Callers use this before retaining project or maintainer
+// input in memory; the +1 probe distinguishes an exact-boundary file from an
+// oversized one without consuming the rest of the stream.
+func ReadRawJSON(reader io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, MaxRawJSONBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxRawJSONBytes {
+		return nil, fmt.Errorf("%w: extension API JSON exceeds %d bytes", ErrRawInvalid, MaxRawJSONBytes)
+	}
+	return data, nil
+}
 
 type rawDocument struct {
 	Header           *rawHeader        `json:"header"`
@@ -155,6 +176,9 @@ func distillRaw(data []byte, source SourceKind, sourceCommit string) (document, 
 	}
 	if source == SourceOverride && sourceCommit != "" {
 		return document{}, fmt.Errorf("%w: override source_commit must be empty", ErrRawInvalid)
+	}
+	if len(data) > MaxRawJSONBytes {
+		return document{}, fmt.Errorf("%w: extension API JSON exceeds %d bytes", ErrRawInvalid, MaxRawJSONBytes)
 	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || !json.Valid(trimmed) {

@@ -379,8 +379,12 @@ through a symlink outside it. It must be written canonically, without `.` or
 `..` segments, doubled slashes, or a trailing slash, so validation and the
 confined open always address the same file. An unreadable dump is
 `config.read`, malformed JSON is `config.parse`, and an invalid schema or
-numeric mismatch is `config.invalid`. With `--format json`, those failures are
-written only to stderr and stdout remains empty.
+numeric mismatch is `config.invalid`. The dump must be a regular file no larger
+than 64 MiB. A retained type may nest at most 32 typed Array/Dictionary
+containers, and one inheritance chain may contain at most 256 in-schema
+classes (the total class count is not limited to 256). Those limits also fail
+as `config.invalid`. With `--format json`, failures are written only to stderr
+and stdout remains empty.
 
 An integrity or provenance failure in gdkit's own embedded artifact is instead
 `analysis.failed`; it is not mislabeled as a project configuration error.

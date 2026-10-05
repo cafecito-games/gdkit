@@ -263,6 +263,103 @@ func TestEngineResolvesEveryGodotVariantTypedArrayHint(t *testing.T) {
 	}
 }
 
+func TestEngineTypeNestingLimitCoversEveryConsumer(t *testing.T) {
+	atLimit := strings.Repeat("typedarray::", EngineTypeNestingLimit) + "int"
+	tooDeep := "typedarray::" + atLimit
+	tests := []struct {
+		name string
+		add  func(*EngineBuilder, string) error
+	}{
+		{name: "method return", add: func(b *EngineBuilder, spelling string) error {
+			return b.AddMethod("Object", "f", spelling, nil, false, false)
+		}},
+		{name: "method argument", add: func(b *EngineBuilder, spelling string) error {
+			return b.AddMethod("Object", "f", "int", []EngineArgumentSpec{{Type: spelling}}, false, false)
+		}},
+		{name: "property", add: func(b *EngineBuilder, spelling string) error {
+			return b.AddProperty("Object", "value", spelling)
+		}},
+		{name: "operator return", add: func(b *EngineBuilder, spelling string) error {
+			return b.AddOperator("int", "+", "int", spelling)
+		}},
+		{name: "singleton", add: func(b *EngineBuilder, spelling string) error {
+			return b.AddSingleton("Engine", spelling)
+		}},
+		{name: "utility return", add: func(b *EngineBuilder, spelling string) error {
+			return b.AddUtility("f", spelling, nil, false)
+		}},
+		{name: "utility argument", add: func(b *EngineBuilder, spelling string) error {
+			return b.AddUtility("f", "int", []EngineArgumentSpec{{Type: spelling}}, false)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.add(NewEngineBuilder(), atLimit); err != nil {
+				t.Fatalf("at limit: %v", err)
+			}
+			if err := test.add(NewEngineBuilder(), tooDeep); err == nil || !strings.Contains(err.Error(), "nesting exceeds") {
+				t.Fatalf("over limit: %v", err)
+			}
+		})
+	}
+}
+
+func TestEngineTypeNestingLimitCoversEveryRecursiveContainerBranch(t *testing.T) {
+	withinDictionaryBranch := strings.Repeat("typedarray::", EngineTypeNestingLimit-1) + "int"
+	overDictionaryBranch := "typedarray::" + withinDictionaryBranch
+	tests := map[string]struct{ atLimit, overLimit string }{
+		"array": {
+			atLimit:   strings.Repeat("typedarray::", EngineTypeNestingLimit) + "int",
+			overLimit: strings.Repeat("typedarray::", EngineTypeNestingLimit+1) + "int",
+		},
+		"dictionary key": {
+			atLimit:   "typeddictionary::" + withinDictionaryBranch + ";int",
+			overLimit: "typeddictionary::" + overDictionaryBranch + ";int",
+		},
+		"dictionary value": {
+			atLimit:   "typeddictionary::int;" + withinDictionaryBranch,
+			overLimit: "typeddictionary::int;" + overDictionaryBranch,
+		},
+		"numeric array hint": {
+			atLimit:   "typedarray::24/17:" + strings.Repeat("typedarray::", EngineTypeNestingLimit-1) + "Object",
+			overLimit: "typedarray::24/17:" + strings.Repeat("typedarray::", EngineTypeNestingLimit) + "Object",
+		},
+	}
+	for name, spellings := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := engineTypeSpelling("test", spellings.atLimit); err != nil {
+				t.Fatalf("at limit: %v", err)
+			}
+			if err := engineTypeSpelling("test", spellings.overLimit); err == nil || !strings.Contains(err.Error(), "nesting exceeds") {
+				t.Fatalf("engineTypeSpelling() = %v", err)
+			}
+		})
+	}
+}
+
+func TestEngineTypeResolutionIsBoundedWhenCalledDirectly(t *testing.T) {
+	builder := NewEngineBuilder()
+	if err := builder.AddBuiltin("Array"); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolved := engine.ResolveType(strings.Repeat("typedarray::", EngineTypeNestingLimit+1) + "int")
+	for depth := 0; depth < EngineTypeNestingLimit; depth++ {
+		var ok bool
+		resolved, ok = resolved.Element()
+		if !ok {
+			t.Fatalf("container depth %d is not an array", depth)
+		}
+	}
+	if resolved.Kind() != KindUnknown || !strings.Contains(resolved.Reason(), "nesting exceeds") {
+		t.Fatalf("bounded leaf = kind %v reason %q", resolved.Kind(), resolved.Reason())
+	}
+}
+
 func TestEngineRejectsEveryDuplicateIdentity(t *testing.T) {
 	tests := []struct {
 		name string
@@ -341,6 +438,56 @@ func TestEngineRejectsInheritanceCyclesBeforePublication(t *testing.T) {
 	}
 	engine, err := builder.Build()
 	if err == nil || engine != nil || !strings.Contains(err.Error(), "inheritance cycle") {
+		t.Fatalf("Build() = %+v, %v", engine, err)
+	}
+}
+
+func TestEngineInheritanceDepthLimitBoundary(t *testing.T) {
+	buildChain := func(t *testing.T, count int) (*Engine, error) {
+		t.Helper()
+		builder := NewEngineBuilder()
+		parent := ""
+		for index := 0; index < count; index++ {
+			name := fmt.Sprintf("Class%04d", index)
+			if err := builder.AddClass(name, parent); err != nil {
+				t.Fatal(err)
+			}
+			parent = name
+		}
+		return builder.Build()
+	}
+
+	engine, err := buildChain(t, EngineInheritanceDepthLimit)
+	if err != nil || engine == nil {
+		t.Fatalf("at limit = %+v, %v", engine, err)
+	}
+	resolved := engine.Class(fmt.Sprintf("Class%04d", EngineInheritanceDepthLimit-1))
+	for depth := 1; depth < EngineInheritanceDepthLimit; depth++ {
+		var ok bool
+		resolved, ok = resolved.Base()
+		if !ok {
+			t.Fatalf("class chain ended at depth %d", depth)
+		}
+	}
+	if _, ok := resolved.Base(); ok {
+		t.Fatal("class chain exceeded the configured boundary")
+	}
+
+	engine, err = buildChain(t, EngineInheritanceDepthLimit+1)
+	if err == nil || engine != nil || !strings.Contains(err.Error(), "inheritance depth exceeds") {
+		t.Fatalf("over limit = %+v, %v", engine, err)
+	}
+}
+
+func TestEngineInheritanceDepthDoesNotLimitTotalClasses(t *testing.T) {
+	builder := NewEngineBuilder()
+	for index := 0; index < EngineInheritanceDepthLimit+1; index++ {
+		if err := builder.AddClass(fmt.Sprintf("Root%04d", index), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	engine, err := builder.Build()
+	if err != nil || engine == nil {
 		t.Fatalf("Build() = %+v, %v", engine, err)
 	}
 }

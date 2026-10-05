@@ -27,6 +27,17 @@ const (
 	godotPropertyHintNodeType     = 34
 )
 
+// EngineTypeNestingLimit is the maximum number of typed Array/Dictionary
+// containers accepted in one engine type spelling. Official 4.7.2 spellings
+// are shallow; the larger ceiling leaves ample room for future producers while
+// bounding recursive resolution of project-controlled overrides.
+const EngineTypeNestingLimit = 32
+
+// EngineInheritanceDepthLimit is the maximum number of in-schema classes in
+// one inheritance chain. It does not limit the total class count in a schema.
+// Official 4.7.2 chains are far shallower than this defensive ceiling.
+const EngineInheritanceDepthLimit = 256
+
 // Engine is an immutable index of the classes and callable surface exposed by
 // one Godot engine schema. Its maps and slices are private so concurrent rule
 // execution can only observe the complete index published by Build.
@@ -394,10 +405,9 @@ func (b *EngineBuilder) Build() (*Engine, error) {
 	}
 
 	resolver := engineTypeResolver{
-		builtins:  cloneBoolMap(b.builtins),
-		parents:   cloneStringMap(b.classes),
-		classes:   make(map[string]Type, len(b.classes)),
-		resolving: make(map[string]bool, len(b.classes)),
+		builtins: cloneBoolMap(b.builtins),
+		parents:  cloneStringMap(b.classes),
+		classes:  make(map[string]Type, len(b.classes)),
 	}
 	for name := range b.classes {
 		resolver.class(name)
@@ -433,42 +443,45 @@ func (b *EngineBuilder) Build() (*Engine, error) {
 }
 
 func validateEngineInheritance(parents map[string]string) error {
-	const (
-		inheritanceVisiting = 1
-		inheritanceDone     = 2
-	)
-	state := make(map[string]uint8, len(parents))
+	depths := make(map[string]int, len(parents))
 	names := make([]string, 0, len(parents))
 	for name := range parents {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	var visit func(string) error
-	visit = func(name string) error {
-		switch state[name] {
-		case inheritanceVisiting:
-			return fmt.Errorf("engine class inheritance cycle at %q", name)
-		case inheritanceDone:
-			return nil
+	for _, start := range names {
+		if _, done := depths[start]; done {
+			continue
 		}
-		parent, exists := parents[name]
-		if !exists {
-			return nil
-		}
-		state[name] = inheritanceVisiting
-		if parent != "" {
-			if _, internal := parents[parent]; internal {
-				if err := visit(parent); err != nil {
-					return err
-				}
+		path := []string{}
+		positions := make(map[string]bool)
+		current := start
+		baseDepth := 0
+		for {
+			if depth, done := depths[current]; done {
+				baseDepth = depth
+				break
 			}
+			if positions[current] {
+				return fmt.Errorf("engine class inheritance cycle at %q", current)
+			}
+			positions[current] = true
+			path = append(path, current)
+			parent := parents[current]
+			if parent == "" {
+				break
+			}
+			if _, internal := parents[parent]; !internal {
+				break
+			}
+			current = parent
 		}
-		state[name] = inheritanceDone
-		return nil
-	}
-	for _, name := range names {
-		if err := visit(name); err != nil {
-			return err
+		if baseDepth+len(path) > EngineInheritanceDepthLimit {
+			return fmt.Errorf("engine class inheritance depth exceeds %d at %q", EngineInheritanceDepthLimit, start)
+		}
+		for index := len(path) - 1; index >= 0; index-- {
+			baseDepth++
+			depths[path[index]] = baseDepth
 		}
 	}
 	return nil
@@ -494,36 +507,54 @@ func resolveEngineMethod(spec engineMethodSpec, builtins map[string]bool, classe
 }
 
 type engineTypeResolver struct {
-	builtins  map[string]bool
-	parents   map[string]string
-	classes   map[string]Type
-	resolving map[string]bool
+	builtins map[string]bool
+	parents  map[string]string
+	classes  map[string]Type
 }
 
 func (r *engineTypeResolver) class(name string) Type {
 	if resolved, ok := r.classes[name]; ok {
 		return resolved
 	}
-	if r.resolving[name] {
-		return Unknown(fmt.Sprintf("engine class inheritance cycle at %q", name))
-	}
-	parent, ok := r.parents[name]
-	if !ok {
-		return Unknown(fmt.Sprintf("engine class %q is absent from schema", name))
-	}
-	r.resolving[name] = true
+	path := []string{}
+	seen := make(map[string]bool)
+	current := name
 	var base *Type
-	if parent != "" {
-		resolved := r.class(parent)
+	for {
+		if resolved, ok := r.classes[current]; ok {
+			base = &resolved
+			break
+		}
+		if seen[current] {
+			return Unknown(fmt.Sprintf("engine class inheritance cycle at %q", current))
+		}
+		seen[current] = true
+		parent, ok := r.parents[current]
+		if !ok {
+			missing := Unknown(fmt.Sprintf("engine class %q is absent from schema", current))
+			base = &missing
+			break
+		}
+		path = append(path, current)
+		if parent == "" {
+			base = nil
+			break
+		}
+		current = parent
+	}
+	for index := len(path) - 1; index >= 0; index-- {
+		resolved := Class(path[index], base, false)
+		r.classes[path[index]] = resolved
 		base = &resolved
 	}
-	resolved := Class(name, base, false)
-	delete(r.resolving, name)
-	r.classes[name] = resolved
-	return resolved
+	return r.classes[name]
 }
 
 func resolveEngineType(spelling string, builtins map[string]bool, classes map[string]Type) Type {
+	return resolveEngineTypeAtDepth(spelling, builtins, classes, 0)
+}
+
+func resolveEngineTypeAtDepth(spelling string, builtins map[string]bool, classes map[string]Type, depth int) Type {
 	switch spelling {
 	case "Variant":
 		return Variant()
@@ -537,6 +568,9 @@ func resolveEngineType(spelling string, builtins map[string]bool, classes map[st
 		return resolveEngineEnum(spelling, name, builtins, classes)
 	}
 	if element, ok := strings.CutPrefix(spelling, "typedarray::"); ok {
+		if depth >= EngineTypeNestingLimit {
+			return Unknown(fmt.Sprintf("engine type nesting exceeds %d levels", EngineTypeNestingLimit))
+		}
 		if !builtins["Array"] {
 			return Unknown(`engine type "Array" is absent from schema`)
 		}
@@ -545,11 +579,14 @@ func resolveEngineType(spelling string, builtins map[string]bool, classes map[st
 		}
 		resolved := Unknown(fmt.Sprintf("typed array element is absent from engine type %q", spelling))
 		if element != "" {
-			resolved = resolveEngineType(element, builtins, classes)
+			resolved = resolveEngineTypeAtDepth(element, builtins, classes, depth+1)
 		}
 		return Array(&resolved)
 	}
 	if components, ok := strings.CutPrefix(spelling, "typeddictionary::"); ok {
+		if depth >= EngineTypeNestingLimit {
+			return Unknown(fmt.Sprintf("engine type nesting exceeds %d levels", EngineTypeNestingLimit))
+		}
 		if !builtins["Dictionary"] {
 			return Unknown(`engine type "Dictionary" is absent from schema`)
 		}
@@ -557,8 +594,8 @@ func resolveEngineType(spelling string, builtins map[string]bool, classes map[st
 		if !found || keyName == "" || valueName == "" || strings.Contains(valueName, ";") {
 			return Unknown(fmt.Sprintf("engine dictionary type %q is malformed", spelling))
 		}
-		key := resolveEngineType(keyName, builtins, classes)
-		value := resolveEngineType(valueName, builtins, classes)
+		key := resolveEngineTypeAtDepth(keyName, builtins, classes, depth+1)
+		value := resolveEngineTypeAtDepth(valueName, builtins, classes, depth+1)
 		return Dictionary(&key, &value)
 	}
 	if resolved, ok := classes[spelling]; ok {
@@ -641,7 +678,33 @@ func engineTypeSpelling(kind, spelling string) error {
 	if spelling == "" || strings.TrimSpace(spelling) != spelling {
 		return fmt.Errorf("engine %s type %q is malformed", kind, spelling)
 	}
+	if engineTypeNestingExceeds(spelling, 0) {
+		return fmt.Errorf("engine %s type nesting exceeds %d levels", kind, EngineTypeNestingLimit)
+	}
 	return nil
+}
+
+func engineTypeNestingExceeds(spelling string, depth int) bool {
+	if element, ok := strings.CutPrefix(spelling, "typedarray::"); ok {
+		if depth >= EngineTypeNestingLimit {
+			return true
+		}
+		if decoded, found := decodeGodotTypedArrayElement(element); found {
+			element = decoded
+		}
+		return element != "" && engineTypeNestingExceeds(element, depth+1)
+	}
+	if components, ok := strings.CutPrefix(spelling, "typeddictionary::"); ok {
+		if depth >= EngineTypeNestingLimit {
+			return true
+		}
+		key, value, found := strings.Cut(components, ";")
+		if !found || key == "" || value == "" || strings.Contains(value, ";") {
+			return false
+		}
+		return engineTypeNestingExceeds(key, depth+1) || engineTypeNestingExceeds(value, depth+1)
+	}
+	return false
 }
 
 func hasClass(classes map[string]string, name string) bool {

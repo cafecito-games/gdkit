@@ -22,7 +22,7 @@ func main() {
 		fatal("-input, -output, -source-commit, and -raw-sha256 are required")
 	}
 
-	raw, err := os.ReadFile(*input)
+	raw, err := readRawInput(*input)
 	if err != nil {
 		fatal("read input: %v", err)
 	}
@@ -43,6 +43,22 @@ func main() {
 		fatal("write artifact: %v", err)
 	}
 	fmt.Println(summary)
+}
+
+func readRawInput(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	data, readErr := engineschema.ReadRawJSON(file)
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return data, nil
 }
 
 func summarizeArtifact(rawSHA256 string, artifact []byte) (string, error) {

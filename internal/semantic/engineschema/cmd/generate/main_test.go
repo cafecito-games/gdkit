@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -9,7 +11,7 @@ import (
 )
 
 func TestArtifactSummaryReportsEveryPinnedIdentity(t *testing.T) {
-	raw, err := os.ReadFile("../../testdata/extension_api_4_7_2_sample.json")
+	raw, err := readRawInput("../../testdata/extension_api_4_7_2_sample.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,5 +27,23 @@ func TestArtifactSummaryReportsEveryPinnedIdentity(t *testing.T) {
 		if !strings.Contains(summary, field) {
 			t.Errorf("summary %q is missing %q", summary, field)
 		}
+	}
+}
+
+func TestReadRawInputRejectsOversizedDump(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "extension_api.json")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(engineschema.MaxRawJSONBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := readRawInput(path); err == nil || raw != nil || !errors.Is(err, engineschema.ErrRawInvalid) {
+		t.Fatalf("readRawInput() = %d bytes, %v", len(raw), err)
 	}
 }

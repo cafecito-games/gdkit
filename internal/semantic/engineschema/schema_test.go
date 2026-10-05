@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sort"
@@ -119,6 +120,14 @@ func TestLoadRawAcceptsOfficialGodot472DumpByteForByte(t *testing.T) {
 	if len(raw) != officialRawBytes || digestBytes(raw) != officialRawSHA256 {
 		t.Fatalf("official raw fixture = %d bytes, SHA-256 %s", len(raw), digestBytes(raw))
 	}
+	var producer rawDocument
+	if err := json.Unmarshal(raw, &producer); err != nil {
+		t.Fatal(err)
+	}
+	if len(producer.Classes) <= semantic.EngineInheritanceDepthLimit {
+		t.Fatalf("official class count = %d, want proof that the %d limit applies only to chain depth",
+			len(producer.Classes), semantic.EngineInheritanceDepthLimit)
+	}
 	loaded, err := LoadRaw(raw, SourceOverride, "")
 	if err != nil {
 		t.Fatal(err)
@@ -128,6 +137,102 @@ func TestLoadRawAcceptsOfficialGodot472DumpByteForByte(t *testing.T) {
 		t.Fatalf("official raw provenance = %+v", loaded.Provenance)
 	}
 	assertCoreEngineFacts(t, loaded.Engine)
+}
+
+func TestLoadRawSizeLimitBoundary(t *testing.T) {
+	fixture := readRawFixture(t)
+	atLimit := make([]byte, MaxRawJSONBytes)
+	copy(atLimit, fixture)
+	for index := len(fixture); index < len(atLimit); index++ {
+		atLimit[index] = ' '
+	}
+	readAtLimit, err := ReadRawJSON(bytes.NewReader(atLimit))
+	if err != nil || len(readAtLimit) != MaxRawJSONBytes {
+		t.Fatalf("read at limit = %d bytes, %v", len(readAtLimit), err)
+	}
+	if loaded, err := LoadRaw(readAtLimit, SourceOverride, ""); err != nil || loaded == nil {
+		t.Fatalf("at limit = %+v, %v", loaded, err)
+	}
+
+	reader := &countingRawReader{remaining: MaxRawJSONBytes + 1024}
+	if data, err := ReadRawJSON(reader); err == nil || data != nil || !errors.Is(err, ErrRawInvalid) ||
+		reader.read != MaxRawJSONBytes+1 {
+		t.Fatalf("bounded read = %d bytes consumed, %d bytes returned, %v", reader.read, len(data), err)
+	}
+
+	aboveLimit := make([]byte, MaxRawJSONBytes+1)
+	if loaded, err := LoadRaw(aboveLimit, SourceOverride, ""); err == nil || loaded != nil ||
+		!errors.Is(err, ErrRawInvalid) || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("above limit = %+v, %v", loaded, err)
+	}
+}
+
+type countingRawReader struct {
+	remaining int64
+	read      int64
+}
+
+func (r *countingRawReader) Read(buffer []byte) (int, error) {
+	if r.remaining == 0 {
+		return 0, io.EOF
+	}
+	count := int64(len(buffer))
+	if count > r.remaining {
+		count = r.remaining
+	}
+	for index := range buffer[:count] {
+		buffer[index] = ' '
+	}
+	r.remaining -= count
+	r.read += count
+	return int(count), nil
+}
+
+func TestLoadRawRejectsTypeNestingBeforePublication(t *testing.T) {
+	for _, depth := range []int{semantic.EngineTypeNestingLimit, semantic.EngineTypeNestingLimit + 1} {
+		t.Run(fmt.Sprintf("depth-%d", depth), func(t *testing.T) {
+			data := mutateRawFixture(t, mutateNestedNamedRow("classes", "Node2D", "properties", "position", func(row map[string]any) {
+				row["type"] = strings.Repeat("typedarray::", depth) + "Object"
+			}))
+			loaded, err := LoadRaw(data, SourceOverride, "")
+			if depth == semantic.EngineTypeNestingLimit {
+				if err != nil || loaded == nil {
+					t.Fatalf("at limit = %+v, %v", loaded, err)
+				}
+				return
+			}
+			if err == nil || loaded != nil || !errors.Is(err, ErrRawInvalid) || !strings.Contains(err.Error(), "nesting exceeds") {
+				t.Fatalf("over limit = %+v, %v", loaded, err)
+			}
+		})
+	}
+}
+
+func TestLoadRawRejectsInheritanceDepthBeforePublication(t *testing.T) {
+	for _, count := range []int{semantic.EngineInheritanceDepthLimit, semantic.EngineInheritanceDepthLimit + 1} {
+		t.Run(fmt.Sprintf("classes-%d", count), func(t *testing.T) {
+			data := mutateRawFixture(t, func(document map[string]any) {
+				classes := make([]any, count)
+				parent := ""
+				for index := range count {
+					name := fmt.Sprintf("DepthClass%04d", index)
+					classes[index] = map[string]any{"name": name, "inherits": parent}
+					parent = name
+				}
+				document["classes"] = classes
+			})
+			loaded, err := LoadRaw(data, SourceOverride, "")
+			if count == semantic.EngineInheritanceDepthLimit {
+				if err != nil || loaded == nil {
+					t.Fatalf("at limit = %+v, %v", loaded, err)
+				}
+				return
+			}
+			if err == nil || loaded != nil || !errors.Is(err, ErrRawInvalid) || !strings.Contains(err.Error(), "inheritance depth exceeds") {
+				t.Fatalf("over limit = %+v, %v", loaded, err)
+			}
+		})
+	}
 }
 
 func TestOfficialGodot472RegeneratesCommittedArtifactByteForByte(t *testing.T) {
