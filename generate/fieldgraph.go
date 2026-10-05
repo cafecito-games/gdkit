@@ -27,10 +27,15 @@ func (i *Index) FieldTypeTargets(id string) []string {
 
 // fieldTypeTarget resolves a field's declared type to a project class.
 //
-// An element type inside Array[T] or Dictionary[K, V] is not followed. The
-// generated comparison hands a container to "==", which Godot 4 evaluates by
-// value, and so never recurses into its elements; following the element type
-// here would refuse cycles that the emitted code cannot reach.
+// An element type inside Array[T] or Dictionary[K, V] is not followed, although
+// the generated comparison now does recurse into a container. Following it
+// would make a self-referential tree — "var children: Array[Branch]" inside
+// Branch — a cycle, and refuse the single most common shape deep_equals exists
+// for, even though tree-shaped data terminates perfectly well. The check is a
+// type-level approximation and is already conservative in the other direction,
+// refusing a direct "var parent: Branch" field even when the data is a DAG. The
+// cost is recorded in the README: a genuinely cyclic graph reached through a
+// container exhausts the stack rather than being refused here.
 func (i *Index) fieldTypeTarget(field Field) (string, bool) {
 	if field.Type == "" {
 		return "", false
@@ -52,9 +57,10 @@ func (i *Index) fieldTypeTarget(field Field) (string, bool) {
 // answer; the alternative is threading a visited set through a generated helper
 // method, which is heavy machinery in code people read.
 //
-// A field with no declared type, an explicit Variant, or a ":="-inferred type
-// is invisible here, so an untyped field in a cycle still recurses until the
-// stack is exhausted. That gap is documented rather than hidden.
+// A field with no declared type, an explicit Variant, a ":="-inferred type, or
+// an element type inside a container is invisible here, so a cycle through one
+// still recurses until the stack is exhausted. That gap is documented rather
+// than hidden.
 func (i *Index) FieldTypeCycle(id string) bool {
 	seen := map[string]bool{}
 	queue := i.FieldTypeTargets(id)

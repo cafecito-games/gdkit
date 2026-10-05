@@ -17,47 +17,10 @@ func TestDeepEqualsRecursesIntoAProjectClassField(t *testing.T) {
 	if !strings.HasPrefix(got, "func deep_equals(p_other: Variant) -> bool:\n\tif self == p_other:\n\t\treturn true\n") {
 		t.Errorf("no identity short-circuit:\n%s", got)
 	}
-	// A String is not a project class, so it compares with ==.
-	if !strings.Contains(got, "\tif self.name != p_other.name:\n\t\treturn false\n") {
-		t.Errorf("a non-project field did not use ==:\n%s", got)
-	}
-	// is Object comes before has_method, which is declared on Object.
-	if !strings.Contains(got, "if self.position is Object and self.position.has_method(\"deep_equals\"):") {
-		t.Errorf("no guarded dispatch for the object field:\n%s", got)
-	}
-	// A field type with only a hand-written equals is used, not refused.
-	if !strings.Contains(got, "elif self.position is Object and self.position.has_method(\"equals\"):") {
-		t.Errorf("no fallback to a hand-written equals:\n%s", got)
-	}
-	// null.has_method(...) is a runtime error. Inside the inequality block at
-	// most one side can be null, so either being null settles it.
-	if !strings.Contains(got, "if self.position == null or p_other.position == null:") {
-		t.Errorf("the dispatch is not null-aware:\n%s", got)
-	}
-}
-
-// An unknown type could be anything, so it dispatches rather than assuming.
-func TestDeepEqualsDispatchesOnFieldsWithNoStaticType(t *testing.T) {
-	got := emitOf(t, deepEqualsGenerator{},
-		"class_name Bag\nextends RefCounted\n\nvar loose\nvar anything: Variant\nvar inferred := 0\n")
-	for _, name := range []string{"loose", "anything", "inferred"} {
-		if !strings.Contains(got, "self."+name+" is Object and self."+name+".has_method(\"deep_equals\")") {
-			t.Errorf("%s did not dispatch:\n%s", name, got)
-		}
-	}
-}
-
-// A builtin and an engine class both compare with ==: a builtin by value, and
-// an engine object has no value equality to recurse into.
-func TestDeepEqualsDoesNotDispatchOnBuiltinOrEngineTypes(t *testing.T) {
-	got := emitOf(t, deepEqualsGenerator{},
-		"class_name Thing\nextends RefCounted\n\nvar at: Vector2\nvar node: Node\nvar many: Array\n")
-	for _, name := range []string{"at", "node", "many"} {
-		if strings.Contains(got, "self."+name+".has_method") {
-			t.Errorf("%s dispatched when == would do:\n%s", name, got)
-		}
-		if !strings.Contains(got, "\tif self."+name+" != p_other."+name+":\n\t\treturn false\n") {
-			t.Errorf("%s did not use ==:\n%s", name, got)
+	for _, name := range []string{"name", "position"} {
+		want := "\tif not GDKitHelpers.deep_equals(self." + name + ", p_other." + name + "):\n\t\treturn false\n"
+		if !strings.Contains(got, want) {
+			t.Errorf("%s did not go through the helper:\n%s", name, got)
 		}
 	}
 }
@@ -77,6 +40,7 @@ func TestDeepEqualsComposesWithTheParentProvider(t *testing.T) {
 // the class is refused rather than the generator growing a visited set.
 func TestACyclicFieldTypeGraphIsRefused(t *testing.T) {
 	report := checkProject(t, DefaultConfig(), map[string]string{
+		"gdkit_helpers.gd": helpersStub,
 		"node.gd": "class_name TreeNode\nextends RefCounted\n\n# gdkit:generate = deep_equals\n" +
 			"var parent: TreeNode\nvar label: String\n",
 	})
@@ -84,24 +48,29 @@ func TestACyclicFieldTypeGraphIsRefused(t *testing.T) {
 	if !strings.Contains(diagnostic.Message, "cycle") {
 		t.Errorf("message = %q, want the cycle named", diagnostic.Message)
 	}
-	if report.HasChanges() {
-		t.Error("a cyclic class produced a candidate")
+	for _, result := range report.Results {
+		if result.Path == "node.gd" && result.Changed {
+			t.Error("a cyclic class produced a candidate")
+		}
 	}
 }
 
 func TestATwoClassFieldCycleIsRefused(t *testing.T) {
 	report := checkProject(t, DefaultConfig(), map[string]string{
-		"a.gd": "class_name Alpha\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar beta: Beta\n",
-		"b.gd": "class_name Beta\nextends RefCounted\n\nvar alpha: Alpha\n",
+		"gdkit_helpers.gd": helpersStub,
+		"a.gd":             "class_name Alpha\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar beta: Beta\n",
+		"b.gd":             "class_name Beta\nextends RefCounted\n\nvar alpha: Alpha\n",
 	})
 	assertDiagnostic(t, report, ruleUnsupported)
 }
 
-// An Array[T] is handed to "==", which Godot 4 evaluates by value, so the
-// emitted code never recurses into its elements and a container must not make
-// a graph look cyclic.
+// A container of the class's own type is not a cycle. The generated code does
+// now recurse into a container, but tree-shaped data terminates through the
+// identity check, and refusing this shape would refuse most of what
+// deep_equals is for.
 func TestAContainerOfTheSameClassIsNotACycle(t *testing.T) {
 	report := checkProject(t, DefaultConfig(), map[string]string{
+		"gdkit_helpers.gd": helpersStub,
 		"a.gd": "class_name Branch\nextends RefCounted\n\n# gdkit:generate = deep_equals\n" +
 			"var children: Array[Branch]\nvar label: String\n",
 	})
@@ -133,5 +102,58 @@ func TestDeepEqualsIsARegisteredGeneratorName(t *testing.T) {
 		if got[index] != want[index] {
 			t.Errorf("order = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestDeepEqualsRoutesEveryFieldThroughTheHelper(t *testing.T) {
+	contents := applyOnce(t, DefaultConfig(), map[string]string{
+		"gdkit_helpers.gd": helpersStub,
+		"other.gd":         "class_name Other\nextends RefCounted\n",
+		"a.gd": "class_name Thing\nextends RefCounted\n\n# gdkit:generate = deep_equals\n" +
+			"var origin: Other\nvar children: Array[Thing]\nvar table: Dictionary[String, Thing]\n" +
+			"var loose = []\nvar count: int\n",
+	})
+	text := contents["a.gd"]
+	for _, field := range []string{"origin", "children", "table", "loose", "count"} {
+		want := "if not GDKitHelpers.deep_equals(self." + field + ", p_other." + field + "):"
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q\ngot:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "has_method") {
+		t.Error("the per-class method still dispatches inline; that belongs to the helper now")
+	}
+	for _, guard := range []string{
+		"if self == p_other:",
+		"if not p_other is Object:",
+		"if p_other.get_script() != get_script():",
+	} {
+		if !strings.Contains(text, guard) {
+			t.Errorf("guard %q was lost", guard)
+		}
+	}
+}
+
+func TestDeepEqualsUsesTheHelpersClassName(t *testing.T) {
+	config := DefaultConfig()
+	config.HelpersPath = "util.gd"
+	contents := applyOnce(t, config, map[string]string{
+		"util.gd": "class_name Util\nextends RefCounted\n",
+		"a.gd": "class_name Thing\nextends RefCounted\n\n# gdkit:generate = deep_equals\n" +
+			"var x: int\n",
+	})
+	if !strings.Contains(contents["a.gd"], "Util.deep_equals(self.x, p_other.x)") {
+		t.Errorf("the call did not use the declared class_name\ngot:\n%s", contents["a.gd"])
+	}
+}
+
+func TestDeepEqualsComposesWithAnAncestorThroughTheHelper(t *testing.T) {
+	contents := applyOnce(t, DefaultConfig(), map[string]string{
+		"gdkit_helpers.gd": helpersStub,
+		"base.gd":          "class_name Base\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar a: int\n",
+		"child.gd":         "class_name Child\nextends Base\n\n# gdkit:generate = deep_equals\nvar b: int\n",
+	})
+	if !strings.Contains(contents["child.gd"], "if not super.deep_equals(p_other):") {
+		t.Errorf("the super composition was lost\ngot:\n%s", contents["child.gd"])
 	}
 }

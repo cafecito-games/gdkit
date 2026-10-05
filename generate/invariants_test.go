@@ -51,11 +51,13 @@ var fixtures = map[string]map[string]string{
 			"class Nested:\n\tvar r: int\n",
 	},
 	"deep_equals over a value-object field": {
-		"coordinate.gd": "class_name Coordinate\nextends RefCounted\n\n# gdkit:generate = equals, deep_equals\nvar q: int\nvar r: int\n",
-		"unit.gd":       "class_name Unit\nextends RefCounted\n\n# gdkit:generate = to_string, deep_equals\nvar name: String\nvar position: Coordinate\n",
+		"gdkit_helpers.gd": helpersStub,
+		"coordinate.gd":    "class_name Coordinate\nextends RefCounted\n\n# gdkit:generate = equals, deep_equals\nvar q: int\nvar r: int\n",
+		"unit.gd":          "class_name Unit\nextends RefCounted\n\n# gdkit:generate = to_string, deep_equals\nvar name: String\nvar position: Coordinate\n",
 	},
 	"deep_equals with an untyped field": {
-		"a.gd": "class_name Bag\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar loose\nvar tagged: String\n",
+		"gdkit_helpers.gd": helpersStub,
+		"a.gd":             "class_name Bag\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar loose\nvar tagged: String\n",
 	},
 	"property with accessors": {
 		"a.gd": "class_name Hex\nextends RefCounted\n\n# gdkit:generate = to_string\n" +
