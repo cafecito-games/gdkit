@@ -16,11 +16,12 @@ func writeGeneratedDeepEquals(t *testing.T, fieldCount int) string {
 	writeCLIFile(t, root, "addons/gdkit/equality_helpers.gd",
 		"class_name GDKitEquality\nextends RefCounted\n\n\n"+
 			"static func deep_equals(p_lhs: Variant, p_rhs: Variant) -> bool:\n\treturn p_lhs == p_rhs\n")
-	source := "class_name Wide\nextends RefCounted\n\n# gdkit:generate = deep_equals\n"
+	var source strings.Builder
+	source.WriteString("class_name Wide\nextends RefCounted\n\n# gdkit:generate = deep_equals\n")
 	for index := 1; index <= fieldCount; index++ {
-		source += fmt.Sprintf("var field_%d: int\n", index)
+		fmt.Fprintf(&source, "var field_%d: int\n", index)
 	}
-	writeCLIFile(t, root, "wide.gd", source)
+	writeCLIFile(t, root, "wide.gd", source.String())
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"gen", "write", root}, &stdout, &stderr); code != 0 {
 		t.Fatalf("gen write exit %d: %s %s", code, stdout.String(), stderr.String())
@@ -46,12 +47,13 @@ func TestGeneratedDeepEqualsIsCleanUnderDefaultLintFormatAndGen(t *testing.T) {
 // function in the same file with too many returns is still reported.
 func TestGeneratedSuppressionDoesNotHideAHandWrittenFunction(t *testing.T) {
 	root := writeGeneratedDeepEquals(t, 10)
-	source := readCLIFile(t, root, "wide.gd") + "\n\nfunc sprawl(p_value: int) -> int:\n"
+	var source strings.Builder
+	source.WriteString(readCLIFile(t, root, "wide.gd") + "\n\nfunc sprawl(p_value: int) -> int:\n")
 	for index := 1; index <= 8; index++ {
-		source += fmt.Sprintf("\tif p_value == %d:\n\t\treturn %d\n", index, index)
+		fmt.Fprintf(&source, "\tif p_value == %d:\n\t\treturn %d\n", index, index)
 	}
-	source += "\treturn 0\n"
-	writeCLIFile(t, root, "wide.gd", source)
+	source.WriteString("\treturn 0\n")
+	writeCLIFile(t, root, "wide.gd", source.String())
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 1 {
 		t.Fatalf("lint exit %d, want 1: %s %s", code, stdout.String(), stderr.String())
