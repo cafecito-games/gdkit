@@ -86,9 +86,11 @@ the default branch.
   no `--repair`, because the `path=` beside it is the authority and is what
   Godot already falls back to, while reissuing a *declaration* does, because
   that changes what every reference resolves to including one gdkit cannot see.
-  A reissue moves the references to the old value in the same run, attributed
-  by text for a malformed value and by `path=` for a duplicated one — a shared
-  value cannot be attributed by text, so a pathless reference to a reissued
+  A reissue moves the references to the old value in the same run, and `path=`
+  is the stronger attribution: an `[ext_resource]` follows the file it names
+  however many others hold the same text, while a pathless reference is
+  attributed by text alone and so is left alone when the text is shared —
+  which a duplicated value always is, so a pathless reference to a reissued
   duplicate keeps resolving to the first claimant, which is what it already
   did.
 - `project/` — discovery and parsing. The only package that reads a project from

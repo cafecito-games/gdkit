@@ -445,3 +445,44 @@ func TestApplyPointsAReferenceAtAnIdentityItCreates(t *testing.T) {
 	// One run is enough, which is the point.
 	assertClean(t, root)
 }
+
+// Two files can hold the same malformed text, which makes the text useless for
+// attribution — but an ext_resource still names one of them by path, and
+// leaving that reference on the dead value would be half a repair.
+func TestApplyWithRepairFollowsAPathEvenWhenTheOldTextIsShared(t *testing.T) {
+	shared := "uid://b_local_reg_screen"
+	snapshot, root := loadProject(t, map[string]string{
+		"main.tscn": scene(shared),
+		"alt.tscn":  scene(shared),
+		"other.tscn": scene("uid://ccc",
+			"[ext_resource type=\"PackedScene\" uid=\""+shared+"\" path=\"res://main.tscn\" id=\"1_a\"]"),
+	})
+	if _, err := Apply(snapshot, Check(snapshot), seeded(1), true); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"main.tscn", "alt.tscn", "other.tscn"} {
+		if got := readFile(t, root, name); strings.Contains(got, shared) {
+			t.Errorf("%s = %q, want the shared value gone", name, got)
+		}
+	}
+	assertClean(t, root)
+}
+
+// A reference that names no path cannot be attributed to either holder of a
+// shared malformed value, so it is left alone rather than pointed at a guess.
+func TestApplyWithRepairLeavesAnUnattributableReferenceAlone(t *testing.T) {
+	shared := "uid://b_local_reg_screen"
+	source := "extends Node\n\nconst Scene := preload(\"" + shared + "\")\n"
+	snapshot, root := loadProject(t, map[string]string{
+		"main.tscn":     scene(shared),
+		"alt.tscn":      scene(shared),
+		"loader.gd":     source,
+		"loader.gd.uid": "uid://ccc\n",
+	})
+	if _, err := Apply(snapshot, Check(snapshot), seeded(1), true); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, root, "loader.gd"); got != source {
+		t.Errorf("loader.gd = %q, want it untouched", got)
+	}
+}

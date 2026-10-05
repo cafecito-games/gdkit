@@ -353,13 +353,16 @@ func repairTarget(reference project.Reference, declarations map[string]project.C
 // references that have to move with it so the old value is left nowhere in the
 // project.
 //
-// A reference is attributed to a declaration two ways. A malformed value is
-// attributed by text, because nothing else in the project can hold it — unless
-// something does, in which case no reference is moved rather than the wrong
-// one. A duplicated value is shared by construction, so only an [ext_resource]
-// whose path= names the file being reissued can be attributed to it; a
-// reference that names no path keeps resolving to the first claimant, which is
-// what it already did.
+// A reference is attributed to a declaration two ways, and the stronger one is
+// the path. An [ext_resource] names a path= beside the identifier, so a
+// reference to the file being reissued is unambiguous however many other files
+// hold the same text. Without one — every reference in a script — the text has
+// to do the work: a malformed value is attributed by it, because nothing else
+// in the project normally holds it, and when something does no reference is
+// moved rather than the wrong one. A duplicated value is shared by
+// construction, so the text can never attribute it, and a pathless reference
+// to a reissued duplicate keeps resolving to the first claimant, which is what
+// it already did.
 func (r *Report) planReissues(snapshot *project.Snapshot, declarations map[string]project.Claim, claims []project.Claim) {
 	declaring := make(map[string]int, len(claims))
 	for _, claim := range claims {
@@ -394,10 +397,16 @@ func (r *Report) planReissues(snapshot *project.Snapshot, declarations map[strin
 }
 
 func attributable(diagnostic Diagnostic, claim project.Claim, reference project.Reference, declaring map[string]int) bool {
+	named := reference.Kind == project.ReferenceExternal && reference.Target == claim.Owner
 	if diagnostic.Rule == RuleMalformed {
-		return reference.UID == claim.UID && declaring[claim.UID] == 1
+		if reference.UID != claim.UID {
+			return false
+		}
+		// A path= names the declaration whatever else holds the same text, so
+		// only a reference without one needs the value to be unique.
+		return named || declaring[claim.UID] == 1
 	}
-	if reference.Kind != project.ReferenceExternal || reference.Target != claim.Owner {
+	if !named {
 		return false
 	}
 	id, valid := Decode(reference.UID)

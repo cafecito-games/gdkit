@@ -799,11 +799,14 @@ With `--repair`, a malformed identity is replaced wherever it is declared —
 sidecar, scene or resource header, or `.import` file — and **every reference to
 the old value is rewritten in the same run**, so the old identifier is left
 nowhere in the tree. That is the half `--repair` used to leave to the caller.
-For a duplicated identifier the first claimant in path order keeps it while the
-rest are reissued; since the old value is shared, only an `[ext_resource]`
-whose `path=` names the reissued file can be attributed to it, and a reference
-that names no path keeps resolving to the first claimant, exactly as it already
-did.
+
+An `[ext_resource]` names a `path=` beside the identifier, so it follows the
+file it names however many others hold the same text. A reference that names no
+path — every one in a script — is followed by its text alone, and is left alone
+when more than one file claims that text, rather than pointed at a guess. For a
+duplicated identifier the first claimant in path order keeps it while the rest
+are reissued; the old value is shared by construction, so a pathless reference
+to it keeps resolving to the first claimant, exactly as it already did.
 
 A run that cannot rewrite a reference safely — because the line it was read
 from has changed since — writes nothing at all rather than leaving half a
