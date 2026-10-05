@@ -49,9 +49,9 @@ func (k MemberKind) String() string {
 	}
 }
 
-// Parameter is one resolved method or signal parameter. Type is Array[element]
-// for a typed rest parameter and an untyped Array for an untyped rest
-// parameter.
+// Parameter is one resolved method or signal parameter. A variadic parameter
+// collects arguments as an untyped Array whether it is unannotated or carries
+// the only supported rest annotation, bare Array.
 type Parameter struct {
 	name       string
 	typeValue  Type
@@ -727,26 +727,41 @@ func (s *InterfaceSet) parameters(classID string, parameters []ast.Parameter, ow
 }
 
 func (s *InterfaceSet) parameter(classID string, parameter ast.Parameter, owner string) Parameter {
+	result := Parameter{name: parameter.Name, hasDefault: parameter.Default != nil, variadic: parameter.Variadic}
+	if parameter.Variadic {
+		if parameter.Type == "" {
+			result.typeValue = Array(nil)
+			return result
+		}
+		resolved := s.resolveAnnotation(classID, parameter.Type, fmt.Sprintf("parameter %q of %q", parameter.Name, owner))
+		if resolved.Kind() == KindUnknown {
+			result.typeValue = resolved
+			return result
+		}
+		if resolved.Kind() != KindArray {
+			result.typeValue = Unknown(fmt.Sprintf("variadic parameter %q of %q must be an untyped Array, not %q", parameter.Name, owner, parameter.Type))
+			return result
+		}
+		if _, typed := resolved.Element(); typed {
+			result.typeValue = Unknown(fmt.Sprintf("variadic parameter %q of %q must be an untyped Array, not %q", parameter.Name, owner, parameter.Type))
+			return result
+		}
+		result.typeValue = resolved
+		return result
+	}
+
 	resolved := Variant()
-	typed := false
 	if parameter.Type != "" {
 		resolved = s.resolveAnnotation(classID, parameter.Type, fmt.Sprintf("parameter %q of %q", parameter.Name, owner))
-		typed = resolved.Kind() != KindUnknown
 	} else if parameter.Inferred {
 		if literal, ok := scalarLiteralType(parameter.Default); ok {
-			resolved, typed = literal, true
+			resolved = literal
 		} else {
 			resolved = Unknown(fmt.Sprintf("inferred parameter %q of %q default requires expression reduction", parameter.Name, owner))
 		}
 	}
-	if parameter.Variadic && resolved.Kind() != KindUnknown {
-		if typed {
-			resolved = Array(&resolved)
-		} else {
-			resolved = Array(nil)
-		}
-	}
-	return Parameter{name: parameter.Name, typeValue: resolved, hasDefault: parameter.Default != nil, variadic: parameter.Variadic}
+	result.typeValue = resolved
+	return result
 }
 
 func scalarLiteralType(expression ast.Expression) (Type, bool) {
@@ -992,6 +1007,9 @@ func (s *InterfaceSet) resolveUserType(classID string, parts []string) (Type, ty
 	class := s.index.ClassByName(first)
 	if class == nil {
 		return Type{}, typeNotFound, ""
+	}
+	if len(s.index.ParseFailures) > 0 {
+		return Type{}, typeUnknown, fmt.Sprintf("source parse failure at %q leaves global user type %q unresolved", s.index.ParseFailures[0], first)
 	}
 	return s.followUserType(class, parts[1:])
 }

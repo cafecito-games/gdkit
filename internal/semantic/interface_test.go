@@ -78,7 +78,7 @@ func TestInterfacesResolveDeclarationKindsAndSignatures(t *testing.T) {
 	engine := richInterfaceTestEngine(t)
 	index := BuildIndex(sources(t, map[string]string{
 		"friend.gd": "class_name Friend\nclass Inner:\n\tpass\n",
-		"player.gd": "class_name Player extends CharacterBody2D\nvar explicit: float\nvar inferred := 10\nvar dynamic\nvar unresolved = fetch()\nvar float_literal := 1.5\nvar string_literal := \"message\"\nvar string_name_literal := &\"label\"\nvar node_path_literal := ^\"child\"\nvar boolean_literal := true\nvar null_literal := null\nvar collection_literal := []\nvar operator_literal := 1 + 2\nvar identifier_literal = LIMIT\nstatic var static_field: int\nconst LIMIT := 10\nconst TYPED: String = \"typed\"\nconst BAD = fetch()\nvar array: Array[Dictionary[String, int]]\nvar friend: Friend\nvar nested: Friend.Inner\nvar inner: Inner\nvar mode: Mode\nvar native: Node\nclass Inner:\n\tpass\nenum Mode { ONE }\nenum { FLAG }\nsignal changed(typed: int, dynamic_parameter)\n@abstract\nfunc abstracted(typed: int, dynamic_parameter, inferred_parameter := 3, ...rest: String) -> void\nfunc typed_signature(friend_value: Friend, nested_value: Friend.Inner, local_value: Inner, mode_value: Mode, node_value: Node, table: Dictionary[String, Array[int]]) -> Friend:\n\tpass\nstatic func static_value() -> String:\n\tpass\nfunc no_return():\n\tpass\nfunc untyped_rest(...rest):\n\tpass\n",
+		"player.gd": "class_name Player extends CharacterBody2D\nvar explicit: float\nvar inferred := 10\nvar dynamic\nvar unresolved = fetch()\nvar float_literal := 1.5\nvar string_literal := \"message\"\nvar string_name_literal := &\"label\"\nvar node_path_literal := ^\"child\"\nvar boolean_literal := true\nvar null_literal := null\nvar collection_literal := []\nvar operator_literal := 1 + 2\nvar identifier_literal = LIMIT\nstatic var static_field: int\nconst LIMIT := 10\nconst TYPED: String = \"typed\"\nconst BAD = fetch()\nvar array: Array[Dictionary[String, int]]\nvar friend: Friend\nvar nested: Friend.Inner\nvar inner: Inner\nvar mode: Mode\nvar native: Node\nclass Inner:\n\tpass\nenum Mode { ONE }\nenum { FLAG }\nsignal changed(typed: int, dynamic_parameter)\n@abstract\nfunc abstracted(typed: int, dynamic_parameter, inferred_parameter := 3, ...rest: Array) -> void\nfunc typed_signature(friend_value: Friend, nested_value: Friend.Inner, local_value: Inner, mode_value: Mode, node_value: Node, table: Dictionary[String, Array[int]]) -> Friend:\n\tpass\nstatic func static_value() -> String:\n\tpass\nfunc no_return():\n\tpass\nfunc untyped_rest(...rest):\n\tpass\nfunc invalid_rest(...rest: String):\n\tpass\nfunc invalid_typed_array_rest(...rest: Array[String]):\n\tpass\n",
 	}))
 	if len(index.ParseFailures) != 0 {
 		t.Fatalf("fixture did not parse: %v", index.ParseFailures)
@@ -159,9 +159,11 @@ func TestInterfacesResolveDeclarationKindsAndSignatures(t *testing.T) {
 	if len(parameters) != 4 || parameters[0].Type().Name() != "int" || parameters[1].Type().Kind() != KindVariant || parameters[2].Type().Name() != "int" || !parameters[2].HasDefault() || !parameters[3].Variadic() {
 		t.Fatalf("abstracted parameters = %#v", parameters)
 	}
-	restElement, typedRest := parameters[3].Type().Element()
-	if parameters[3].Type().Kind() != KindArray || !typedRest || restElement.Name() != "String" {
-		t.Fatalf("rest parameter type = %s, element %s/%t", parameters[3].Type(), restElement, typedRest)
+	if parameters[3].Type().Kind() != KindArray {
+		t.Fatalf("rest parameter type = %s", parameters[3].Type())
+	}
+	if _, typedRest := parameters[3].Type().Element(); typedRest {
+		t.Fatal("typed rest parameter was not retained as an untyped Array")
 	}
 	if static := interfaceMember(t, player, "static_value"); !static.Static() || static.Abstract() {
 		t.Fatalf("static method metadata = static %t abstract %t", static.Static(), static.Abstract())
@@ -215,6 +217,12 @@ func TestInterfacesResolveDeclarationKindsAndSignatures(t *testing.T) {
 	}
 	if _, typed := untypedParameters[0].Type().Element(); typed {
 		t.Fatal("untyped rest parameter became Array[Variant]")
+	}
+	for _, name := range []string{"invalid_rest", "invalid_typed_array_rest"} {
+		invalidRest := interfaceMember(t, player, name).Parameters()
+		if len(invalidRest) != 1 || invalidRest[0].Type().Kind() != KindUnknown || !strings.Contains(invalidRest[0].Type().Reason(), "Array") {
+			t.Errorf("%s parameter = %#v, want reasoned Unknown", name, invalidRest)
+		}
 	}
 }
 
@@ -322,6 +330,32 @@ func TestInterfacesRejectVoidOutsideMethodReturns(t *testing.T) {
 			t.Errorf("ResolveType(%q) = %v %q (%q), want void-specific Unknown", spelling, got.Kind(), got.Name(), got.Reason())
 		}
 	}
+}
+
+func TestInterfacesGlobalTypeResolutionFailsClosedOnIncompleteIndex(t *testing.T) {
+	t.Run("parse failure blocks global class", func(t *testing.T) {
+		index := BuildIndex(sources(t, map[string]string{
+			"global.gd": "class_name Global\n",
+			"broken.gd": "func (\n",
+		}))
+		interfaces := BuildInterfaces(index, interfaceTestEngine(t))
+		if got := interfaces.ResolveType("", "Global"); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "Global") || !strings.Contains(got.Reason(), "broken.gd") {
+			t.Fatalf("global class across parse failure = %v %q (%q), want reasoned Unknown", got.Kind(), got.Name(), got.Reason())
+		}
+		if got := interfaces.ResolveType("", "int"); got.Kind() != KindBuiltin || got.Name() != "int" {
+			t.Fatalf("grounded builtin across parse failure = %v %q (%q)", got.Kind(), got.Name(), got.Reason())
+		}
+	})
+
+	t.Run("duplicate global class remains ambiguous", func(t *testing.T) {
+		interfaces := BuildInterfaces(BuildIndex(sources(t, map[string]string{
+			"first.gd":  "class_name Duplicate\n",
+			"second.gd": "class_name Duplicate\n",
+		})), interfaceTestEngine(t))
+		if got := interfaces.ResolveType("", "Duplicate"); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "Duplicate") {
+			t.Fatalf("duplicate global class = %v %q (%q), want reasoned Unknown", got.Kind(), got.Name(), got.Reason())
+		}
+	})
 }
 
 func TestInterfacesLookupIsNearestAndTriState(t *testing.T) {
