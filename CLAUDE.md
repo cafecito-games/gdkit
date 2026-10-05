@@ -15,6 +15,15 @@ go test -race ./architecture -run TestAnalyzerRejectsDirectionCyclesAndEngineAcc
 go test -race ./lint -run TestName
 GDKIT_CORPUS=/path/to/project go test -race ./lint -run TestCorpus
 
+# Refresh the verified official Godot 4.7 engine schema
+go run ./internal/semantic/engineschema/cmd/generate \
+  -input /path/to/extension_api.json \
+  -output internal/semantic/engineschema/data/godot_4_7.json.gz \
+  -source-commit ed1daf0bf \
+  -raw-sha256 d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986
+# The command prints every pinned digest/size. When changing the input, follow
+# internal/semantic/engineschema/data/README.md's complete refresh checklist.
+
 # Run the CLI from the checkout
 go run ./cmd/gdkit arch check /path/to/godot-project
 go run ./cmd/gdkit arch check --format json --show-edges .
@@ -38,7 +47,7 @@ the default branch.
 
 ## Architecture
 
-`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Seventeen packages:
+`gdkit` is a static-analysis toolkit for Godot 4 GDScript. Its packages are:
 
 - `architecture/` — the dependency analyzer: layer and feature boundaries, cycles,
   and engine purity (the substance of `gdkit arch`).
@@ -53,7 +62,12 @@ the default branch.
   `4.2`, and a maintainer asking why a bare `Dictionary` is quiet is asking about
   this key. `Context` carries a `compiledConfig` — every name pattern, every
   exempt glob, and the parsed engine version, compiled once by `validate` — so no
-  rule compiles or parses anything per file.
+  rule compiles or parses anything per file. An enabled rule that implements
+  `EngineSchemaRule` receives the immutable selected engine through `Context`.
+  With no explicit `extension_api`, that capability is the sole trigger for
+  lazily loading a bundled table; ordinary rules never load or version-gate on
+  semantic data. An explicit override is project-root-relative, validated once
+  at startup, and replaces the embedded table wholesale.
 - `format/` — the formatter: drives gdparser's formatter over a `project.Snapshot`
   and verifies every rewrite before offering it. Verification covers the syntax
   tree (the reparsed output must keep it), the token stream (no token other than
@@ -175,9 +189,20 @@ the default branch.
   from a package that does not label one yet still reports something stable.
 - `internal/buildinfo/` — version metadata, injected by GoReleaser `-ldflags` and
   falling back to the Go toolchain's embedded VCS settings for local builds.
-- `internal/semantic/` — the immutable resolved type vocabulary. It has no
-  parsing or diagnostic policy; `AssignableTo` is three-valued, and
-  `Indeterminate` means analysis was inconclusive so consumers stay silent.
+- `internal/semantic/` — the immutable resolved type vocabulary and engine
+  symbol index. It has no parsing or diagnostic policy; `AssignableTo` is
+  three-valued, and `Indeterminate` means analysis was inconclusive so
+  consumers stay silent.
+- `internal/semantic/engineschema/` — the explicit Godot extension-API model,
+  deterministic artifact generator, validator, and lazy exact-minor registry.
+  Built-in support starts at `4.7`, using the official 4.7.2 artifact; there is
+  no nearest/newest fallback and no embedded 4.0–4.6 history. Raw overrides are
+  wholesale and numeric-version-matched. Reads are capped at 64 MiB, container
+  spellings at 32 levels, and each inheritance chain at 256 in-schema classes;
+  the inheritance limit does not cap the schema's total class count. Every
+  retained row is validated before the immutable `semantic.Engine` is
+  published, and generated records/digests contain semantic identity and
+  provenance but no paths or timestamps.
 - `internal/semanticsource/` — the adapter from `project.Snapshot` to the
   semantic analyzer's source boundary. It exposes the full `Snapshot.Paths`
   universe rather than the filtered `Selected` action subset, never reparses

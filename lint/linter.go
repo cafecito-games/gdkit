@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"sort"
 
+	"github.com/cafecito-games/gdkit/internal/semantic"
+	"github.com/cafecito-games/gdkit/internal/semantic/engineschema"
 	"github.com/cafecito-games/gdkit/internal/versiongate"
 	"github.com/cafecito-games/gdkit/project"
 )
@@ -33,11 +35,30 @@ type PendingRule interface {
 	PendingSince() string
 }
 
+// EngineSchemaRule marks a rule that needs immutable native engine facts.
+// Only enabled rules participate in this capability check, so adding a future
+// semantic rule cannot make an existing configuration load a schema while the
+// rule still ships inert or is disabled.
+type EngineSchemaRule interface {
+	Rule
+	RequiresEngineSchema()
+}
+
 // Context gives a rule the project and its resolved configuration.
 type Context struct {
 	Config Config
 
 	compiled *compiledConfig
+	engine   *semantic.Engine
+}
+
+// Engine returns the selected immutable engine schema, or nil for a run whose
+// enabled rules do not require one and which has no explicit override.
+func (c *Context) Engine() *semantic.Engine {
+	if c == nil {
+		return nil
+	}
+	return c.engine
 }
 
 // Pattern returns the compiled, anchored pattern for a name rule.
@@ -135,15 +156,27 @@ func PendingRuleNames() []string {
 
 // Linter runs the enabled rules over a snapshot.
 type Linter struct {
-	context  Context
-	enabled  []Rule
-	disabled map[string]bool
-	severity map[string]Severity
+	context      Context
+	enabled      []Rule
+	disabled     map[string]bool
+	severity     map[string]Severity
+	engineSchema *engineschema.Provenance
 }
 
 // New validates the configuration and compiles every name pattern, so a bad
 // pattern is a configuration error rather than a silently dead rule.
 func New(config Config) (*Linter, error) {
+	return newLinter(config, registeredRules())
+}
+
+// NewForProject prepares a linter with project-root-aware external inputs.
+// The command path uses this constructor so an explicit extension_api is
+// resolved and read once before any rule executes.
+func NewForProject(root string, config Config) (*Linter, error) {
+	return newLinterForProject(root, config, registeredRules())
+}
+
+func registeredRules() []Rule {
 	names := make([]string, 0, len(registry))
 	for name := range registry {
 		names = append(names, name)
@@ -153,12 +186,23 @@ func New(config Config) (*Linter, error) {
 	for _, name := range names {
 		rules = append(rules, registry[name])
 	}
-	return newLinter(config, rules)
+	return rules
 }
 
 // newLinter builds a linter over an explicit rule set, bypassing the global
 // registry so the driver can be tested in isolation.
 func newLinter(config Config, rules []Rule) (*Linter, error) {
+	return buildLinter("", false, config, rules)
+}
+
+// newLinterForProject is the explicit-rule equivalent of NewForProject. It
+// keeps capability and external-input behavior directly testable without
+// mutating the global rule registry.
+func newLinterForProject(root string, config Config, rules []Rule) (*Linter, error) {
+	return buildLinter(root, true, config, rules)
+}
+
+func buildLinter(root string, projectAware bool, config Config, rules []Rule) (*Linter, error) {
 	compiled, err := config.validate()
 	if err != nil {
 		return nil, err
@@ -185,17 +229,31 @@ func newLinter(config Config, rules []Rule) (*Linter, error) {
 		}
 		enabled = append(enabled, rule)
 	}
-	return &Linter{
+	selected, err := prepareEngineSchema(root, projectAware, config, compiled, enabled)
+	if err != nil {
+		return nil, err
+	}
+	linter := &Linter{
 		context:  Context{Config: config, compiled: compiled},
 		enabled:  enabled,
 		disabled: disabled,
 		severity: config.Severity,
-	}, nil
+	}
+	if selected != nil {
+		linter.context.engine = selected.Engine
+		provenance := selected.Provenance
+		linter.engineSchema = &provenance
+	}
+	return linter, nil
 }
 
 // Lint runs every enabled rule over every script in the snapshot.
 func (l *Linter) Lint(snapshot *project.Snapshot) Report {
 	report := Report{Diagnostics: make([]Diagnostic, 0)}
+	if l.engineSchema != nil {
+		provenance := *l.engineSchema
+		report.EngineSchema = &provenance
+	}
 
 	for _, path := range snapshot.Paths {
 		script := snapshot.Scripts[path]

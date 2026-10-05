@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -51,6 +52,11 @@ type Config struct {
 	// cannot be affected by the default, and a project on an older engine
 	// lowers this one key instead of hunting for the right rule name.
 	GodotVersion string `json:"godot_version"`
+
+	// ExtensionAPI optionally names an unmodified extension_api.json relative
+	// to the project root. A pointer preserves the public distinction between
+	// an absent key and a present-but-empty value, which is invalid.
+	ExtensionAPI *string `json:"extension_api,omitempty"`
 
 	// Disable turns rules off by name.
 	Disable []string `json:"disable,omitempty"`
@@ -269,6 +275,14 @@ func LoadConfig(root, name string) (Config, error) {
 	if err != nil {
 		return Config{}, failure.WrapPath(failure.ConfigRead, name, fmt.Errorf("read lint config: %w", err))
 	}
+	if !json.Valid(data) {
+		return Config{}, failure.WrapPath(failure.ConfigParse, name,
+			errors.New("parse lint config: file must contain exactly one JSON value"))
+	}
+	if err := validateExtensionAPIField(data); err != nil {
+		return Config{}, failure.WrapPath(failure.ConfigParse, name,
+			fmt.Errorf("parse lint config: %w", err))
+	}
 	config := DefaultConfig()
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -293,9 +307,10 @@ func (c Config) Validate() error {
 // accessors by convention rather than by enforcement: every rule lives in this
 // package, so an unexported field is reachable either way.
 type compiledConfig struct {
-	patterns     map[string]*regexp.Regexp
-	godotVersion versiongate.Version
-	exempt       map[string][]glob.Pattern
+	patterns               map[string]*regexp.Regexp
+	godotVersion           versiongate.Version
+	godotVersionExactPatch bool
+	exempt                 map[string][]glob.Pattern
 }
 
 // validate is Validate, also returning the compiled configuration so a caller
@@ -354,6 +369,11 @@ func (c Config) validate() (*compiledConfig, error) {
 			return nil, err
 		}
 	}
+	if c.ExtensionAPI != nil {
+		if err := validateExtensionAPIPath(*c.ExtensionAPI); err != nil {
+			return nil, err
+		}
+	}
 	limits := []struct {
 		name  string
 		value int
@@ -382,5 +402,71 @@ func (c Config) validate() (*compiledConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &compiledConfig{patterns: patterns, godotVersion: godotVersion, exempt: exempt}, nil
+	return &compiledConfig{
+		patterns:               patterns,
+		godotVersion:           godotVersion,
+		godotVersionExactPatch: strings.Count(c.GodotVersion, ".") == 2,
+		exempt:                 exempt,
+	}, nil
+}
+
+func validateExtensionAPIPath(name string) error {
+	if name == "" {
+		return errors.New("extension_api must not be empty when present")
+	}
+	if strings.Contains(name, `\`) {
+		return fmt.Errorf("extension_api %q must be slash-separated", name)
+	}
+	if strings.ContainsRune(name, '\x00') {
+		return errors.New("extension_api must not contain a NUL byte")
+	}
+	clean := path.Clean(name)
+	if path.IsAbs(name) || filepath.IsAbs(name) || clean == ".." || strings.HasPrefix(clean, "../") ||
+		(len(name) >= 2 && ((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z')) && name[1] == ':') {
+		return fmt.Errorf("extension_api %q must be a project-relative path", name)
+	}
+	if clean != name {
+		return fmt.Errorf("extension_api %q must not contain dot segments, empty segments, or a trailing slash", name)
+	}
+	return nil
+}
+
+func validateExtensionAPIField(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token != json.Delim('{') {
+		return nil
+	}
+	seen := false
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return errors.New("lint config contains a non-string key")
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+		if !strings.EqualFold(key, "extension_api") {
+			continue
+		}
+		if key != "extension_api" {
+			return fmt.Errorf("extension_api key must use exact spelling, not %q", key)
+		}
+		if seen {
+			return errors.New("extension_api key must not be duplicated")
+		}
+		seen = true
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return errors.New("extension_api must be a string, not null")
+		}
+	}
+	return nil
 }

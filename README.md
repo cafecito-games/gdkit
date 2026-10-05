@@ -317,6 +317,7 @@ default:
 | `source_roots` | `["."]` |
 | `exclude` | `[".git/**", ".godot/**", ".gdkit/**", "addons/**"]` |
 | `godot_version` | `"4.7"` |
+| `extension_api` | omitted; use gdkit's exact embedded table when engine facts are needed |
 | `disable` | none |
 | `enable` | none |
 | `enable_new_rules` | `false` |
@@ -355,6 +356,52 @@ one key instead of hunting for the right rule names.
   "require-variable-type": ["_process", "_physics_process"]
 }
 ```
+
+`extension_api` optionally points to the unmodified JSON written by
+`godot --dump-extension-api`. The path is slash-separated and relative to the
+project root:
+
+```json
+{
+  "godot_version": "4.7",
+  "extension_api": "tools/godot/extension_api.json"
+}
+```
+
+The dump is the complete authority for that run: it replaces the bundled
+engine facts rather than merging with them. A two-component target such as
+`4.7` accepts any `4.7.x` dump; a three-component target such as `4.7.2`
+requires that exact numeric patch. Fork status, build, branding, and suffixes
+are retained as provenance but do not affect matching.
+
+The path must not be absolute, empty, escape the project lexically, or resolve
+through a symlink outside it. It must be written canonically, without `.` or
+`..` segments, doubled slashes, or a trailing slash, so validation and the
+confined open always address the same file. An unreadable dump is
+`config.read`, malformed JSON is `config.parse`, and an invalid schema or
+numeric mismatch is `config.invalid`. The dump must be a regular file no larger
+than 64 MiB. A retained type may nest at most 32 typed Array/Dictionary
+containers, and one inheritance chain may contain at most 256 in-schema
+classes (the total class count is not limited to 256). Those limits also fail
+as `config.invalid`. With `--format json`, failures are written only to stderr
+and stdout remains empty.
+
+An integrity or provenance failure in gdkit's own embedded artifact is instead
+`analysis.failed`; it is not mislabeled as a project configuration error.
+
+Built-in semantic engine support starts at Godot 4.7. The initial registry has
+one exact key, `4.7`, backed by the latest supported patch, official Godot
+4.7.2. A later semantic-aware rule never borrows that table for 4.6, 4.8, or
+another unregistered minor: it requires a numerically matching
+`extension_api` or a gdkit release that supports the minor. Existing lint rules
+that only use `godot_version` for syntax gating do not load an engine table and
+continue to work for older versions. An explicit dump is always validated once
+at startup; otherwise the bundled table is decompressed once, lazily, only if
+an enabled semantic-aware rule requests engine facts.
+
+When a schema is loaded, JSON reports include `engine_schema` with its source,
+numeric version, status, build, full name, and raw/schema digests. The raw dump
+itself and its filesystem path are never copied into the report.
 
 `tab-characters` is a setting and not a rule. `max-line-length` expands each
 tab to that many spaces before measuring a line.
@@ -1171,7 +1218,9 @@ consumer can tell "no report" from "an empty report".
 consumer branches on it, so it is not renamed. `message` is the same text the
 command writes in text mode, so the two modes never describe a failure
 differently. `path` and `key` appear when the failure locates to a file or a
-configuration key.
+configuration key. For a lint `extension_api` failure, `path` is the configured
+file joined to the analyzed project root, matching lint-config failures; the
+literal configured value remains in `message`.
 
 | Kind | Meaning |
 | --- | --- |
@@ -1455,6 +1504,36 @@ goreleaser check
 goreleaser release --snapshot --clean
 ```
 
+### Embedded engine schema provenance
+
+The committed `4.7` artifact is generated from official Godot 4.7.2 stable
+(`ed1daf0bf`). The unmodified `extension_api.json` is 6,965,057 bytes with
+SHA-256
+`d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986`.
+The canonical schema digest is
+`2b38249d74e48221e7fcc655592929e5c1bf4ab8d34c5c8b98ce8655a18c0a66`;
+the committed gzip is 205,744 bytes with SHA-256
+`bf23992dfff8d700515596254186e13e91df374aa4d13fe4dd74f4ef7792d7f6`.
+
+Regenerate from a separately verified official dump with:
+
+```sh
+go run ./internal/semantic/engineschema/cmd/generate \
+  -input /path/to/extension_api.json \
+  -output internal/semantic/engineschema/data/godot_4_7.json.gz \
+  -source-commit ed1daf0bf \
+  -raw-sha256 d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986
+```
+
+Generation stable-sorts retained records and clears gzip filename, comment,
+extra, and time metadata, so identical input produces byte-identical output.
+The command prints the raw, semantic-schema, and compressed-artifact digests
+plus artifact size. When updating the official patch or adding a supported
+forward minor, follow the complete identity/fixture/documentation checklist in
+the artifact's [data README](internal/semantic/engineschema/data/README.md).
+The artifact is derived from Godot Engine under its bundled
+[MIT attribution](internal/semantic/engineschema/data/GODOT_LICENSE.txt).
+
 ## Releasing
 
 Create a release entirely from GitHub:
@@ -1483,4 +1562,6 @@ use.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Copyright Cafecito Games LLC.
+MIT — see [LICENSE](LICENSE). Copyright Cafecito Games LLC. The embedded engine
+API facts are derived from Godot Engine; see the
+[Godot MIT attribution](internal/semantic/engineschema/data/GODOT_LICENSE.txt).
