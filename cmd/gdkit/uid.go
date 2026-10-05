@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/project"
@@ -59,7 +60,11 @@ func runUIDCheck(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(writer, diagnostic.String())
 		}
 		if report.HasDiagnostics() {
-			fmt.Fprintf(writer, "uid check failed (%d missing, %d to repair)\n", len(report.Missing()), len(report.Repairs()))
+			fmt.Fprintf(writer, "uid check failed (%d missing, %d to repair", len(report.Missing()), len(report.Repairs()))
+			if broken := len(report.Rewritable()) + len(report.Reported()); broken > 0 {
+				fmt.Fprintf(writer, ", %d broken references", broken)
+			}
+			fmt.Fprintln(writer, ")")
 		} else {
 			fmt.Fprintf(writer, "uid check passed (%d files)\n", report.Scripts)
 		}
@@ -94,12 +99,10 @@ func runUIDWrite(args []string, stdout, stderr io.Writer) int {
 		return reportFailure(stderr, resolvedFormat, failure.ProjectLoad, err)
 	}
 	written, applyError := uid.Apply(snapshot, report, uid.NewGenerator(nil), *repair)
-	// Without --repair the malformed and duplicated sidecars are still on
-	// disk, so the run reports a failure even though it wrote what it could.
-	remaining := 0
-	if !*repair {
-		remaining = len(report.Repairs())
-	}
+	// Without --repair the untrustworthy declarations are still on disk, and a
+	// reference that names no path can never be rewritten, so the run reports
+	// a failure even though it wrote what it could.
+	remaining := report.Remaining(*repair)
 	if resolvedFormat == formatJSON {
 		if err := writeUIDReport(stdout, uidWriteReport{Report: report, Written: written}); err != nil {
 			return reportFailure(stderr, resolvedFormat, failure.OutputWrite, fmt.Errorf("write report: %w", err))
@@ -109,30 +112,47 @@ func runUIDWrite(args []string, stdout, stderr io.Writer) int {
 		for _, path := range written {
 			fmt.Fprintln(writer, "wrote", path)
 		}
-		if remaining > 0 {
-			for _, diagnostic := range report.Repairs() {
-				fmt.Fprintln(writer, diagnostic.String())
-			}
+		for _, diagnostic := range remaining {
+			fmt.Fprintln(writer, diagnostic.String())
 		}
 		// A run that stopped part-way has no totals worth stating; the files
 		// listed above are the ones that changed on disk.
 		if applyError == nil {
 			created := len(report.Missing())
-			repaired := len(written) - created
+			repaired := 0
+			if *repair {
+				repaired = len(report.Repairs())
+			}
 			fmt.Fprintf(writer, "uid write: %d created", created)
 			if *repair {
 				fmt.Fprintf(writer, ", %d repaired", repaired)
 			}
-			// Unchanged means nothing was wrong, so the sidecars left for
-			// a later --repair are not counted among them. A repaired
-			// sidecar can also sit beside a script that no longer exists,
-			// which was never one of the files counted here.
-			fmt.Fprintf(writer, ", %d unchanged", max(report.Scripts-created-repaired-remaining, 0))
-			if remaining > 0 {
-				fmt.Fprintf(writer, ", %d left to repair", remaining)
+			if moved := report.Moved(*repair); moved > 0 {
+				fmt.Fprintf(writer, ", %d references rewritten", moved)
+			}
+			// Unchanged counts scripts, so only the diagnostics about a
+			// script are taken off the total: a scene's own header is not one
+			// of the files counted here, and neither is a sidecar left for a
+			// later --repair, because unchanged means nothing was wrong.
+			// Without --repair the untrustworthy declarations are part of
+			// what is left, so subtracting them again would count them twice.
+			unchanged := report.Scripts - created - scriptsAmong(remaining)
+			if *repair {
+				unchanged -= scriptsAmong(report.Repairs())
+			}
+			fmt.Fprintf(writer, ", %d unchanged", max(unchanged, 0))
+			left := len(report.Repairs())
+			if *repair {
+				left = 0
+			}
+			if left > 0 {
+				fmt.Fprintf(writer, ", %d left to repair", left)
+			}
+			if byHand := len(remaining) - left; byHand > 0 {
+				fmt.Fprintf(writer, ", %d to fix by hand", byHand)
 			}
 			fmt.Fprintln(writer)
-			if remaining > 0 {
+			if left > 0 {
 				fmt.Fprintln(writer, "re-run with --repair to reissue them, which changes what existing uid:// references resolve to")
 			}
 		}
@@ -143,10 +163,22 @@ func runUIDWrite(args []string, stdout, stderr io.Writer) int {
 	if applyError != nil {
 		return reportFailure(stderr, resolvedFormat, failure.FileWrite, applyError)
 	}
-	if remaining > 0 {
+	if len(remaining) > 0 {
 		return 1
 	}
 	return 0
+}
+
+// scriptsAmong counts the diagnostics about a .gd file, which is what the
+// unchanged total in a text summary is a remainder of.
+func scriptsAmong(diagnostics []uid.Diagnostic) int {
+	scripts := 0
+	for _, diagnostic := range diagnostics {
+		if strings.HasSuffix(diagnostic.Path, ".gd") {
+			scripts++
+		}
+	}
+	return scripts
 }
 
 // uidRoot validates the flags both uid commands share and returns the project
@@ -174,9 +206,12 @@ func uidRoot(name string, flags *flag.FlagSet, outputFormat string, stderr io.Wr
 //
 // There is no configuration file: a uid run has nothing to configure beyond
 // the root, and it honors .gdkitignore as lint and format do, so a script
-// hidden there is given no identity.
+// hidden there is given no identity. Identities is set because resolving a
+// reference needs the whole project's identity table, including the part of it
+// .gdkitignore hides: an excluded addon still owns its identifier, and
+// dropping it would report every reference to it as dangling.
 func checkUIDs(root string) (*project.Snapshot, uid.Report, error) {
-	snapshot, err := project.Load(project.Config{Root: root, HonorIgnoreFile: true})
+	snapshot, err := project.Load(project.Config{Root: root, HonorIgnoreFile: true, Identities: true})
 	if err != nil {
 		return nil, uid.Report{}, err
 	}

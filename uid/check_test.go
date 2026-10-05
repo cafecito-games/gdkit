@@ -112,15 +112,33 @@ func TestCheckDoesNotCallMalformedSidecarsDuplicates(t *testing.T) {
 	}
 }
 
-func TestCheckIgnoresSidecarsBesideFilesThatAreNotScripts(t *testing.T) {
+// A file that is not a script is never reported for *having* no identity:
+// gdkit does not know which of them Godot would have given one. A sidecar that
+// exists is still checked, because a shader's identity is as resolvable as a
+// script's and an unusable one breaks the same references.
+func TestCheckDoesNotAskForASidecarBesideAFileThatIsNotAScript(t *testing.T) {
 	report := checkProject(t, map[string]string{
-		"player.gd":           "extends Node\n",
-		"player.gd.uid":       "uid://b\n",
-		"water.gdshader.uid":  "uid://c\n",
-		"broken.gdshader.uid": "nonsense\n",
+		"player.gd":          "extends Node\n",
+		"player.gd.uid":      "uid://b\n",
+		"water.gdshader":     "shader_type canvas_item;\n",
+		"water.gdshader.uid": "uid://c\n",
+		"plain.gdshader":     "shader_type canvas_item;\n",
 	})
 	if report.HasDiagnostics() {
 		t.Fatalf("diagnostics = %v, want none", report.Diagnostics)
+	}
+}
+
+func TestCheckReportsAMalformedSidecarBesideAFileThatIsNotAScript(t *testing.T) {
+	report := checkProject(t, map[string]string{
+		"broken.gdshader":     "shader_type canvas_item;\n",
+		"broken.gdshader.uid": "nonsense\n",
+	})
+	if got := rules(report); !reflect.DeepEqual(got, []string{RuleMalformed}) {
+		t.Fatalf("rules = %v, want one %s", got, RuleMalformed)
+	}
+	if got := report.Diagnostics[0].Path; got != "broken.gdshader" {
+		t.Errorf("Path = %q, want broken.gdshader", got)
 	}
 }
 

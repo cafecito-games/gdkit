@@ -43,8 +43,10 @@ Commands:
   format check   report GDScript files that are not formatted
   format write   rewrite GDScript files in the configured style
   format init    write the default .gdkit/format.json configuration
-  uid check      report scripts whose Godot uid:// sidecar is missing or unusable
-  uid write      create the missing .uid sidecars Godot would have written
+  uid check      report uid:// identities that are missing or unusable, and
+                 references that resolve to nothing or to the wrong file
+  uid write      create the missing .uid sidecars Godot would have written and
+                 repoint the broken references that name a path
   gen check      report classes whose generated methods are missing or stale
   gen write      write the generated methods into the classes that opted in
   gen init       write the default .gdkit/generate.json configuration

@@ -63,6 +63,18 @@ type Config struct {
 	// narrowing the universe that is walked and parsed. A nil Selection, which
 	// every tool but generate passes, selects everything discovered.
 	Selection *Selection
+	// Identities populates Snapshot.Claims and Snapshot.References: every
+	// declaration of a uid:// identity and every use of one. Only uid asks
+	// for it, because collecting the references means reading every .tscn and
+	// .tres file through rather than only its header line, which the other
+	// tools have no use for.
+	//
+	// A claim is recorded even inside a path HonorIgnoreFile hides, carrying
+	// Claim.Ignored: an ignored file still owns its identity, and dropping it
+	// from the table would make every reference to it look dangling. A
+	// reference inside an ignored path is not recorded at all, because
+	// nothing reports or rewrites one.
+	Identities bool
 }
 
 // Script is one discovered GDScript file.
@@ -149,6 +161,11 @@ type Snapshot struct {
 	// Sidecars is every discovered .uid file, sorted by path. It covers
 	// sidecars beside files this package does not parse, such as shaders.
 	Sidecars []Sidecar
+	// Claims is every declaration of a uid:// identity, sorted by path and
+	// line, and References is every use of one. Both are empty unless
+	// Config.Identities was set.
+	Claims     []Claim
+	References []Reference
 	// Selected is the subset of Paths that Config.Selection admits, sorted. It
 	// is Paths itself when Selection is nil.
 	Selected []string
@@ -192,6 +209,7 @@ func Load(config Config) (*Snapshot, error) {
 	// reports on.
 	declared := make(map[string]string)
 	var sidecars []Sidecar
+	table := identities{}
 	for _, sourceRoot := range sourceRoots {
 		absolute := filepath.Join(root, filepath.FromSlash(sourceRoot))
 		relativeRoot, relErr := filepath.Rel(root, absolute)
@@ -226,7 +244,10 @@ func Load(config Config) (*Snapshot, error) {
 			if entry.IsDir() {
 				// A negated pattern can re-include something below an ignored
 				// directory, so the directory is only pruned when there is none.
-				if !ignored.HasNegation() && ignored.Ignored(relative, true) {
+				// Identities prunes nothing either: a hidden file still owns
+				// its uid:// identity, and the walk has to reach it to record
+				// the claim.
+				if !config.Identities && !ignored.HasNegation() && ignored.Ignored(relative, true) {
 					return filepath.SkipDir
 				}
 				return nil
@@ -244,24 +265,49 @@ func Load(config Config) (*Snapshot, error) {
 				// A scene or text resource carries its own identifier in its
 				// header line rather than in a sidecar, so the header is the
 				// only place these can be indexed from.
-				if ignored.Ignored(relative, false) {
+				hidden := ignored.Ignored(relative, false)
+				if hidden && !config.Identities {
 					return nil
 				}
-				if uid := resourceHeaderUID(name); uid != "" {
-					declared[uid] = relative
+				header, refs := scanResource(name, config.Identities && !hidden)
+				if header != "" {
+					if !hidden {
+						declared[header] = relative
+					}
+					if config.Identities {
+						table.claims = append(table.claims, Claim{
+							UID: header, Owner: relative, Path: relative,
+							Line: 1, Kind: ClaimHeader, Ignored: hidden,
+						})
+					}
+				}
+				for _, reference := range refs {
+					reference.Path = relative
+					table.references = append(table.references, reference)
 				}
 			case strings.HasSuffix(relative, ".import"):
 				// An imported asset keeps its identifier in the .import file
 				// beside it; the asset itself is binary and unparsed.
 				owner := strings.TrimSuffix(relative, ".import")
-				if ignored.Ignored(relative, false) || ignored.Ignored(owner, false) {
+				hidden := ignored.Ignored(relative, false) || ignored.Ignored(owner, false)
+				if hidden && !config.Identities {
 					return nil
 				}
-				if uid := importUID(name); uid != "" {
-					declared[uid] = owner
+				if uid, line := importClaim(name); uid != "" {
+					if !hidden {
+						declared[uid] = owner
+					}
+					if config.Identities {
+						table.claims = append(table.claims, Claim{
+							UID: uid, Owner: owner, Path: relative,
+							Line: line, Kind: ClaimImport, Ignored: hidden,
+						})
+					}
 				}
 			case strings.HasSuffix(relative, ".uid"):
-				if ignored.Ignored(relative, false) || ignored.Ignored(strings.TrimSuffix(relative, ".uid"), false) {
+				owner := strings.TrimSuffix(relative, ".uid")
+				hidden := ignored.Ignored(relative, false) || ignored.Ignored(owner, false)
+				if hidden && !config.Identities {
 					return nil
 				}
 				data, readErr := os.ReadFile(name)
@@ -269,9 +315,17 @@ func Load(config Config) (*Snapshot, error) {
 					return nil
 				}
 				uid := strings.TrimSpace(string(data))
-				owner := strings.TrimSuffix(relative, ".uid")
+				if config.Identities {
+					table.claims = append(table.claims, Claim{
+						UID: uid, Owner: owner, Path: relative,
+						Line: 1, Kind: ClaimSidecar, Ignored: hidden,
+					})
+				}
+				if hidden {
+					return nil
+				}
 				sidecars = append(sidecars, Sidecar{Path: relative, Owner: owner, Text: uid})
-				if strings.HasPrefix(uid, "uid://") {
+				if strings.HasPrefix(uid, UIDScheme) {
 					uids[uid] = owner
 				}
 			}
@@ -311,6 +365,12 @@ func Load(config Config) (*Snapshot, error) {
 		}
 		scripts[name] = script
 	}
+	if config.Identities {
+		for _, name := range paths {
+			table.references = append(table.references, scriptReferences(scripts[name])...)
+		}
+		table.sort()
+	}
 	selected, err := selectPaths(root, config.Selection, paths)
 	if err != nil {
 		return nil, err
@@ -320,13 +380,15 @@ func Load(config Config) (*Snapshot, error) {
 		return nil, err
 	}
 	return &Snapshot{
-		Root:      root,
-		Paths:     paths,
-		Scripts:   scripts,
-		UIDs:      uids,
-		Sidecars:  sidecars,
-		Selected:  selected,
-		Autoloads: autoloads,
+		Root:       root,
+		Paths:      paths,
+		Scripts:    scripts,
+		UIDs:       uids,
+		Sidecars:   sidecars,
+		Claims:     table.claims,
+		References: table.references,
+		Selected:   selected,
+		Autoloads:  autoloads,
 	}, nil
 }
 
@@ -453,56 +515,6 @@ func lineStarts(source []byte) []int {
 		}
 	}
 	return starts
-}
-
-// resourceHeaderUID returns the uid:// identifier a .tscn or .tres file
-// declares in its header line, or "" when it has none. Only the first line is
-// read: later [ext_resource] lines carry the identifiers of *other* files.
-func resourceHeaderUID(name string) string {
-	file, err := os.Open(name)
-	if err != nil {
-		return ""
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 4096), maxResourceLine)
-	if !scanner.Scan() {
-		return ""
-	}
-	header := strings.TrimSpace(scanner.Text())
-	if !strings.HasPrefix(header, "[gd_scene") && !strings.HasPrefix(header, "[gd_resource") {
-		return ""
-	}
-	return quotedUID(header)
-}
-
-// importUID returns the uid:// identifier a .import file declares for the asset
-// it describes. Only the [remap] section is read, because a later section
-// describes the import's own dependencies.
-func importUID(name string) string {
-	file, err := os.Open(name)
-	if err != nil {
-		return ""
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 4096), maxResourceLine)
-	remap := false
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "[") {
-			if remap {
-				return ""
-			}
-			remap = line == "[remap]"
-			continue
-		}
-		if !remap || !strings.HasPrefix(line, "uid=") {
-			continue
-		}
-		return quotedUID(line)
-	}
-	return ""
 }
 
 // quotedUID returns the first double-quoted uid:// identifier in the line.

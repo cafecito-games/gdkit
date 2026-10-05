@@ -23,7 +23,7 @@ func loadProject(t *testing.T, files map[string]string) (*project.Snapshot, stri
 			t.Fatal(err)
 		}
 	}
-	snapshot, err := project.Load(project.Config{Root: root, HonorIgnoreFile: true})
+	snapshot, err := project.Load(project.Config{Root: root, HonorIgnoreFile: true, Identities: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,9 +68,12 @@ func rules(report Report) []string {
 }
 
 // paths lists the path of every diagnostic, in report order.
-func paths(report Report) []string {
-	found := make([]string, 0, len(report.Diagnostics))
-	for _, diagnostic := range report.Diagnostics {
+func paths(report Report) []string { return pathsOf(report.Diagnostics) }
+
+// pathsOf lists the path of every diagnostic in a group Report hands out.
+func pathsOf(diagnostics []Diagnostic) []string {
+	found := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
 		found = append(found, diagnostic.Path)
 	}
 	return found
