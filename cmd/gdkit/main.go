@@ -321,7 +321,7 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 		}
 		config.Enable = append(config.Enable, name)
 	}
-	linter, err := lint.New(config)
+	linter, err := lint.NewForProject(root, config)
 	if err != nil {
 		return reportFailure(stderr, outputFormat, failure.ConfigInvalid, err)
 	}

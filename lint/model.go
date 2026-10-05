@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/cafecito-games/gdkit/internal/semantic/engineschema"
 )
 
 // Severity is the importance of a diagnostic.
@@ -42,7 +44,8 @@ func (d Diagnostic) String() string {
 
 // Report is the deterministic result of one lint run.
 type Report struct {
-	Diagnostics []Diagnostic `json:"diagnostics"`
+	Diagnostics  []Diagnostic             `json:"diagnostics"`
+	EngineSchema *engineschema.Provenance `json:"engine_schema,omitempty"`
 }
 
 // HasFindings reports whether anything was found.

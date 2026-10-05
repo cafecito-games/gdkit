@@ -1,0 +1,121 @@
+{
+  "header": {
+    "version_major": 4,
+    "version_minor": 7,
+    "version_patch": 2,
+    "version_status": "stable",
+    "version_build": "official",
+    "version_full_name": "Godot Engine v4.7.2.stable.official",
+    "precision": "single"
+  },
+  "builtin_classes": [
+    {"name": "bool"},
+    {
+      "name": "int",
+      "operators": [
+        {"name": "*", "right_type": "float", "return_type": "float"}
+      ]
+    },
+    {"name": "float"},
+    {"name": "StringName"},
+    {
+      "name": "Vector2",
+      "members": [
+        {"name": "x", "type": "float"}
+      ],
+      "operators": [
+        {"name": "*", "right_type": "float", "return_type": "Vector2"},
+        {"name": "+", "right_type": "Vector2", "return_type": "Vector2"}
+      ],
+      "methods": [
+        {
+          "name": "length",
+          "return_type": "float",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 466405837
+        }
+      ]
+    },
+    {"name": "NodePath"},
+    {"name": "Callable"},
+    {"name": "Signal"},
+    {"name": "Dictionary"},
+    {"name": "Array"}
+  ],
+  "classes": [
+    {"name": "CanvasItem", "inherits": "Node"},
+    {
+      "name": "Node",
+      "inherits": "Object",
+      "methods": [
+        {
+          "name": "get_node",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 2734337346,
+          "return_value": {"type": "Node"},
+          "arguments": [
+            {"name": "path", "type": "NodePath"}
+          ]
+        },
+        {
+          "name": "get_children",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 873284517,
+          "return_value": {"type": "typedarray::Node"},
+          "arguments": [
+            {"name": "include_internal", "type": "bool", "default_value": "false"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Node2D",
+      "inherits": "CanvasItem",
+      "properties": [
+        {"type": "Vector2", "name": "position", "setter": "set_position", "getter": "get_position"}
+      ]
+    },
+    {
+      "name": "Object",
+      "methods": [
+        {
+          "name": "call",
+          "is_const": false,
+          "is_vararg": true,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3400424181,
+          "return_value": {"type": "Variant"},
+          "arguments": [
+            {"name": "method", "type": "StringName"}
+          ]
+        }
+      ]
+    },
+    {"name": "Engine", "inherits": "Object"},
+    {"name": "Sprite2D", "inherits": "Node2D"}
+  ],
+  "singletons": [
+    {"name": "Engine", "type": "Engine"}
+  ],
+  "utility_functions": [
+    {
+      "name": "typeof",
+      "return_type": "int",
+      "category": "general",
+      "is_vararg": false,
+      "hash": 326422594,
+      "arguments": [
+        {"name": "variable", "type": "Variant"}
+      ]
+    }
+  ]
+}
