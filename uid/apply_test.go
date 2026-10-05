@@ -416,3 +416,32 @@ func assertClean(t *testing.T, root string) {
 		t.Fatalf("diagnostics after writing = %v, want none", report.Diagnostics)
 	}
 }
+
+// Creating a script's sidecar and leaving the scene that names it still
+// pointing at nothing would need a second run to converge, so the reference
+// adopts the identifier this run mints.
+func TestApplyPointsAReferenceAtAnIdentityItCreates(t *testing.T) {
+	snapshot, root := loadProject(t, map[string]string{
+		"player.gd": "extends Node\n",
+		"main.tscn": scene("uid://ddd", external("uid://xxx", "player.gd", "1_a")),
+	})
+	report := Check(snapshot)
+	if got := rules(report); !reflect.DeepEqual(got, []string{RuleDangling, RuleMissing}) {
+		t.Fatalf("rules = %v, want the scene's reference and the missing sidecar", got)
+	}
+	written, err := Apply(snapshot, report, seeded(1), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(written, []string{"player.gd.uid", "main.tscn"}) {
+		t.Fatalf("written = %v, want the sidecar then the scene", written)
+	}
+	if got := readFile(t, root, "player.gd.uid"); got != "uid://b\n" {
+		t.Fatalf("sidecar = %q, want uid://b", got)
+	}
+	if got := readFile(t, root, "main.tscn"); !strings.Contains(got, external("uid://b", "player.gd", "1_a")) {
+		t.Errorf("main.tscn = %q, want the reference pointing at the new identifier", got)
+	}
+	// One run is enough, which is the point.
+	assertClean(t, root)
+}

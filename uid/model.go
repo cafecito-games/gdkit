@@ -106,10 +106,17 @@ type reissue struct {
 	references []project.Reference
 }
 
-// rewrite is one reference to repoint, to a value already on disk.
+// rewrite is one reference to repoint at the identity of the file its path=
+// names.
 type rewrite struct {
 	reference project.Reference
-	to        string
+	// to is the identity already on disk to point at, and adopt names the
+	// script whose freshly created sidecar to point at instead. Exactly one is
+	// set: a reference to a script that has no identity yet is only repairable
+	// because the same run is about to give it one, and Apply does not know
+	// which identifier that will be until it mints it.
+	to    string
+	adopt string
 }
 
 // Moved reports how many uid:// references a write would rewrite: the ones it

@@ -779,8 +779,10 @@ gdkit uid write /path/to/godot-project
 
 The path is the authority — it is what Godot already falls back to — so
 rewriting the identifier to the identity that path declares cannot change what
-the project loads. A reference that names no path is reported and left alone,
-because nothing in the source says what it meant.
+the project loads. If the path names a script whose sidecar is missing, the
+reference adopts the identifier the same run mints for it, so one run is enough.
+A reference that names no path is reported and left alone, because nothing in
+the source says what it meant.
 
 ### Reissuing an identity
 

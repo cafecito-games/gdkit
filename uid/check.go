@@ -33,10 +33,21 @@ func Check(snapshot *project.Snapshot) Report {
 	report.reportMissing(snapshot)
 	report.reportDuplicates(snapshot)
 	report.reportReferences(snapshot, declarations, table)
+	report.planAdoptions(snapshot)
 	// Sorted before the plan is built, so the order a repair works in — and
 	// so the order it reports having written files in — is the report's own.
 	report.sort()
 	report.planReissues(snapshot, declarations, claims)
+	// The rewrites are collected in two passes, so they are ordered here
+	// rather than by the pass that found them: the files a run reports having
+	// written come out in path order either way.
+	sort.SliceStable(report.work.rewrites, func(i, j int) bool {
+		a, b := report.work.rewrites[i].reference, report.work.rewrites[j].reference
+		if a.Path != b.Path {
+			return a.Path < b.Path
+		}
+		return a.Line < b.Line
+	})
 	return report
 }
 
@@ -247,6 +258,50 @@ func (r *Report) reportReferences(snapshot *project.Snapshot, declarations map[s
 			r.work.rewrites = append(r.work.rewrites, rewrite{reference: reference, to: replacement})
 		}
 	}
+}
+
+// planAdoptions repairs the references to a script the same run is about to
+// give an identity to.
+//
+// A scene that names a script by path and by a uid the script does not have
+// yet is the common shape of this: the sidecar is missing, so the reference
+// resolves to nothing, and creating the sidecar alone would leave the scene
+// still pointing at nothing. Writing the new identifier into the reference is
+// what the editor would have done, and it is what makes one run enough.
+func (r *Report) planAdoptions(snapshot *project.Snapshot) {
+	adopting := make(map[string]struct{}, len(r.Diagnostics))
+	for _, diagnostic := range r.Missing() {
+		adopting[diagnostic.Path] = struct{}{}
+	}
+	if len(adopting) == 0 {
+		return
+	}
+	for i := range r.Diagnostics {
+		diagnostic := &r.Diagnostics[i]
+		if diagnostic.Rule != RuleDangling && diagnostic.Rule != RuleCrossed || diagnostic.repairable {
+			continue
+		}
+		if _, found := adopting[diagnostic.Target]; !found {
+			continue
+		}
+		reference, found := referenceAt(snapshot, diagnostic)
+		if !found || reference.Kind != project.ReferenceExternal {
+			continue
+		}
+		diagnostic.repairable = true
+		diagnostic.Message += fmt.Sprintf("; %s is given one by this run", diagnostic.Target)
+		r.work.rewrites = append(r.work.rewrites, rewrite{reference: reference, adopt: diagnostic.Target})
+	}
+}
+
+// referenceAt finds the reference a diagnostic was built from.
+func referenceAt(snapshot *project.Snapshot, diagnostic *Diagnostic) (project.Reference, bool) {
+	for _, reference := range snapshot.References {
+		if reference.Path == diagnostic.Path && reference.Line == diagnostic.Line && reference.UID == diagnostic.UID {
+			return reference, true
+		}
+	}
+	return project.Reference{}, false
 }
 
 // danglingRemedy explains why a dangling reference is beyond repair, which is

@@ -130,11 +130,15 @@ type edit struct {
 func planWrites(snapshot *project.Snapshot, report Report, generator *Generator, repair bool) ([]creation, []change, error) {
 	var creations []creation
 	changes := newChangeSet()
+	// Minted here so a reference to a script that had no identity can be
+	// pointed at the one this run gives it.
+	minted := make(map[string]string, len(report.Missing()))
 	for _, diagnostic := range report.Missing() {
 		identifier, err := generator.Next()
 		if err != nil {
 			return nil, nil, err
 		}
+		minted[diagnostic.Path] = Encode(identifier)
 		creations = append(creations, creation{
 			path:     diagnostic.Path + sidecarExtension,
 			contents: []byte(Encode(identifier) + "\n"),
@@ -158,10 +162,22 @@ func planWrites(snapshot *project.Snapshot, report Report, generator *Generator,
 		}
 	}
 	for _, rewrite := range report.work.rewrites {
+		to := rewrite.to
+		if rewrite.adopt != "" {
+			identifier, found := minted[rewrite.adopt]
+			if !found {
+				// The report says the run creates this script's identity and
+				// the plan says it does not. Refusing beats writing a value
+				// nothing declares.
+				return nil, nil, fmt.Errorf("%s:%d: %s is given no identity by this run",
+					rewrite.reference.Path, rewrite.reference.Line, rewrite.adopt)
+			}
+			to = identifier
+		}
 		changes.edit(rewrite.reference.Path, edit{
 			line: rewrite.reference.Line,
 			from: rewrite.reference.UID,
-			to:   rewrite.to,
+			to:   to,
 		})
 	}
 	return creations, changes.ordered, nil
