@@ -487,6 +487,107 @@ func TestInterfacesFailClosedForIncompleteChains(t *testing.T) {
 	})
 }
 
+func TestInterfacesBlockGlobalTypeFallbackAcrossIncompleteAncestry(t *testing.T) {
+	type testCase struct {
+		name      string
+		engine    func(*testing.T) *Engine
+		scoped    string
+		extra     map[string]string
+		wantCause string
+	}
+	cases := []testCase{
+		{
+			name:      "unresolved project path base",
+			engine:    interfaceTestEngine,
+			scoped:    "class_name Scoped extends \"res://missing.gd\"\nclass Local:\n\tpass\n",
+			wantCause: "res://missing.gd",
+		},
+		{
+			name:   "ambiguous project base",
+			engine: interfaceTestEngine,
+			scoped: "class_name Scoped extends Parent\nclass Local:\n\tpass\n",
+			extra: map[string]string{
+				"first.gd":  "class_name Parent\n",
+				"second.gd": "class_name Parent\n",
+			},
+			wantCause: "Parent",
+		},
+		{
+			name:   "project parse failure",
+			engine: interfaceTestEngine,
+			scoped: "class_name Scoped\nclass Local:\n\tpass\n",
+			extra: map[string]string{
+				"broken.gd": "func (\n",
+			},
+			wantCause: "broken.gd",
+		},
+		{
+			name:      "unavailable engine",
+			engine:    func(*testing.T) *Engine { return nil },
+			scoped:    "class_name Scoped\nclass Local:\n\tpass\n",
+			wantCause: "unavailable",
+		},
+		{
+			name: "missing implicit engine base",
+			engine: func(t *testing.T) *Engine {
+				return buildInterfaceEngine(t, nil, []interfaceEngineClass{{name: "Object"}})
+			},
+			scoped:    "class_name Scoped\nclass Local:\n\tpass\n",
+			wantCause: "RefCounted",
+		},
+		{
+			name: "unknown engine parent",
+			engine: func(t *testing.T) *Engine {
+				return buildInterfaceEngine(t, nil, []interfaceEngineClass{
+					{name: "Object"},
+					{name: "RefCounted", parent: "MissingParent"},
+				})
+			},
+			scoped:    "class_name Scoped\nclass Local:\n\tpass\n",
+			wantCause: "MissingParent",
+		},
+		{
+			name: "wrong engine root",
+			engine: func(t *testing.T) *Engine {
+				return buildInterfaceEngine(t, nil, []interfaceEngineClass{{name: "RefCounted"}})
+			},
+			scoped:    "class_name Scoped\nclass Local:\n\tpass\n",
+			wantCause: "instead of Object",
+		},
+		{
+			name:      "absent external engine base",
+			engine:    interfaceTestEngine,
+			scoped:    "class_name Scoped extends MissingNative\nclass Local:\n\tpass\n",
+			wantCause: "MissingNative",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			files := map[string]string{
+				"global.gd": "class_name Global\n",
+				"scoped.gd": testCase.scoped,
+			}
+			for path, source := range testCase.extra {
+				files[path] = source
+			}
+			interfaces := BuildInterfaces(BuildIndex(sources(t, files)), testCase.engine(t))
+			scoped := requireInterface(t, interfaces, "scoped.gd")
+			if scoped.Complete() || !strings.Contains(scoped.Cause(), testCase.wantCause) {
+				t.Fatalf("scoped interface completeness = %t (%q), want incomplete cause containing %q", scoped.Complete(), scoped.Cause(), testCase.wantCause)
+			}
+
+			// A direct lexical declaration remains usable before the incomplete
+			// ancestry segment; only a miss must not fall through to Global.
+			if got := interfaces.ResolveType("scoped.gd", "Local"); got.Kind() != KindClass || got.Name() != "scoped.gd#Local" {
+				t.Fatalf("direct Local = %v %q (%q)", got.Kind(), got.Name(), got.Reason())
+			}
+			if got := interfaces.ResolveType("scoped.gd", "Global"); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "Global") || !strings.Contains(got.Reason(), testCase.wantCause) {
+				t.Fatalf("Global fell through incomplete ancestry = %v %q (%q), want reasoned Unknown containing %q", got.Kind(), got.Name(), got.Reason(), testCase.wantCause)
+			}
+		})
+	}
+}
+
 func TestInterfacesDoNotWalkFunctionAccessorOrLambdaBodies(t *testing.T) {
 	index := BuildIndex(sources(t, map[string]string{
 		"body.gd": "class_name Body\nvar exposed: int:\n\tget:\n\t\tvar getter_hidden := 1\n\t\treturn getter_hidden\n\tset(value):\n\t\tvar setter_hidden := 2\n\t\texposed = value\nfunc outer():\n\tvar function_hidden := 3\n\tvar closure = func():\n\t\tvar lambda_hidden := 4\n\t\treturn lambda_hidden\n",

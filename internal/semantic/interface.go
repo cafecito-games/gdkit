@@ -994,8 +994,20 @@ func (s *InterfaceSet) resolveScopedUserType(classID string, parts []string) (Ty
 			if matched, resolved, state, reason := s.directUserType(class, parts); matched {
 				return resolved, state, reason
 			}
-			if class.UnresolvedBase || s.index.InCycle[class.ID] {
-				return Type{}, typeBlocked, fmt.Sprintf("project ancestry for scope %q is incomplete", class.ID)
+			if class.UnresolvedBase {
+				cause := class.UnresolvedCause
+				if cause == "" {
+					cause = "unresolved project base"
+				}
+				return Type{}, typeBlocked, fmt.Sprintf("project base of class %q is unresolved: %s", class.ID, cause)
+			}
+			if s.index.InCycle[class.ID] {
+				return Type{}, typeBlocked, fmt.Sprintf("project inheritance cycle includes class %q", class.ID)
+			}
+			if class.ParentID == "" {
+				if cause := s.scopedTerminalCause(class); cause != "" {
+					return Type{}, typeBlocked, cause
+				}
 			}
 			current = class.ParentID
 		}
@@ -1006,6 +1018,26 @@ func (s *InterfaceSet) resolveScopedUserType(classID string, parts []string) (Ty
 		scope = scope[:cut]
 	}
 	return Type{}, typeNotFound, ""
+}
+
+// scopedTerminalCause reports whether terminal ancestry is incomplete. A
+// scoped miss may reach global class names only after its user chain and
+// terminal engine segment are complete.
+func (s *InterfaceSet) scopedTerminalCause(class *ClassDecl) string {
+	if s.index == nil {
+		return "class index is unavailable"
+	}
+	if len(s.index.ParseFailures) > 0 {
+		return fmt.Sprintf("source parse failure at %q leaves project ancestry incomplete", s.index.ParseFailures[0])
+	}
+	base := class.ExternalBase
+	if base == "" {
+		base = "RefCounted"
+	}
+	if _, complete, cause := s.engineOwners(base); !complete {
+		return cause
+	}
+	return ""
 }
 
 func (s *InterfaceSet) directUserType(class *ClassDecl, parts []string) (bool, Type, typeResolution, string) {
