@@ -355,6 +355,18 @@ func TestScopesDoNotResolveSuperInConstantInitializers(t *testing.T) {
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, source.File("child.gd"), "super", 3), "constant super")
 }
 
+func TestScopesDoNotResolveExplicitSuperMembersInConstantInitializers(t *testing.T) {
+	source := sources(t, map[string]string{
+		"base.gd":  "class_name Base\nstatic func build():\n\treturn 1\n",
+		"child.gd": "class_name Child extends Base\nconst CLASS_VALUE = super.build()\nenum { ENUM_VALUE = super.build() }\nstatic func run():\n\tconst LOCAL_VALUE = super.build()\n",
+	})
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeStaticEngine(t)))
+	file := source.File("child.gd")
+	for _, line := range []int{2, 3, 5} {
+		scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "super", line), "explicit super in constant initializer")
+	}
+}
+
 func TestScopesFreezeConstantBindingFacts(t *testing.T) {
 	source := sources(t, map[string]string{
 		"player.gd": "class_name Player\nfunc run():\n\tconst FIRST = 1\n\tconst SECOND = FIRST\n",
@@ -460,6 +472,30 @@ func TestScopesComposeLocalMemberProjectAndEngineNamespaces(t *testing.T) {
 		binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, testCase.name, testCase.line), testCase.kind)
 		if binding.Type().Kind() != KindClass || binding.Type().Meta() != testCase.meta {
 			t.Errorf("%s binding type = %v %q (meta %t), want class meta %t", testCase.name, binding.Type().Kind(), binding.Type().Name(), binding.Type().Meta(), testCase.meta)
+		}
+	}
+}
+
+func TestScopesKeepBuiltinTypeObjectsFoundButUnknown(t *testing.T) {
+	source := sources(t, map[string]string{
+		"player.gd": "class_name Player\nfunc run():\n\tint\n\tString\n\tCallable\n",
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("builtin type fixture did not parse: %v", failures)
+	}
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeNamespaceEngine(t)))
+	file := source.File("player.gd")
+	for _, testCase := range []struct {
+		name string
+		line int
+	}{
+		{name: "int", line: 3},
+		{name: "String", line: 4},
+		{name: "Callable", line: 5},
+	} {
+		binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, testCase.name, testCase.line), BindingEngineType)
+		if binding.Type().Kind() != KindUnknown || binding.Type().Reason() == "" {
+			t.Errorf("%s type-object binding = %v %q (%q), want reasoned unknown", testCase.name, binding.Type().Kind(), binding.Type().Name(), binding.Type().Reason())
 		}
 	}
 }

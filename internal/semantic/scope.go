@@ -947,6 +947,9 @@ func (i *ScopeIndex) resolveSelf(scope *Scope) BindingResult {
 }
 
 func (i *ScopeIndex) resolveSuper(scope *Scope) BindingResult {
+	if scope.context.constantExpression {
+		return unknownBinding("super is unavailable in a constant initializer")
+	}
 	if scope.context.superTarget == "" {
 		return unknownBinding("super is unavailable outside a direct base-dispatch context")
 	}
@@ -1068,7 +1071,7 @@ func (i *ScopeIndex) resolveEngineGlobal(scope *Scope, name string) BindingResul
 	engine := i.interfaces.engine
 	candidates := []Binding{}
 	if resolved := engine.ResolveType(name); resolved.Kind() != KindUnknown {
-		candidates = append(candidates, i.namespaceBinding(scope, "engine-type:"+name, BindingEngineType, name, "", classObjectType(resolved), nil, nil, 0, 0))
+		candidates = append(candidates, i.namespaceBinding(scope, "engine-type:"+name, BindingEngineType, name, "", engineTypeObjectType(name, resolved), nil, nil, 0, 0))
 	}
 	if resolved, ok := engine.Singleton(name); ok {
 		candidates = append(candidates, i.namespaceBinding(scope, "engine-singleton:"+name, BindingEngineSingleton, name, "", resolved, nil, nil, 0, 0))
@@ -1098,6 +1101,13 @@ func classObjectType(resolved Type) Type {
 		return resolved
 	}
 	return Class(resolved.Name(), nil, true)
+}
+
+func engineTypeObjectType(name string, resolved Type) Type {
+	if resolved.Kind() == KindClass {
+		return classObjectType(resolved)
+	}
+	return Unknown(fmt.Sprintf("engine type %q has no class-object representation", name))
 }
 
 func constantEngineGlobalAllowed(binding Binding) bool {
