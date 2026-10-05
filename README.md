@@ -1048,17 +1048,36 @@ the stack rather than being refused at check time.
 The helper is hand-written GDScript that never varies per project, so it ships
 as a Godot addon rather than as code `gen` writes. The addon is
 `addons/gdkit/equality_helpers.gd`, declaring `class_name GDKitEquality`, and
-it is installed with [gpm](https://github.com/cafecito-games/gpm):
+it is installed with
+[gpm](https://github.com/cafecito-games/godot-package-manager) from the same
+GitHub release as the `gdkit` binary:
 
 ```sh
-gpm add --name gdkit --source git --url https://github.com/cafecito-games/gdkit.git --source-path addons/gdkit
+gpm add --name gdkit --source github-release --repo cafecito-games/gdkit --version <tag>
 ```
+
+Use the tag of the gdkit release you run (`gdkit version`): the addon is
+versioned with the tool because the generated call and the helper must agree on
+one signature. The release carries a `gpm-index.toml` beside a `core` archive,
+which is how gpm recognises it, so no `--asset` is needed. The addon is pure
+GDScript, so it publishes no platform slices and needs no `platforms` entry.
+
+To track the repository instead of a release, install from a source tree; the
+subdirectory is required because the repository holds more than the addon:
+
+```sh
+gpm add --name gdkit --source git --url https://github.com/cafecito-games/gdkit.git --version <tag-or-sha> --source-path addons/gdkit
+```
+
+The addon ships its `.uid` sidecar, so `gdkit uid check` passes on a project
+that has never been opened in the editor. It has no `plugin.cfg`: a
+`class_name` global needs no editor plugin, so there is nothing to enable.
 
 A class that opts into `deep_equals` while the project declares no
-`GDKitEquality` is refused as `generate.unsupported`, naming that command:
+`GDKitEquality` is refused as `generate.unsupported`, naming the release form:
 
 ```
-deep_equals calls GDKitEquality, which this project does not declare; install the gdkit addon (gpm add --name gdkit --source git --url https://github.com/cafecito-games/gdkit.git --source-path addons/gdkit)
+deep_equals calls GDKitEquality, which this project does not declare; install the gdkit addon (gpm add --name gdkit --source github-release --repo cafecito-games/gdkit --version <tag>, where <tag> is the release matching this gdkit)
 ```
 
 The class is found by its `class_name`, wherever the addon is installed, so a
@@ -1072,6 +1091,26 @@ call depends on one signature.
 default `exclude`, so the class is not classified and a call to it is not a
 dependency edge. `gen` likewise never writes to it, because `addons/**` is
 excluded from the files it acts on.
+
+#### Packaging the addon
+
+Each gdkit release also publishes the addon's gpm archives and
+`gpm-index.toml` as release assets. Nothing but shippable GDScript and its
+`.uid` sidecar may live under `addons/gdkit/`: gpm has no exclusion mechanism,
+so every file there lands in the `core` archive every consumer downloads.
+`packaging/gpm-package.toml` is kept out of the repository root so a bare
+`gpm package` fails instead of publishing the wrong tree. Its `version` is a
+placeholder; the addon takes the version of the gdkit tag that published it.
+
+```sh
+scripts/package-addon 0.4.0 /tmp/gdkit-addon   # archives and gpm-index.toml, side by side
+scripts/test-package-addon                    # core only, no binaries, reproducible bytes
+```
+
+`scripts/package-addon` stages the tree with `scripts/stage-addon-tree` and
+needs `gpm` 0.5.1 or newer on `PATH`. The release workflow runs it after
+GoReleaser, whose `--clean` empties `dist/`, and uploads the whole output
+directory because a consumer resolves each archive beside its index.
 
 ### Generation diagnostics
 

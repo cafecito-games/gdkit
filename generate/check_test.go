@@ -296,7 +296,7 @@ func TestDeepEqualsRefusesWithoutTheCompanionAddon(t *testing.T) {
 	if report.HasChanges() {
 		t.Error("a candidate was produced without the companion addon")
 	}
-	for _, want := range []string{"GDKitEquality", "gpm add"} {
+	for _, want := range []string{"GDKitEquality", "gpm add --name gdkit --source github-release --repo cafecito-games/gdkit"} {
 		if !strings.Contains(diagnostic.Message, want) {
 			t.Errorf("message = %q, want it to name %q", diagnostic.Message, want)
 		}
