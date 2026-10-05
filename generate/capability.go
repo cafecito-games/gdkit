@@ -18,6 +18,13 @@ var (
 	helpersSignature = Signature{Name: "deep_equals", Static: true, Arity: 2}
 )
 
+// helpersClassName is the global the generated comparison calls. It is the
+// class_name of the companion addon rather than a configured path, because the
+// name is what the emitted code actually depends on: resolving it this way
+// works wherever the addon is installed, and works for a project that vendors
+// the file by hand.
+const helpersClassName = "GDKitEquality"
+
 type pair struct {
 	class     string
 	signature Signature
@@ -143,7 +150,7 @@ func Resolve(index *Index, requested map[string][]string, blockers map[string]bo
 		}
 	}
 	for id, class := range index.Classes {
-		if class.HasRegion && len(requested[id]) == 0 && class != index.HelpersClass {
+		if class.HasRegion && len(requested[id]) == 0 {
 			capabilities.orphaned[id] = true
 		}
 	}
@@ -253,10 +260,19 @@ func (c *Capabilities) demote(index *Index, key pair, blockers map[string]bool) 
 	return false
 }
 
-// hasHelpersClass reports a usable helpers class: one that exists and declares
-// a class_name, since the generated call is through that global.
+// hasHelpersClass reports a usable companion addon: the class is installed and
+// declares the static comparison the generated code calls.
+//
+// Checking the declaration rather than a version is deliberate. The generated
+// call depends on one signature, not on a release number, so asking the index
+// what the class declares answers the real question and needs no knowledge of
+// how the addon was installed.
 func hasHelpersClass(index *Index) bool {
-	return index.HelpersClass != nil && index.HelpersClass.HasClassName
+	if index.HelpersClass == nil {
+		return false
+	}
+	method, declared := index.HelpersClass.Methods[helpersSignature.Name]
+	return declared && method.Signature == helpersSignature
 }
 
 // ancestryHasFields reports whether any strict ancestor declares a selectable

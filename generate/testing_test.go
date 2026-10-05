@@ -1,6 +1,7 @@
 package generate
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,6 +75,21 @@ func loadSelected(t *testing.T, config Config, files map[string]string) *project
 		t.Fatal(err)
 	}
 	return snapshot
+}
+
+// companionAddon is the installed addon's class, as gen sees it: indexed out
+// of the universe, and unselected because addons/** is excluded.
+var companionAddon = map[string]string{
+	"addons/gdkit/equality_helpers.gd": "class_name GDKitEquality\nextends RefCounted\n\n\n" +
+		"static func deep_equals(p_lhs: Variant, p_rhs: Variant) -> bool:\n\treturn p_lhs == p_rhs\n",
+}
+
+// withCompanionAddon returns files with the companion addon installed beside
+// them, leaving the caller's map untouched.
+func withCompanionAddon(files map[string]string) map[string]string {
+	merged := maps.Clone(companionAddon)
+	maps.Copy(merged, files)
+	return merged
 }
 
 func writeInto(t *testing.T, root string, files map[string]string) {

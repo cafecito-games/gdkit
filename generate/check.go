@@ -104,7 +104,7 @@ func (p Plan) HasBlockers() bool { return len(p.Diagnostics) > 0 }
 // so this terminates.
 func (g *Generator) Check(snapshot *project.Snapshot) Plan {
 	index := BuildIndex(snapshot)
-	index.HelpersClass = index.TopLevel[g.compiled.helpersPath]
+	index.HelpersClass = index.ByClassName[helpersClassName]
 	requested, markers := g.resolveOptIn(snapshot, index)
 	blockers := g.localBlockers(index, requested, markers)
 	// An unsafe refusal is reported from the pass that found it. A later pass
@@ -194,25 +194,7 @@ func (g *Generator) resolveOptIn(snapshot *project.Snapshot, index *Index) (map[
 			requested[id] = names
 		}
 	}
-	// The helpers file is in scope because the configuration points at it, not
-	// because it carries a directive or matches a generate entry. Injecting
-	// the request here is also what keeps orphan detection off it: that rule
-	// fires on any class holding a region absent from requested.
-	if helpers := index.HelpersClass; helpers != nil && !helpers.Inner && selected[helpers.Path] {
-		requested[helpers.ID] = withGenerator(requested[helpers.ID], helpersGenerator{}.Name())
-	}
 	return requested, diagnostics
-}
-
-// withGenerator appends a generator name once, preserving the order the
-// caller's own list already has.
-func withGenerator(names []string, name string) []string {
-	for _, existing := range names {
-		if existing == name {
-			return names
-		}
-	}
-	return append(names, name)
 }
 
 // directivesOf reads the directive comments a class owns directly.
@@ -313,8 +295,7 @@ func (g *Generator) buildPlan(snapshot *project.Snapshot, index *Index, requeste
 	// also be the way to hide it.
 	for _, id := range sortedKeys(index.Classes) {
 		class := index.Classes[id]
-		// Nothing may prune a file the configuration names, selected or not.
-		if class.Inner || !class.HasRegion || len(requested[id]) > 0 || class == index.HelpersClass {
+		if class.Inner || !class.HasRegion || len(requested[id]) > 0 {
 			continue
 		}
 		plan.Orphans = append(plan.Orphans, class.Path)
@@ -405,19 +386,14 @@ func (g *Generator) whyRefused(index *Index, class *Class, signature Signature, 
 		return fmt.Sprintf("%s needs the whole inheritance graph, and it is incomplete: %s",
 			signature.Name, capabilities.UniverseCause)
 	case signature == deepEqualsSignature && index.HelpersClass == nil:
-		// One message covers four causes, because from here they are one
-		// fact: no class was found at the configured path. Check performs no
-		// I/O, so it cannot tell a missing file from a typo, an excluded
-		// path, or a path outside every source root — and naming helpers_path
-		// points the reader at the one place all four are fixed.
 		return fmt.Sprintf(
-			"deep_equals needs the helpers class named by helpers_path (%s), which no file in this project "+
-				"declares; run `gdkit gen init --helpers`, or set helpers_path if the class lives elsewhere",
-			g.compiled.helpersPath)
-	case signature == deepEqualsSignature && !index.HelpersClass.HasClassName:
+			"deep_equals calls %s, which this project does not declare; install the gdkit addon "+
+				"(gpm add --name gdkit --source git --url https://github.com/cafecito-games/gdkit.git "+
+				"--source-path addons/gdkit)", helpersClassName)
+	case signature == deepEqualsSignature && !hasHelpersClass(index):
 		return fmt.Sprintf(
-			"deep_equals calls the helpers class through a global, and %s declares no class_name",
-			index.HelpersClass.Path)
+			"%s is declared at %s but has no static deep_equals(p_lhs, p_rhs), so the installed gdkit addon is too old",
+			helpersClassName, index.HelpersClass.Path)
 	case signature == deepEqualsSignature && index.FieldTypeCycle(class.ID):
 		return fmt.Sprintf(
 			"deep_equals cannot be shown to terminate: this class's field types form a cycle through %s",

@@ -288,39 +288,47 @@ func TestTheHelpersDirectiveIsNotAccepted(t *testing.T) {
 	assertDiagnostic(t, report, ruleMarker)
 }
 
-func TestDeepEqualsRefusesWithoutAHelpersClass(t *testing.T) {
+func TestDeepEqualsRefusesWithoutTheCompanionAddon(t *testing.T) {
 	report := checkProject(t, DefaultConfig(), map[string]string{
 		"a.gd": "class_name Thing\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar x: int\n",
 	})
-	assertDiagnostic(t, report, ruleUnsupported)
+	diagnostic := assertDiagnostic(t, report, ruleUnsupported)
 	if report.HasChanges() {
-		t.Error("a candidate was produced without a helpers class")
+		t.Error("a candidate was produced without the companion addon")
 	}
-	named := false
-	for _, diagnostic := range report.Diagnostics {
-		if strings.Contains(diagnostic.Message, "gen init --helpers") &&
-			strings.Contains(diagnostic.Message, "helpers_path") {
-			named = true
+	for _, want := range []string{"GDKitEquality", "gpm add"} {
+		if !strings.Contains(diagnostic.Message, want) {
+			t.Errorf("message = %q, want it to name %q", diagnostic.Message, want)
 		}
-	}
-	if !named {
-		t.Errorf("no diagnostic named both remedies: %v", report.Diagnostics)
 	}
 }
 
-func TestDeepEqualsRefusesAHelpersFileWithoutAClassName(t *testing.T) {
+func TestDeepEqualsRefusesAnAddonWithoutTheStaticComparison(t *testing.T) {
 	report := checkProject(t, DefaultConfig(), map[string]string{
-		"gdkit_helpers.gd": "extends RefCounted\n",
-		"a.gd":             "class_name Thing\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar x: int\n",
+		"addons/gdkit/equality_helpers.gd": "class_name GDKitEquality\nextends RefCounted\n\n\n" +
+			"static func deep_equals(p_only: Variant) -> bool:\n\treturn true\n",
+		"a.gd": "class_name Thing\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar x: int\n",
 	})
-	found := false
-	for _, diagnostic := range report.Diagnostics {
-		if diagnostic.Rule == ruleUnsupported && strings.Contains(diagnostic.Message, "class_name") {
-			found = true
-		}
+	diagnostic := assertDiagnostic(t, report, ruleUnsupported)
+	if report.HasChanges() {
+		t.Error("a candidate was produced against an addon without the static comparison")
 	}
-	if !found {
-		t.Errorf("no diagnostic named the missing class_name: %v", report.Diagnostics)
+	if !strings.Contains(diagnostic.Message, "too old") {
+		t.Errorf("message = %q, want the addon called too old", diagnostic.Message)
+	}
+}
+
+func TestTheCompanionAddonIsNeverGeneratedFor(t *testing.T) {
+	report := checkProject(t, DefaultConfig(), withCompanionAddon(map[string]string{
+		"a.gd": "class_name Thing\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar x: int\n",
+	}))
+	if len(report.Results) != 1 || report.Results[0].Path != "a.gd" || !report.Results[0].Changed {
+		t.Errorf("results = %v, want a changed candidate for a.gd only", report.Results)
+	}
+	for _, diagnostic := range report.Diagnostics {
+		if diagnostic.Path == "addons/gdkit/equality_helpers.gd" {
+			t.Errorf("the addon was reported: %s", diagnostic)
+		}
 	}
 }
 

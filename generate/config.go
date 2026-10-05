@@ -31,13 +31,6 @@ type Config struct {
 	// Generate opts files in by path. A file matching several entries gets the
 	// union of their generators.
 	Generate []Entry `json:"generate"`
-	// HelpersPath names the generated utility class, project-root-relative.
-	// It should be somewhere the snapshot walks, because the class is resolved
-	// out of the index like any other — but that is not validated here, since
-	// the default lies outside a project whose source_roots do not include the
-	// root, and such a config has to keep loading. An unreachable path resolves
-	// to no helpers class, and deep_equals refuses with a message saying so.
-	HelpersPath string `json:"helpers_path,omitempty"`
 	// MinimumGdkitVersion is the floor this config needs.
 	MinimumGdkitVersion string `json:"minimum_gdkit_version,omitempty"`
 }
@@ -53,7 +46,6 @@ func DefaultConfig() Config {
 		SourceRoots: []string{"."},
 		Exclude:     []string{".git/**", ".godot/**", ".gdkit/**", "addons/**"},
 		Generate:    []Entry{},
-		HelpersPath: "gdkit_helpers.gd",
 	}
 }
 
@@ -124,40 +116,13 @@ func (c Config) Validate() error {
 			return fmt.Errorf("exclude pattern %q: %w", pattern, err)
 		}
 	}
-	if err := c.validateHelpersPath(); err != nil {
-		return err
-	}
 	_, err := c.compile()
 	return err
 }
 
-// validateHelpersPath checks the shape of the helpers path and nothing more.
-//
-// Whether the project walk actually reaches it is deliberately not checked
-// here. A project with "source_roots": ["src"] and no helpers_path of its own
-// carries the default, which is outside that root, and failing to load such a
-// config would break every existing project on upgrade. An unreachable path
-// instead resolves to no helpers class at all, which Check reports as a
-// refusal naming both remedies — and Check cannot distinguish an excluded
-// path from an absent file in any case, because it performs no I/O.
-func (c Config) validateHelpersPath() error {
-	if c.HelpersPath == "" {
-		return errors.New("helpers_path must name the generated utility class")
-	}
-	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(c.HelpersPath)))
-	if filepath.IsAbs(filepath.FromSlash(c.HelpersPath)) || clean == ".." || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("helpers_path %q must be a project-relative path", c.HelpersPath)
-	}
-	if !strings.HasSuffix(clean, ".gd") {
-		return fmt.Errorf("helpers_path %q must name a .gd file", c.HelpersPath)
-	}
-	return nil
-}
-
 // compiled holds the config's prepared forms.
 type compiled struct {
-	entries     []Entry
-	helpersPath string
+	entries []Entry
 }
 
 func (c Config) compile() (*compiled, error) {
@@ -182,7 +147,6 @@ func (c Config) compile() (*compiled, error) {
 		}
 		result.entries = append(result.entries, entry)
 	}
-	result.helpersPath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(c.HelpersPath)))
 	return result, nil
 }
 

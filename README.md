@@ -901,7 +901,6 @@ gdkit gen check /path/to/godot-project          # report, write nothing
 gdkit gen check --diff /path/to/godot-project   # show what would change
 gdkit gen write /path/to/godot-project          # write the regions
 gdkit gen init /path/to/godot-project           # write the default config
-gdkit gen init --helpers /path/to/godot-project # also write the helpers class
 ```
 
 GDScript requires a class's methods to live in that class's one script file, so
@@ -909,11 +908,8 @@ there is no sibling-file equivalent of `go generate` here: the methods land in
 your own script, between sentinels, and `gen` owns everything between them. Run
 `gen write` on a clean tree and review the diff, as with `format write`.
 
-`deep_equals` also needs a shared utility class, which `gen init --helpers`
-writes once; see [What `deep_equals` compares](#what-deep_equals-compares). A
-project that already generates `deep_equals` must run `gdkit gen init --helpers`
-when it upgrades. Until then every class that opts in is refused, and the first
-`gen write` afterwards rewrites every existing `deep_equals` region.
+`deep_equals` also needs a companion addon; see
+[The companion addon](#the-companion-addon).
 
 ### Opting in
 
@@ -972,14 +968,14 @@ func deep_equals(p_other: Variant) -> bool:
 		return false
 	if p_other.get_script() != get_script():
 		return false
-	if not GDKitHelpers.deep_equals(self.children, p_other.children):
+	if not GDKitEquality.deep_equals(self.children, p_other.children):
 		return false
-	if not GDKitHelpers.deep_equals(self.label, p_other.label):
+	if not GDKitEquality.deep_equals(self.label, p_other.label):
 		return false
 	return true
 ```
 
-The helper lives in a region `gen` owns inside the project's helpers class:
+The helper is the static method of the companion addon's `GDKitEquality` class:
 
 ```gdscript
 static func deep_equals(p_lhs: Variant, p_rhs: Variant) -> bool:
@@ -1047,39 +1043,35 @@ through the identity check, and refusing that shape would refuse most of what
 a container, or through an untyped, `Variant`, or `:=`-inferred field, exhausts
 the stack rather than being refused at check time.
 
-#### The helpers class
+#### The companion addon
 
-The class is a prerequisite. A class that opts into `deep_equals` while no class
-is found at `helpers_path` is refused as `generate.unsupported`:
+The helper is hand-written GDScript that never varies per project, so it ships
+as a Godot addon rather than as code `gen` writes. The addon is
+`addons/gdkit/equality_helpers.gd`, declaring `class_name GDKitEquality`, and
+it is installed with [gpm](https://github.com/cafecito-games/gpm):
+
+```sh
+gpm add --name gdkit --source git --url https://github.com/cafecito-games/gdkit.git --source-path addons/gdkit
+```
+
+A class that opts into `deep_equals` while the project declares no
+`GDKitEquality` is refused as `generate.unsupported`, naming that command:
 
 ```
-deep_equals needs the helpers class named by helpers_path (gdkit_helpers.gd), which no file in this project declares; run `gdkit gen init --helpers`, or set helpers_path if the class lives elsewhere
+deep_equals calls GDKitEquality, which this project does not declare; install the gdkit addon (gpm add --name gdkit --source git --url https://github.com/cafecito-games/gdkit.git --source-path addons/gdkit)
 ```
 
-One message covers four causes — the file is missing, the path has a typo, the
-path is excluded, or it lies outside every source root — because `Check` does no
-I/O and cannot tell them apart. A helpers file that declares no `class_name`
-gets its own message, because the call is made through that global.
+The class is found by its `class_name`, wherever the addon is installed, so a
+project that vendors the file by hand works too. It must declare the static
+`deep_equals(p_lhs, p_rhs)` the generated code calls; an installed addon that
+does not is refused with its own message saying the addon is too old. The check
+is on that declaration rather than on a version number, because the generated
+call depends on one signature.
 
-`gdkit gen init --helpers` writes `gdkit_helpers.gd`, a two-line stub declaring
-`class_name GDKitHelpers` and `extends RefCounted`, and a `gdkit_helpers.gd.uid`
-sidecar holding a random `uid://` drawn so that it collides with no identity the
-project already claims. The config, the script, and the sidecar are each written
-only when absent and reported separately, so running it again changes nothing
-and exits `0`. After that `gen write` maintains the helper region like any other.
-
-`--force` replaces the script but never an existing sidecar, because
-overwriting a `uid://` Godot already assigned would break every reference Godot
-has cached. It also rewrites `.gdkit/generate.json` with the defaults, which
-resets `helpers_path`. Without `--helpers`, `gen init` still refuses an existing
-config.
-
-`gdkit arch` excludes `gdkit_helpers.gd` by default. Classifying it is not
-viable: once classified it is a dependency target, and under the default policy
-`presentation` may depend on `application` and `presentation` only, so a
-presentation-layer value object calling it would be a `dependency.direction`
-violation whichever layer the file were filed under. Excluding it keeps its
-`class_name` out of the index, so a call to it is no edge at all.
+`gdkit arch` needs no configuration for the addon: `addons/**` is already in its
+default `exclude`, so the class is not classified and a call to it is not a
+dependency edge. `gen` likewise never writes to it, because `addons/**` is
+excluded from the files it acts on.
 
 ### Generation diagnostics
 
@@ -1090,7 +1082,7 @@ violation whichever layer the file were filed under. Excluding it keeps its
 | `generate.stale` | a region that is missing or out of date |
 | `generate.marker` | a malformed directive, an unknown generator name, or a second region in one class |
 | `generate.conflict` | a method of the same name already declared with a different signature |
-| `generate.unsupported` | a class `gen` refuses, with the reason: an unopened ancestor, a field-adding subclass, a cyclic field-type graph, or a `deep_equals` whose helpers class is missing |
+| `generate.unsupported` | a class `gen` refuses, with the reason: an unopened ancestor, a field-adding subclass, a cyclic field-type graph, or a `deep_equals` whose companion addon is missing or too old |
 | `generate.orphaned` | a region whose class no longer opts in |
 | `generate.unsafe` | a rewrite that verification refused |
 
@@ -1111,20 +1103,11 @@ An orphaned region is **kept** and reported, not deleted: removing it is
   "version": 1,
   "source_roots": ["."],
   "exclude": [".git/**", ".godot/**", ".gdkit/**", "addons/**"],
-  "helpers_path": "gdkit_helpers.gd",
   "generate": [
     { "paths": ["**/domain/value/*.gd"], "generators": ["to_string", "equals"] }
   ]
 }
 ```
-
-`helpers_path` is the project-root-relative path of the helpers class
-`deep_equals` calls into, and defaults to `gdkit_helpers.gd`. It must be
-somewhere the project walk reaches — inside a `source_roots` entry and not
-matched by `exclude` — but that is deliberately not validated: a project with
-`"source_roots": ["src"]` carries the default, which lies outside that root,
-and failing such a config would break every existing project. An unreachable
-path simply yields the refusal described above.
 
 A file matching several entries gets the **union** of their generators, so
 capability is added by adding a rule and reordering the list changes nothing.
@@ -1506,14 +1489,6 @@ permission without widening its whole layer:
 ```
 
 Set `unclassified` to `"ignore"` only when incremental adoption is intentional.
-
-The default `exclude` is `[".git/**", ".godot/**", ".gdkit/**", "addons/**",
-"gdkit_helpers.gd"]`. The last entry is the class `gdkit gen init --helpers`
-writes. It is excluded rather than classified because a classified file is a
-dependency target, and a presentation-layer value object calling it would be a
-`dependency.direction` violation under the default policy, whichever layer the
-file were filed under. A project that moves it through `helpers_path` in
-`.gdkit/generate.json` must exclude or classify it itself.
 
 The configuration is read strictly, because a rule you believe you wrote but
 that is not in effect is worse than no rule at all:

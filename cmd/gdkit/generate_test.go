@@ -3,13 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/cafecito-games/gdkit/generate"
-	"github.com/cafecito-games/gdkit/uid"
 )
 
 const optedInScript = "class_name Hex\nextends RefCounted\n\n# gdkit:generate = to_string, equals\nvar q: int\nvar r: int\n"
@@ -207,95 +204,5 @@ func TestRunGenWriteLeavesFormatCheckClean(t *testing.T) {
 	stdout.Reset()
 	if code := run([]string{"format", "check", root}, &stdout, &stderr); code != 0 {
 		t.Errorf("format check exit %d after gen write: %s", code, stdout.String())
-	}
-}
-
-func runGenInitHelpers(t *testing.T, root string, extra ...string) int {
-	t.Helper()
-	var stdout, stderr bytes.Buffer
-	args := append([]string{"gen", "init", "--helpers"}, extra...)
-	code := run(append(args, root), &stdout, &stderr)
-	if code != 0 {
-		t.Logf("stderr: %s", stderr.String())
-	}
-	return code
-}
-
-func TestGenInitHelpersWritesTheScriptAndSidecar(t *testing.T) {
-	root := t.TempDir()
-	if code := runGenInitHelpers(t, root); code != 0 {
-		t.Fatalf("exit %d", code)
-	}
-	script := readCLIFile(t, root, "gdkit_helpers.gd")
-	for _, want := range []string{"class_name GDKitHelpers", "extends RefCounted"} {
-		if !strings.Contains(script, want) {
-			t.Errorf("script lacks %q: %q", want, script)
-		}
-	}
-	sidecar := readCLIFile(t, root, "gdkit_helpers.gd.uid")
-	if _, ok := uid.Decode(strings.TrimSpace(sidecar)); !ok {
-		t.Errorf("sidecar %q does not decode", sidecar)
-	}
-}
-
-func TestGenInitHelpersIsIdempotent(t *testing.T) {
-	root := t.TempDir()
-	if code := runGenInitHelpers(t, root); code != 0 {
-		t.Fatalf("first exit %d", code)
-	}
-	first := readCLIFile(t, root, "gdkit_helpers.gd.uid")
-	if code := runGenInitHelpers(t, root); code != 0 {
-		t.Fatalf("second exit %d", code)
-	}
-	if second := readCLIFile(t, root, "gdkit_helpers.gd.uid"); second != first {
-		t.Errorf("sidecar changed from %q to %q", first, second)
-	}
-}
-
-func TestGenInitHelpersAvoidsAClaimedIdentity(t *testing.T) {
-	root := t.TempDir()
-	writeCLIFile(t, root, "other.gd", "class_name Other\nextends RefCounted\n")
-	writeCLIFile(t, root, "other.gd.uid", "uid://abcdefgh\n")
-	if code := runGenInitHelpers(t, root); code != 0 {
-		t.Fatalf("exit %d", code)
-	}
-	if got := strings.TrimSpace(readCLIFile(t, root, "gdkit_helpers.gd.uid")); got == "uid://abcdefgh" {
-		t.Errorf("the helpers sidecar reused a claimed identity %q", got)
-	}
-}
-
-func TestGenInitHelpersHonoursAConfiguredPath(t *testing.T) {
-	root := t.TempDir()
-	writeCLIFile(t, root, ".gdkit/generate.json", `{"version":1,"generate":[],"helpers_path":"src/helpers.gd","source_roots":["src"]}`)
-	if code := runGenInitHelpers(t, root); code != 0 {
-		t.Fatalf("exit %d", code)
-	}
-	_ = readCLIFile(t, root, "src/helpers.gd")
-	_ = readCLIFile(t, root, "src/helpers.gd.uid")
-}
-
-func TestGenInitHelpersForceReplacesTheScriptButNeverTheSidecar(t *testing.T) {
-	root := t.TempDir()
-	writeCLIFile(t, root, "gdkit_helpers.gd", "# hand edited\n")
-	writeCLIFile(t, root, "gdkit_helpers.gd.uid", "uid://abcdefgh\n")
-	if code := runGenInitHelpers(t, root, "--force"); code != 0 {
-		t.Fatalf("exit %d", code)
-	}
-	if script := readCLIFile(t, root, "gdkit_helpers.gd"); !strings.Contains(script, "class_name GDKitHelpers") {
-		t.Errorf("--force did not replace the script: %q", script)
-	}
-	if sidecar := readCLIFile(t, root, "gdkit_helpers.gd.uid"); sidecar != "uid://abcdefgh\n" {
-		t.Errorf("--force replaced the sidecar: %q", sidecar)
-	}
-}
-
-func TestGenInitWithoutHelpersWritesOnlyTheConfig(t *testing.T) {
-	root := t.TempDir()
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"gen", "init", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	if _, err := os.Stat(filepath.Join(root, "gdkit_helpers.gd")); !os.IsNotExist(err) {
-		t.Errorf("gen init without --helpers created the helpers class: %v", err)
 	}
 }

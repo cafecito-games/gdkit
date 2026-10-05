@@ -18,7 +18,7 @@ func TestDeepEqualsRecursesIntoAProjectClassField(t *testing.T) {
 		t.Errorf("no identity short-circuit:\n%s", got)
 	}
 	for _, name := range []string{"name", "position"} {
-		want := "\tif not GDKitHelpers.deep_equals(self." + name + ", p_other." + name + "):\n\t\treturn false\n"
+		want := "\tif not GDKitEquality.deep_equals(self." + name + ", p_other." + name + "):\n\t\treturn false\n"
 		if !strings.Contains(got, want) {
 			t.Errorf("%s did not go through the helper:\n%s", name, got)
 		}
@@ -39,11 +39,10 @@ func TestDeepEqualsComposesWithTheParentProvider(t *testing.T) {
 // A cyclic value object is pathological and cannot be shown to terminate, so
 // the class is refused rather than the generator growing a visited set.
 func TestACyclicFieldTypeGraphIsRefused(t *testing.T) {
-	report := checkProject(t, DefaultConfig(), map[string]string{
-		"gdkit_helpers.gd": helpersStub,
+	report := checkProject(t, DefaultConfig(), withCompanionAddon(map[string]string{
 		"node.gd": "class_name TreeNode\nextends RefCounted\n\n# gdkit:generate = deep_equals\n" +
 			"var parent: TreeNode\nvar label: String\n",
-	})
+	}))
 	diagnostic := assertDiagnostic(t, report, ruleUnsupported)
 	if !strings.Contains(diagnostic.Message, "cycle") {
 		t.Errorf("message = %q, want the cycle named", diagnostic.Message)
@@ -56,11 +55,10 @@ func TestACyclicFieldTypeGraphIsRefused(t *testing.T) {
 }
 
 func TestATwoClassFieldCycleIsRefused(t *testing.T) {
-	report := checkProject(t, DefaultConfig(), map[string]string{
-		"gdkit_helpers.gd": helpersStub,
-		"a.gd":             "class_name Alpha\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar beta: Beta\n",
-		"b.gd":             "class_name Beta\nextends RefCounted\n\nvar alpha: Alpha\n",
-	})
+	report := checkProject(t, DefaultConfig(), withCompanionAddon(map[string]string{
+		"a.gd": "class_name Alpha\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar beta: Beta\n",
+		"b.gd": "class_name Beta\nextends RefCounted\n\nvar alpha: Alpha\n",
+	}))
 	assertDiagnostic(t, report, ruleUnsupported)
 }
 
@@ -69,11 +67,10 @@ func TestATwoClassFieldCycleIsRefused(t *testing.T) {
 // identity check, and refusing this shape would refuse most of what
 // deep_equals is for.
 func TestAContainerOfTheSameClassIsNotACycle(t *testing.T) {
-	report := checkProject(t, DefaultConfig(), map[string]string{
-		"gdkit_helpers.gd": helpersStub,
+	report := checkProject(t, DefaultConfig(), withCompanionAddon(map[string]string{
 		"a.gd": "class_name Branch\nextends RefCounted\n\n# gdkit:generate = deep_equals\n" +
 			"var children: Array[Branch]\nvar label: String\n",
-	})
+	}))
 	for _, diagnostic := range report.Diagnostics {
 		if diagnostic.Rule != ruleStale {
 			t.Errorf("a container of the same class was read as a cycle: %s", diagnostic)
@@ -106,16 +103,15 @@ func TestDeepEqualsIsARegisteredGeneratorName(t *testing.T) {
 }
 
 func TestDeepEqualsRoutesEveryFieldThroughTheHelper(t *testing.T) {
-	contents := applyOnce(t, DefaultConfig(), map[string]string{
-		"gdkit_helpers.gd": helpersStub,
-		"other.gd":         "class_name Other\nextends RefCounted\n",
+	contents := applyOnce(t, DefaultConfig(), withCompanionAddon(map[string]string{
+		"other.gd": "class_name Other\nextends RefCounted\n",
 		"a.gd": "class_name Thing\nextends RefCounted\n\n# gdkit:generate = deep_equals\n" +
 			"var origin: Other\nvar children: Array[Thing]\nvar table: Dictionary[String, Thing]\n" +
 			"var loose = []\nvar count: int\n",
-	})
+	}))
 	text := contents["a.gd"]
 	for _, field := range []string{"origin", "children", "table", "loose", "count"} {
-		want := "if not GDKitHelpers.deep_equals(self." + field + ", p_other." + field + "):"
+		want := "if not GDKitEquality.deep_equals(self." + field + ", p_other." + field + "):"
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q\ngot:\n%s", want, text)
 		}
@@ -134,25 +130,11 @@ func TestDeepEqualsRoutesEveryFieldThroughTheHelper(t *testing.T) {
 	}
 }
 
-func TestDeepEqualsUsesTheHelpersClassName(t *testing.T) {
-	config := DefaultConfig()
-	config.HelpersPath = "util.gd"
-	contents := applyOnce(t, config, map[string]string{
-		"util.gd": "class_name Util\nextends RefCounted\n",
-		"a.gd": "class_name Thing\nextends RefCounted\n\n# gdkit:generate = deep_equals\n" +
-			"var x: int\n",
-	})
-	if !strings.Contains(contents["a.gd"], "Util.deep_equals(self.x, p_other.x)") {
-		t.Errorf("the call did not use the declared class_name\ngot:\n%s", contents["a.gd"])
-	}
-}
-
 func TestDeepEqualsComposesWithAnAncestorThroughTheHelper(t *testing.T) {
-	contents := applyOnce(t, DefaultConfig(), map[string]string{
-		"gdkit_helpers.gd": helpersStub,
-		"base.gd":          "class_name Base\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar a: int\n",
-		"child.gd":         "class_name Child\nextends Base\n\n# gdkit:generate = deep_equals\nvar b: int\n",
-	})
+	contents := applyOnce(t, DefaultConfig(), withCompanionAddon(map[string]string{
+		"base.gd":  "class_name Base\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar a: int\n",
+		"child.gd": "class_name Child\nextends Base\n\n# gdkit:generate = deep_equals\nvar b: int\n",
+	}))
 	if !strings.Contains(contents["child.gd"], "if not super.deep_equals(p_other):") {
 		t.Errorf("the super composition was lost\ngot:\n%s", contents["child.gd"])
 	}

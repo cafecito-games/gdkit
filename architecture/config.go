@@ -68,17 +68,6 @@ func DefaultConfig() Config {
 		SourceRoots: []string{"."},
 		Exclude: []string{
 			".git/**", ".godot/**", ".gdkit/**", "addons/**",
-			// gen's generated utility class, which gen init --helpers writes
-			// at this path. Classifying it is not viable: once classified it
-			// is a dependency target, and presentation may depend on
-			// application and presentation only, so a presentation-layer
-			// value object calling it would be a direction violation
-			// whichever layer the file were filed under. Excluding it keeps
-			// its class_name out of the index, so a call to it is no edge at
-			// all, which is the honest model for tool-generated
-			// infrastructure. A project that moves the file through
-			// generate.json's helpers_path excludes or classifies it itself.
-			"gdkit_helpers.gd",
 		},
 		Classifications: []ClassificationRule{
 			{Pattern: "**/features/{feature}/domain/**", Layer: "domain", Feature: "{feature}"},

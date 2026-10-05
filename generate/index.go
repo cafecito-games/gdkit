@@ -99,11 +99,12 @@ type Index struct {
 	// TopLevel is keyed by path and holds only each file's outermost class,
 	// which is the only kind that can be a generation target.
 	TopLevel map[string]*Class
-	// HelpersClass is the class at the configured helpers_path, nil when the
-	// project declares none. BuildIndex does not set it — it knows nothing of
-	// configuration — so Check assigns it after building. Emitters read the
-	// class name from here rather than hardcoding one, which is what lets a
-	// project rename the class.
+	// HelpersClass is the companion addon's class, nil when the project has
+	// not installed it. BuildIndex does not set it, because the whole index
+	// has to exist before a class can be looked up by name, so Check assigns
+	// it afterwards. It is resolved out of the universe rather than the
+	// selection, which is what lets the addon sit under addons/** — indexed,
+	// so its class_name is visible, and unselected, so gen never writes to it.
 	HelpersClass        *Class
 	ByClassName         map[string]*Class
 	DuplicateClassNames map[string][]string
