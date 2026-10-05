@@ -404,6 +404,20 @@ func (g *Generator) whyRefused(index *Index, class *Class, signature Signature, 
 	case capabilities.UniverseCause != "":
 		return fmt.Sprintf("%s needs the whole inheritance graph, and it is incomplete: %s",
 			signature.Name, capabilities.UniverseCause)
+	case signature == deepEqualsSignature && index.HelpersClass == nil:
+		// One message covers four causes, because from here they are one
+		// fact: no class was found at the configured path. Check performs no
+		// I/O, so it cannot tell a missing file from a typo, an excluded
+		// path, or a path outside every source root — and naming helpers_path
+		// points the reader at the one place all four are fixed.
+		return fmt.Sprintf(
+			"deep_equals needs the helpers class named by helpers_path (%s), which no file in this project "+
+				"declares; run `gdkit gen init --helpers`, or set helpers_path if the class lives elsewhere",
+			g.compiled.helpersPath)
+	case signature == deepEqualsSignature && !index.HelpersClass.HasClassName:
+		return fmt.Sprintf(
+			"deep_equals calls the helpers class through a global, and %s declares no class_name",
+			index.HelpersClass.Path)
 	case signature == deepEqualsSignature && index.FieldTypeCycle(class.ID):
 		return fmt.Sprintf(
 			"deep_equals cannot be shown to terminate: this class's field types form a cycle through %s",

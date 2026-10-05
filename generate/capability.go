@@ -213,6 +213,12 @@ func (c *Capabilities) demote(index *Index, key pair, blockers map[string]bool) 
 	if c.UniverseCause != "" || index.ReachesCycle(key.class) {
 		return true
 	}
+	// The generated comparison calls a static method on the helpers class, so
+	// without one it would not compile. This is the only demotion a single
+	// command fixes, which is why whyRefused names that command.
+	if key.signature == deepEqualsSignature && !hasHelpersClass(index) {
+		return true
+	}
 	// A cyclic field-type graph cannot be shown to terminate: comparing two
 	// independently built cyclic graphs never finds an identical pair, so the
 	// identity check that settles every realistic recursive shape never fires.
@@ -245,6 +251,12 @@ func (c *Capabilities) demote(index *Index, key pair, blockers map[string]bool) 
 		}
 	}
 	return false
+}
+
+// hasHelpersClass reports a usable helpers class: one that exists and declares
+// a class_name, since the generated call is through that global.
+func hasHelpersClass(index *Index) bool {
+	return index.HelpersClass != nil && index.HelpersClass.HasClassName
 }
 
 // ancestryHasFields reports whether any strict ancestor declares a selectable

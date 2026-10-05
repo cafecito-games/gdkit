@@ -287,3 +287,53 @@ func TestTheHelpersDirectiveIsNotAccepted(t *testing.T) {
 	})
 	assertDiagnostic(t, report, ruleMarker)
 }
+
+func TestDeepEqualsRefusesWithoutAHelpersClass(t *testing.T) {
+	report := checkProject(t, DefaultConfig(), map[string]string{
+		"a.gd": "class_name Thing\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar x: int\n",
+	})
+	assertDiagnostic(t, report, ruleUnsupported)
+	if report.HasChanges() {
+		t.Error("a candidate was produced without a helpers class")
+	}
+	named := false
+	for _, diagnostic := range report.Diagnostics {
+		if strings.Contains(diagnostic.Message, "gen init --helpers") &&
+			strings.Contains(diagnostic.Message, "helpers_path") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("no diagnostic named both remedies: %v", report.Diagnostics)
+	}
+}
+
+func TestDeepEqualsRefusesAHelpersFileWithoutAClassName(t *testing.T) {
+	report := checkProject(t, DefaultConfig(), map[string]string{
+		"gdkit_helpers.gd": "extends RefCounted\n",
+		"a.gd":             "class_name Thing\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar x: int\n",
+	})
+	found := false
+	for _, diagnostic := range report.Diagnostics {
+		if diagnostic.Rule == ruleUnsupported && strings.Contains(diagnostic.Message, "class_name") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no diagnostic named the missing class_name: %v", report.Diagnostics)
+	}
+}
+
+func TestEqualsIsUnaffectedByAMissingHelpersClass(t *testing.T) {
+	report := checkProject(t, DefaultConfig(), map[string]string{
+		"a.gd": "class_name Thing\nextends RefCounted\n\n# gdkit:generate = equals\nvar x: int\n",
+	})
+	for _, diagnostic := range report.Diagnostics {
+		if diagnostic.Rule != ruleStale {
+			t.Errorf("equals was affected by the missing helpers class: %s", diagnostic)
+		}
+	}
+	if !report.HasChanges() {
+		t.Error("equals produced no candidate")
+	}
+}
