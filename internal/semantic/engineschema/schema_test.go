@@ -536,6 +536,32 @@ func TestOfficialArtifactResolvesOrExplainsEveryRetainedTypeSpelling(t *testing.
 		if resolved.Kind() == semantic.KindUnknown && !strings.Contains(resolved.Reason(), spelling) {
 			t.Errorf("official retained type %q became an unexplained Unknown: %s", spelling, resolved.Reason())
 		}
+		assertContainerComponentsResolved(t, spelling, resolved)
+	}
+}
+
+func assertContainerComponentsResolved(t *testing.T, spelling string, resolved semantic.Type) {
+	t.Helper()
+	if element, ok := resolved.Element(); ok {
+		if element.Kind() == semantic.KindUnknown {
+			t.Errorf("official retained type %q hid an Unknown array element: %s", spelling, element.Reason())
+		} else {
+			assertContainerComponentsResolved(t, spelling, element)
+		}
+	}
+	if key, ok := resolved.Key(); ok {
+		if key.Kind() == semantic.KindUnknown {
+			t.Errorf("official retained type %q hid an Unknown dictionary key: %s", spelling, key.Reason())
+		} else {
+			assertContainerComponentsResolved(t, spelling, key)
+		}
+	}
+	if value, ok := resolved.Value(); ok {
+		if value.Kind() == semantic.KindUnknown {
+			t.Errorf("official retained type %q hid an Unknown dictionary value: %s", spelling, value.Reason())
+		} else {
+			assertContainerComponentsResolved(t, spelling, value)
+		}
 	}
 }
 

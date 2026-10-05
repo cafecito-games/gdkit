@@ -1,6 +1,8 @@
 package semantic
 
 import (
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -168,6 +170,34 @@ func TestEngineResolvesContainerAndEnumSpellings(t *testing.T) {
 	if dictionary.Kind() != KindDictionary || !keyOK || !valueOK || key.Name() != "int" || value.Name() != "String" {
 		t.Fatalf("typed dictionary = kind %v key %q/%t value %q/%t", dictionary.Kind(), key.Name(), keyOK, value.Name(), valueOK)
 	}
+	for spelling, want := range map[string]struct {
+		kind Kind
+		name string
+	}{
+		"typedarray::enum::Object.Mode":           {kind: KindEnum, name: "Object.Mode"},
+		"typedarray::bitfield::Object.Flags":      {kind: KindEnum, name: "Object.Flags"},
+		"typedarray::typeddictionary::int;String": {kind: KindDictionary},
+		"typedarray::2/2:First,Second":            {kind: KindBuiltin, name: "int"},
+		"typedarray::24/17:Object":                {kind: KindClass, name: "Object"},
+		"typedarray::24/34:Object":                {kind: KindClass, name: "Object"},
+		"typedarray::27/0:":                       {kind: KindDictionary},
+	} {
+		resolved := engine.ResolveType(spelling)
+		element, ok := resolved.Element()
+		if resolved.Kind() != KindArray || !ok || element.Kind() != want.kind || (want.name != "" && element.Name() != want.name) {
+			t.Errorf("%s = kind %v element %v %q, %t", spelling, resolved.Kind(), element.Kind(), element.Name(), ok)
+		}
+	}
+	nested := engine.ResolveType("typedarray::typeddictionary::int;String")
+	nestedDictionary, ok := nested.Element()
+	if !ok {
+		t.Fatal("nested typed dictionary has no array element")
+	}
+	nestedKey, keyOK := nestedDictionary.Key()
+	nestedValue, valueOK := nestedDictionary.Value()
+	if !keyOK || !valueOK || nestedKey.Name() != "int" || nestedValue.Name() != "String" {
+		t.Fatalf("nested typed dictionary = key %q/%t value %q/%t", nestedKey.Name(), keyOK, nestedValue.Name(), valueOK)
+	}
 	for _, spelling := range []string{"enum::Object.Mode", "bitfield::Object.Flags"} {
 		if got := engine.ResolveType(spelling); got.Kind() != KindEnum || got.Name() != strings.SplitN(spelling, "::", 2)[1] {
 			t.Errorf("%s = kind %v name %q", spelling, got.Kind(), got.Name())
@@ -184,6 +214,52 @@ func TestEngineResolvesContainerAndEnumSpellings(t *testing.T) {
 	}
 	if engine.ResolveType("Callable").Kind() != KindCallable || engine.ResolveType("Signal").Kind() != KindSignal {
 		t.Error("Callable or Signal did not use its dedicated semantic kind")
+	}
+}
+
+// Godot's real producer feeds typedarray:: with PropertyInfo.hint_string at
+// core/extension/extension_api_dump.cpp:53-65 (commit ed1daf0bf). The numeric
+// vocabulary is Variant::Type from core/variant/variant.h:96-145 at that commit.
+func TestEngineResolvesEveryGodotVariantTypedArrayHint(t *testing.T) {
+	wantNames := []string{
+		"Variant", "bool", "int", "float", "String", "Vector2", "Vector2i", "Rect2", "Rect2i",
+		"Vector3", "Vector3i", "Transform2D", "Vector4", "Vector4i", "Plane", "Quaternion", "AABB",
+		"Basis", "Transform3D", "Projection", "Color", "StringName", "NodePath", "RID", "Object", "Callable",
+		"Signal", "Dictionary", "Array", "PackedByteArray", "PackedInt32Array", "PackedInt64Array",
+		"PackedFloat32Array", "PackedFloat64Array", "PackedStringArray", "PackedVector2Array", "PackedVector3Array",
+		"PackedColorArray", "PackedVector4Array",
+	}
+	if !reflect.DeepEqual(godotVariantTypeNames, wantNames) {
+		t.Fatalf("Godot Variant::Type mapping = %#v", godotVariantTypeNames)
+	}
+	builder := NewEngineBuilder()
+	if err := builder.AddClass("Object", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range wantNames {
+		if name == "Variant" || name == "Object" {
+			continue
+		}
+		if err := builder.AddBuiltin(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for code, want := range wantNames {
+		array := engine.ResolveType(fmt.Sprintf("typedarray::%d/0:", code))
+		element, ok := array.Element()
+		expected := engine.ResolveType(want)
+		if array.Kind() != KindArray || !ok || element.Kind() != expected.Kind() || element.Name() != expected.Name() {
+			t.Errorf("Variant::Type %d = array %v element %v %q, %t; want %v %q", code, array.Kind(), element.Kind(), element.Name(), ok, expected.Kind(), expected.Name())
+		}
+	}
+	malformed := engine.ResolveType("typedarray::999/0:")
+	element, ok := malformed.Element()
+	if !ok || element.Kind() != KindUnknown || !strings.Contains(element.Reason(), "999/0:") {
+		t.Fatalf("out-of-range Variant::Type = element %v reason %q, %t", element.Kind(), element.Reason(), ok)
 	}
 }
 

@@ -3,7 +3,28 @@ package semantic
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+)
+
+// godotVariantTypeNames is Variant::Type from Godot 4.7.2
+// core/variant/variant.h:96-145 (commit ed1daf0bf). Godot serializes some
+// typed-array element types as that enum's numeric value rather than as the
+// ordinary extension API type spelling. Keep this table in numeric order: the
+// values are an external wire format, not gdkit's own enum.
+var godotVariantTypeNames = []string{
+	"Variant", "bool", "int", "float", "String", "Vector2", "Vector2i", "Rect2", "Rect2i",
+	"Vector3", "Vector3i", "Transform2D", "Vector4", "Vector4i", "Plane", "Quaternion", "AABB",
+	"Basis", "Transform3D", "Projection", "Color", "StringName", "NodePath", "RID", "Object", "Callable",
+	"Signal", "Dictionary", "Array", "PackedByteArray", "PackedInt32Array", "PackedInt64Array",
+	"PackedFloat32Array", "PackedFloat64Array", "PackedStringArray", "PackedVector2Array", "PackedVector3Array",
+	"PackedColorArray", "PackedVector4Array",
+}
+
+const (
+	godotVariantTypeObject        = 24
+	godotPropertyHintResourceType = 17
+	godotPropertyHintNodeType     = 34
 )
 
 // Engine is an immutable index of the classes and callable surface exposed by
@@ -519,8 +540,8 @@ func resolveEngineType(spelling string, builtins map[string]bool, classes map[st
 		if !builtins["Array"] {
 			return Unknown(`engine type "Array" is absent from schema`)
 		}
-		if _, encoded, found := strings.Cut(element, ":"); found {
-			element = encoded
+		if decoded, found := decodeGodotTypedArrayElement(element); found {
+			element = decoded
 		}
 		resolved := Unknown(fmt.Sprintf("typed array element is absent from engine type %q", spelling))
 		if element != "" {
@@ -558,6 +579,38 @@ func resolveEngineType(spelling string, builtins map[string]bool, classes map[st
 		}
 	}
 	return Unknown(fmt.Sprintf("engine type %q is absent from schema", spelling))
+}
+
+func decodeGodotTypedArrayElement(encoded string) (string, bool) {
+	descriptor, hintString, found := strings.Cut(encoded, ":")
+	if !found {
+		return "", false
+	}
+	typeCodeText, hintCodeText, hasHintCode := strings.Cut(descriptor, "/")
+	typeCode, err := strconv.Atoi(typeCodeText)
+	if err != nil || typeCode < 0 || typeCode >= len(godotVariantTypeNames) {
+		return "", false
+	}
+
+	hintCode := -1
+	if hasHintCode {
+		if hintCodeText == "" || strings.Contains(hintCodeText, "/") {
+			return "", false
+		}
+		hintCode, err = strconv.Atoi(hintCodeText)
+		if err != nil || hintCode < 0 {
+			return "", false
+		}
+	}
+
+	// These two hints specialize Variant::OBJECT with the class carried by
+	// hint_string. Their producer vocabulary is Godot 4.7.2
+	// core/object/property_info.h:39-85 (commit ed1daf0bf).
+	if typeCode == godotVariantTypeObject && hintString != "" &&
+		(hintCode == godotPropertyHintResourceType || hintCode == godotPropertyHintNodeType) {
+		return hintString, true
+	}
+	return godotVariantTypeNames[typeCode], true
 }
 
 func resolveEngineEnum(spelling, name string, builtins map[string]bool, classes map[string]Type) Type {
