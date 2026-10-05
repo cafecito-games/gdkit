@@ -271,10 +271,11 @@ func TestInterfacesResolveScopedAndFailClosedAnnotations(t *testing.T) {
 	if nested.Kind() != KindArray || !hasElement || element.Kind() != KindDictionary {
 		t.Fatalf("nested annotation = %s", nested)
 	}
-	if engineEnum := interfaces.ResolveType("holder.gd", "Node.ProcessMode"); engineEnum.Kind() != KindEnum || engineEnum.Name() != "Node.ProcessMode" {
-		t.Fatalf("engine enum annotation = %v %q (%q)", engineEnum.Kind(), engineEnum.Name(), engineEnum.Reason())
-	}
-	for _, spelling := range []string{"Array[int", "Callable[int]", "MissingType"} {
+	// The Engine boundary deliberately carries no engine enum declarations. A
+	// qualified engine spelling therefore cannot be proven here, even where it
+	// happens to name a real Godot enum; user-declared named enums above cover
+	// successful named-enum resolution.
+	for _, spelling := range []string{"Array[int", "Callable[int]", "MissingType", "Node.ProcessMode", "Node.ProcesMode", "int.Whatever"} {
 		got := interfaces.ResolveType("holder.gd", spelling)
 		if got.Kind() != KindUnknown || !strings.Contains(got.Reason(), spelling) {
 			t.Errorf("ResolveType(%q) = %v (%q), want reasoned Unknown retaining spelling", spelling, got.Kind(), got.Reason())

@@ -915,9 +915,12 @@ func (s *InterfaceSet) resolveNamedType(classID, name string) Type {
 	if owner, _, qualified := strings.Cut(name, "."); qualified {
 		ownerType := s.engine.ResolveType(owner)
 		if ownerType.Kind() == KindClass || ownerType.Kind() == KindBuiltin {
-			if enum := s.engine.ResolveType("enum::" + name); enum.Kind() != KindUnknown {
-				return enum
-			}
+			// Engine intentionally retains only class ancestry, direct methods,
+			// and direct properties. It has no enum-name table, so a dotted
+			// engine spelling cannot be proved at this boundary. In particular,
+			// do not turn a typo into a confident enum merely because its owner
+			// happens to exist.
+			return Unknown(fmt.Sprintf("engine enum annotation %q cannot be proven from selected engine schema", name))
 		}
 	}
 	return s.engine.ResolveType(name)
