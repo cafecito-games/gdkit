@@ -429,6 +429,31 @@ func TestInterfacesLookupIsNearestAndTriState(t *testing.T) {
 	}
 }
 
+func TestInterfacesLookupBaseKeepsUnifiedPrecedenceAndFailureState(t *testing.T) {
+	interfaces := BuildInterfaces(BuildIndex(sources(t, map[string]string{
+		"base.gd":   "class_name Base\nfunc instance() -> int:\n\tpass\nstatic func shared() -> int:\n\tpass\n",
+		"child.gd":  "class_name Child extends Base\nfunc instance() -> int:\n\tpass\nstatic func shared() -> int:\n\tpass\n",
+		"broken.gd": "class_name Broken extends MissingBase\nfunc current():\n\tpass\n",
+	})), richInterfaceTestEngine(t))
+
+	for _, name := range []string{"instance", "shared"} {
+		result := interfaces.LookupBase("child.gd", name)
+		if result.State() != LookupFound {
+			t.Fatalf("LookupBase(%q) = %s (%s), want found", name, result.State(), result.Reason())
+		}
+		member, ok := result.Member()
+		if !ok || member.DeclaringClassID() != "base.gd" || member.Name() != name {
+			t.Fatalf("LookupBase(%q) = %#v, found %t", name, member, ok)
+		}
+	}
+	if result := interfaces.LookupBase("child.gd", "missing"); result.State() != LookupAbsent {
+		t.Fatalf("complete missing base member = %s (%s), want absent", result.State(), result.Reason())
+	}
+	if result := interfaces.LookupBase("broken.gd", "missing"); result.State() != LookupUnknown || result.Reason() == "" {
+		t.Fatalf("incomplete base member = %s (%q), want reasoned unknown", result.State(), result.Reason())
+	}
+}
+
 func TestInterfacesFailClosedForIncompleteChains(t *testing.T) {
 	t.Run("ambiguous project base is never reinterpreted as engine", func(t *testing.T) {
 		engine := buildInterfaceEngine(t, []string{"int"}, []interfaceEngineClass{

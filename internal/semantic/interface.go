@@ -265,7 +265,24 @@ func (c *ClassInterface) Lookup(name string) LookupResult {
 	if strings.TrimSpace(name) == "" {
 		return unknownLookup("member name is empty")
 	}
-	for _, owner := range c.owners {
+	return c.lookupFrom(0, name)
+}
+
+// lookupFrom resolves name through c's existing nearest-first owner chain,
+// beginning at start. It keeps Lookup and base dispatch on the same #46
+// precedence and incompleteness rules rather than giving consumers a second
+// ancestry walk to maintain.
+func (c *ClassInterface) lookupFrom(start int, name string) LookupResult {
+	if start < 0 {
+		start = 0
+	}
+	if start >= len(c.owners) {
+		if c.complete {
+			return LookupResult{state: LookupAbsent}
+		}
+		return unknownLookup(c.cause)
+	}
+	for _, owner := range c.owners[start:] {
 		if owner.classID != "" {
 			parent := c.set.classes[owner.classID]
 			if parent == nil {
@@ -439,6 +456,23 @@ func (s *InterfaceSet) Lookup(classID, name string) LookupResult {
 		return unknownLookup(fmt.Sprintf("class %q is absent from the declaration index", classID))
 	}
 	return class.Lookup(name)
+}
+
+// LookupBase resolves name through classID's immediate base and its existing
+// nearest-first ancestry chain. It is the single narrow escape hatch needed by
+// lexical super dispatch; normal member lookup must continue to use Lookup.
+func (s *InterfaceSet) LookupBase(classID, name string) LookupResult {
+	if s == nil || s.index == nil {
+		return unknownLookup("class index is unavailable")
+	}
+	if strings.TrimSpace(name) == "" {
+		return unknownLookup("member name is empty")
+	}
+	class, ok := s.Class(classID)
+	if !ok {
+		return unknownLookup(fmt.Sprintf("class %q is absent from the declaration index", classID))
+	}
+	return class.lookupFrom(1, name)
 }
 
 // ResolveType resolves one user-written annotation in classID's declaration
