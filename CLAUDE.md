@@ -152,9 +152,20 @@ the default branch.
   independently built cyclic graphs cannot terminate that way, so
   `Index.FieldTypeCycle` refuses the class rather than the generator threading a
   visited set through a helper method. `fieldTypeTarget` deliberately does not
-  follow an element type inside `Array[T]`: a container is handed to `==`, which
-  Godot 4 evaluates by value, so the emitted code never recurses into elements
-  and following it would refuse cycles the code cannot reach.
+  follow an element type inside `Array[T]`, because following it would refuse
+  every self-referential tree, which is most of what `deep_equals` is for; the
+  cost is that a cyclic graph reached through a container exhausts the stack
+  rather than being refused.
+  The comparison itself lives in a generated utility class named by
+  `helpers_path`, which `gen init --helpers` writes once and `gen` then maintains
+  like any other region. `helpers` is a registered emitter but an **internal**
+  one, filtered out of `GeneratorNames()` and `isGeneratorName` through the
+  optional `internalEmitter` interface, because a public name would be
+  configuration with one correct value and would let any class claim a region of
+  shared infrastructure. The class is requested because the configuration names
+  it, which is also what keeps orphan detection off a file `gen` wrote.
+  `Index.HelpersClass` is how an emitter learns the `class_name` to qualify the
+  call with.
 - `internal/atomicwrite/` — the write-beside-and-rename replacement shared by
   `format`, `generate`, and `uid`, including the re-read before the rename that
   keeps a concurrent edit from being lost.
