@@ -715,7 +715,7 @@ func (s *InterfaceSet) methodReturnType(classID string, node *ast.FunctionDeclar
 	if node.ReturnType == "" {
 		return Unknown(fmt.Sprintf("return type not declared for method %q", node.Name))
 	}
-	return s.resolveAnnotation(classID, node.ReturnType, fmt.Sprintf("return of method %q", node.Name))
+	return s.resolveReturnAnnotation(classID, node.ReturnType, fmt.Sprintf("return of method %q", node.Name))
 }
 
 func (s *InterfaceSet) parameters(classID string, parameters []ast.Parameter, owner string) []Parameter {
@@ -822,19 +822,33 @@ func unknownLookup(reason string) LookupResult {
 }
 
 func (s *InterfaceSet) resolveAnnotation(classID, spelling, label string) Type {
+	return s.resolveAnnotationAt(classID, spelling, label, false)
+}
+
+func (s *InterfaceSet) resolveReturnAnnotation(classID, spelling, label string) Type {
+	return s.resolveAnnotationAt(classID, spelling, label, true)
+}
+
+func (s *InterfaceSet) resolveAnnotationAt(classID, spelling, label string, allowVoid bool) Type {
 	original := spelling
 	parsed, err := parseAnnotation(spelling)
 	if err != nil {
 		return Unknown(fmt.Sprintf("%s annotation %q is malformed: %v", label, original, err))
 	}
-	resolved := s.resolveAnnotationNode(classID, parsed)
+	resolved := s.resolveAnnotationNode(classID, parsed, allowVoid)
 	if resolved.Kind() == KindUnknown {
 		return Unknown(fmt.Sprintf("%s annotation %q is unknown: %s", label, original, resolved.Reason()))
 	}
 	return resolved
 }
 
-func (s *InterfaceSet) resolveAnnotationNode(classID string, annotation annotationNode) Type {
+func (s *InterfaceSet) resolveAnnotationNode(classID string, annotation annotationNode, allowVoid bool) Type {
+	if annotation.name == "void" {
+		if allowVoid && len(annotation.arguments) == 0 {
+			return Void()
+		}
+		return Unknown("void is only valid as a method return type")
+	}
 	switch annotation.name {
 	case "Array":
 		if available := s.containerType("Array", KindArray); available.Kind() == KindUnknown {
@@ -844,7 +858,7 @@ func (s *InterfaceSet) resolveAnnotationNode(classID string, annotation annotati
 		case 0:
 			return Array(nil)
 		case 1:
-			element := s.resolveAnnotationNode(classID, annotation.arguments[0])
+			element := s.resolveAnnotationNode(classID, annotation.arguments[0], false)
 			if element.Kind() == KindUnknown {
 				return element
 			}
@@ -860,8 +874,8 @@ func (s *InterfaceSet) resolveAnnotationNode(classID string, annotation annotati
 		case 0:
 			return Dictionary(nil, nil)
 		case 2:
-			key := s.resolveAnnotationNode(classID, annotation.arguments[0])
-			value := s.resolveAnnotationNode(classID, annotation.arguments[1])
+			key := s.resolveAnnotationNode(classID, annotation.arguments[0], false)
+			value := s.resolveAnnotationNode(classID, annotation.arguments[1], false)
 			if key.Kind() == KindUnknown {
 				return key
 			}
@@ -885,7 +899,7 @@ func (s *InterfaceSet) resolveNamedType(classID, name string) Type {
 	case "Variant":
 		return Variant()
 	case "void":
-		return Void()
+		return Unknown("void is only valid as a method return type")
 	}
 	if resolved, state, reason := s.resolveUserType(classID, strings.Split(name, ".")); state != typeNotFound {
 		switch state {

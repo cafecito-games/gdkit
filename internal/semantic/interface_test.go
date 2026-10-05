@@ -283,6 +283,47 @@ func TestInterfacesResolveScopedAndFailClosedAnnotations(t *testing.T) {
 	}
 }
 
+func TestInterfacesRejectVoidOutsideMethodReturns(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		source string
+	}{
+		{name: "field", source: "var field: void\n"},
+		{name: "constant", source: "const CONSTANT: void = 1\n"},
+		{name: "parameter", source: "func takes(value: void):\n\tpass\n"},
+		{name: "signal", source: "signal changed(value: void)\n"},
+		{name: "array element", source: "var array: Array[void]\n"},
+		{name: "dictionary key", source: "var table: Dictionary[void, int]\n"},
+		{name: "dictionary value", source: "var table: Dictionary[int, void]\n"},
+		{name: "nested container", source: "var nested: Array[Dictionary[String, Array[void]]]\n"},
+	} {
+		t.Run("parser rejects "+testCase.name, func(t *testing.T) {
+			parsed := sources(t, map[string]string{"voids.gd": testCase.source})
+			if len(parsed.ParseFailures()) != 1 || parsed.ParseFailures()[0] != "voids.gd" {
+				t.Fatalf("ParseFailures = %v, want voids.gd", parsed.ParseFailures())
+			}
+		})
+	}
+
+	index := BuildIndex(sources(t, map[string]string{
+		"voids.gd": "class_name Voids\nfunc returns_void() -> void:\n\tpass\n",
+	}))
+	if len(index.ParseFailures) != 0 {
+		t.Fatalf("return fixture did not parse: %v", index.ParseFailures)
+	}
+	interfaces := BuildInterfaces(index, richInterfaceTestEngine(t))
+	class := requireInterface(t, interfaces, "voids.gd")
+	returned, hasReturned := interfaceMember(t, class, "returns_void").ReturnType()
+	if !hasReturned || returned.Kind() != KindVoid {
+		t.Fatalf("explicit void return = %v %q (%q), present %t", returned.Kind(), returned.Name(), returned.Reason(), hasReturned)
+	}
+	for _, spelling := range []string{"void", "Array[void]", "Dictionary[void, int]", "Dictionary[int, void]", "Array[Dictionary[String, Array[void]]]"} {
+		if got := interfaces.ResolveType("voids.gd", spelling); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "void") {
+			t.Errorf("ResolveType(%q) = %v %q (%q), want void-specific Unknown", spelling, got.Kind(), got.Name(), got.Reason())
+		}
+	}
+}
+
 func TestInterfacesLookupIsNearestAndTriState(t *testing.T) {
 	if zero := (LookupResult{}); zero.State() != LookupUnknown || zero.Reason() != "" {
 		t.Fatalf("zero lookup result = %s (%q), want fail-closed unknown", zero.State(), zero.Reason())
