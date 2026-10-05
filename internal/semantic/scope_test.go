@@ -366,6 +366,37 @@ func TestScopesFreezeConstantBindingFacts(t *testing.T) {
 	scopeRequireBinding(t, scopes, scopeIdentifierAt(t, source.File("player.gd"), "FIRST", 4), BindingLocal)
 }
 
+func TestScopesRestrictNonConstantNamespacesInConstantExpressions(t *testing.T) {
+	source := sources(t, map[string]string{
+		"autoload.gd": "class_name Auto\n",
+		"player.gd":   "class_name Player\nstatic var static_field: int\nstatic func static_method():\n\tpass\nconst TOP_STATIC_FIELD = static_field\nconst TOP_STATIC_METHOD = static_method\nconst TOP_AUTOLOAD = AutoLoad\nconst TOP_SINGLE = Single\nconst TOP_PRELOAD = preload(\"res://thing.gd\")\nconst TOP_LOAD = load(\"res://thing.gd\")\nenum { BAD = static_field }\nfunc run():\n\tconst LOCAL_STATIC_FIELD = static_field\n\tconst LOCAL_STATIC_METHOD = static_method\n\tconst LOCAL_AUTOLOAD = AutoLoad\n\tconst LOCAL_SINGLE = Single\n",
+	})
+	source.autoloads["AutoLoad"] = "autoload.gd"
+	if got := source.ParseFailures(); len(got) != 0 {
+		t.Fatalf("constant namespace fixture did not parse: %v", got)
+	}
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeNamespaceEngine(t)))
+	file := source.File("player.gd")
+	for _, testCase := range []struct {
+		name string
+		line int
+	}{
+		{name: "static_field", line: 5},
+		{name: "static_method", line: 6},
+		{name: "AutoLoad", line: 7},
+		{name: "Single", line: 8},
+		{name: "load", line: 10},
+		{name: "static_field", line: 11},
+		{name: "static_field", line: 13},
+		{name: "static_method", line: 14},
+		{name: "AutoLoad", line: 15},
+		{name: "Single", line: 16},
+	} {
+		scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, testCase.name, testCase.line), "non-constant namespace")
+	}
+	scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "preload", 9), BindingLanguageSpecial)
+}
+
 func TestScopesDoNotLetMalformedLexicalBindingsShadowReservedNames(t *testing.T) {
 	source := sources(t, map[string]string{
 		"player.gd": "class_name Player\nfunc run():\n\tpass\n",

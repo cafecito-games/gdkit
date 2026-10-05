@@ -375,7 +375,7 @@ func (i *ScopeIndex) buildClass(class *ClassDecl) {
 			i.visitExpression(node.Value, propertyScope)
 			i.buildAccessors(class.ID, node)
 		case *ast.EnumDeclaration:
-			enumScope := i.newScope(nil, scopeContext{classID: class.ID, static: true})
+			enumScope := i.newScope(nil, scopeContext{classID: class.ID, static: true, constantExpression: true})
 			for _, member := range node.Members {
 				i.visitExpression(member.Value, enumScope)
 			}
@@ -840,6 +840,9 @@ func (i *ScopeIndex) resolveNamespace(scope *Scope, name string) BindingResult {
 		if !ok {
 			return unknownBinding(fmt.Sprintf("member lookup for %q returned no member", name))
 		}
+		if scope.context.constantExpression && !constantMemberAllowed(resolved) {
+			return unknownBinding(fmt.Sprintf("non-constant member %q is unavailable in a constant initializer", name))
+		}
 		if scope.context.static && !staticMemberAllowed(resolved) {
 			return unknownBinding(fmt.Sprintf("non-static member %q is unavailable from static context", name))
 		}
@@ -866,6 +869,15 @@ func staticMemberAllowed(member Member) bool {
 		return true
 	case MemberVariable, MemberMethod, MemberEngineMethod:
 		return member.Static()
+	default:
+		return false
+	}
+}
+
+func constantMemberAllowed(member Member) bool {
+	switch member.Kind() {
+	case MemberConstant, MemberEnum, MemberEnumMember, MemberClass:
+		return true
 	default:
 		return false
 	}
@@ -1009,6 +1021,9 @@ func (i *ScopeIndex) resolveProjectGlobal(scope *Scope, name string) (BindingRes
 	case 0:
 		return BindingResult{}, false
 	case 1:
+		if scope.context.constantExpression && candidates[0].kind != BindingProjectClass {
+			return unknownBinding(fmt.Sprintf("non-constant project global %q is unavailable in a constant initializer", name)), true
+		}
 		class, ok := i.interfaces.Class(candidates[0].class.ID)
 		if !ok {
 			return unknownBinding(fmt.Sprintf("project global %q has no published class interface", name)), true
@@ -1042,8 +1057,22 @@ func (i *ScopeIndex) resolveEngineGlobal(scope *Scope, name string) BindingResul
 	case 0:
 		return unknownBinding(fmt.Sprintf("global identifier %q is not retained by the selected engine schema", name))
 	case 1:
+		if scope.context.constantExpression && !constantEngineGlobalAllowed(candidates[0]) {
+			return unknownBinding(fmt.Sprintf("non-constant engine global %q is unavailable in a constant initializer", name))
+		}
 		return foundBinding(candidates[0])
 	default:
 		return unknownBinding(fmt.Sprintf("retained engine global %q is claimed by multiple categories", name))
+	}
+}
+
+func constantEngineGlobalAllowed(binding Binding) bool {
+	switch binding.Kind() {
+	case BindingEngineType, BindingEngineUtility:
+		return true
+	case BindingLanguageSpecial:
+		return binding.Name() == "preload"
+	default:
+		return false
 	}
 }
