@@ -217,6 +217,38 @@ func TestAssignableTo(t *testing.T) {
 	}
 }
 
+func TestAssignableToFailsClosedOnUnknownTargetAncestry(t *testing.T) {
+	unknownBase := Unknown("target base did not resolve")
+	object := Class("Object", nil, false)
+	knownBase := Class("Base", &object, false)
+	knownMeta := Class("Base", &object, true)
+
+	tests := []struct {
+		name   string
+		source Type
+		target Type
+	}{
+		{
+			name:   "instance class",
+			source: Class("Child", &knownBase, false),
+			target: Class("Base", &unknownBase, false),
+		},
+		{
+			name:   "meta class",
+			source: knownMeta,
+			target: Class("Base", &unknownBase, true),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.source.AssignableTo(test.target); got != AssignabilityIndeterminate {
+				t.Fatalf("%v.AssignableTo(%v) = %v, want indeterminate", test.source, test.target, got)
+			}
+		})
+	}
+}
+
 func TestAssignabilityVocabulary(t *testing.T) {
 	tests := []struct {
 		value Assignability

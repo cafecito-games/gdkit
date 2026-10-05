@@ -320,14 +320,14 @@ func assignable(source, target Type) Assignability {
 			return AssignabilityNo
 		}
 		if source.node.meta {
-			if source.Equal(target) {
-				return AssignabilityYes
-			}
-			return AssignabilityNo
+			return classIdentity(source, target)
 		}
 		for current := source; ; {
-			if current.Equal(target) {
+			switch classIdentity(current, target) {
+			case AssignabilityYes:
 				return AssignabilityYes
+			case AssignabilityIndeterminate:
+				return AssignabilityIndeterminate
 			}
 			if !current.node.hasBase {
 				return AssignabilityNo
@@ -348,6 +348,25 @@ func assignable(source, target Type) Assignability {
 		return AssignabilityYes
 	}
 	return AssignabilityNo
+}
+
+func classIdentity(source, target Type) Assignability {
+	for {
+		if rawKind(source) == KindUnknown || rawKind(target) == KindUnknown {
+			return AssignabilityIndeterminate
+		}
+		if source.node.name != target.node.name || source.node.meta != target.node.meta {
+			return AssignabilityNo
+		}
+		if source.node.hasBase != target.node.hasBase {
+			return AssignabilityNo
+		}
+		if !source.node.hasBase {
+			return AssignabilityYes
+		}
+		source = source.node.base
+		target = target.node.base
+	}
 }
 
 func combine(left, right Assignability) Assignability {
