@@ -955,12 +955,20 @@ type resourceTestSources struct {
 	calls       map[string]int
 }
 
-func (s *resourceTestSources) ResolveResource(from, target string) ResourceResolution {
+func (s *resourceTestSources) ResolvePreloadResource(from, target string) ResourceResolution {
+	return s.resolveResource("preload", from, target)
+}
+
+func (s *resourceTestSources) ResolveLoadResource(from, target string) ResourceResolution {
+	return s.resolveResource("load", from, target)
+}
+
+func (s *resourceTestSources) resolveResource(special, from, target string) ResourceResolution {
 	s.mu.Lock()
 	if s.calls == nil {
 		s.calls = map[string]int{}
 	}
-	s.calls[from+"\x00"+target]++
+	s.calls[special+"\x00"+from+"\x00"+target]++
 	s.mu.Unlock()
 	if resolution, ok := s.resolutions[target]; ok {
 		return resolution
@@ -971,7 +979,7 @@ func (s *resourceTestSources) ResolveResource(from, target string) ResourceResol
 func (s *resourceTestSources) callsFor(from, target string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.calls[from+"\x00"+target]
+	return s.calls["preload\x00"+from+"\x00"+target] + s.calls["load\x00"+from+"\x00"+target]
 }
 
 func reducerVariableValue(t *testing.T, file *ast.File, name string) ast.Expression {

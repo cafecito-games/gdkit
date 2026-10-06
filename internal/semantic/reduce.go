@@ -644,7 +644,15 @@ func (a *Analyzer) reduceResourceCall(expression *ast.CallExpression, context re
 	if problem != "" {
 		return unknownReduction(problem)
 	}
-	resolution := a.resources.ResolveResource(from, target)
+	var resolution ResourceResolution
+	switch special {
+	case "preload":
+		resolution = a.resources.ResolvePreloadResource(from, target)
+	case "load":
+		resolution = a.resources.ResolveLoadResource(from, target)
+	default:
+		return unknownReduction(fmt.Sprintf("unsupported resource language special %q", special))
+	}
 	if resolution.Requested() != target {
 		return unknownReduction("resource resolver returned a result for a different requested spelling")
 	}

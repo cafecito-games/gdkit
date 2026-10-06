@@ -1,6 +1,8 @@
 package project
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"maps"
@@ -171,6 +173,72 @@ func TestLoadMarksUnscannableIdentityClaimEvidenceIncomplete(t *testing.T) {
 	}
 	if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
 		t.Fatalf("identity capture = requested:%t incomplete:%t, want oversized claim source to be incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
+	}
+}
+
+func TestLoadMarksRealGodotBinaryResourceClaimEvidenceIncomplete(t *testing.T) {
+	// These are byte-for-byte outputs from Godot
+	// v4.7.2.stable.cafecito_e76255129.ed1daf0bf: ResourceSaver.save followed
+	// by ResourceSaver.set_uid for a Resource (.res), PackedScene (.scn), and
+	// Theme (.theme). They are intentionally opaque here: this loader must not
+	// claim complete UID evidence when a real binary resource can carry its own
+	// UID, regardless of its resource-base extension.
+	fixtures := []struct {
+		path string
+		data string
+	}{
+		{
+			path: "duplicate.res",
+			data: "UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAACQAAAFJlc291cmNlAAAAAAAAAAAAAwAAAH7QHZsmWj5hAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lAAcAAABzY3JpcHQAAAAAAAEAAAAXAAAAbG9jYWw6Ly9SZXNvdXJjZV9icm84aADNAAAAAAAAAAkAAABSZXNvdXJjZQABAAAAAgAAAAEAAABSU1JD",
+		},
+		{
+			path: "duplicate.scn",
+			data: "UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAADAAAAFBhY2tlZFNjZW5lAAAAAAAAAAAAAwAAADRLcSzKYVliAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lAAkAAABfYnVuZGxlZAAHAAAAc2NyaXB0AAAAAAABAAAAGgAAAGxvY2FsOi8vUGFja2VkU2NlbmVfM3Z1aGUA4AAAAAAAAAAMAAAAUGFja2VkU2NlbmUAAQAAAAMAAAABAAAAUlNSQw==",
+		},
+		{
+			path: "duplicate.theme",
+			data: "UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAABgAAAFRoZW1lAAAAAAAAAAAAAwAAAPzo8aEmmiAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lABMAAABkZWZhdWx0X2Jhc2Vfc2NhbGUADQAAAGRlZmF1bHRfZm9udAASAAAAZGVmYXVsdF9mb250X3NpemUABwAAAHNjcmlwdAAAAAAAAQAAABQAAABsb2NhbDovL1RoZW1lX2I3NGl2AAUBAAAAAAAABgAAAFRoZW1lAAEAAAAFAAAAAQAAAFJTUkM=",
+		},
+		{
+			path: "compressed.theme",
+			data: "UlNDQwIAAAAAEAAAHAEAAKoAAAAotS/9YBwABQUAgsgdJ5A5jQG7/////z/uxSDIavht2YhT2t5Fg/WlwFIEto0MU7yzFhVJATMkhyRgmBOKiIoSghb/4WeOkgpzq5Nqs3C84DRYX3Obug2S8WVt0shvWK12EdZL3SaM+ZqDL9VhGVzFfsTf3HgeSsXiXH7Aain1aH7nD3wPAFml0FgAfwyK2sFaG3kQjocpmkvT7CWdhstP7gGYj3tl5w4GsFJTQ0M=",
+		},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.path, func(t *testing.T) {
+			root := t.TempDir()
+			data, err := base64.StdEncoding.DecodeString(fixture.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(data) < 4 || (string(data[:4]) != "RSRC" && string(data[:4]) != "RSCC") {
+				t.Fatalf("producer fixture %s has unexpected binary resource magic", fixture.path)
+			}
+			writeFiles(t, root, map[string]string{"loader.gd": "class_name Loader\n"})
+			path := filepath.Join(root, fixture.path)
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			snapshot, err := Load(Config{Root: root, Identities: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
+				t.Fatalf("identity capture = requested:%t incomplete:%t, want real binary resource to make opaque UID evidence incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatalf("Load changed real producer bytes for %s", fixture.path)
+			}
+		})
 	}
 }
 

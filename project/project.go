@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -64,10 +65,10 @@ type Config struct {
 	// every tool but generate passes, selects everything discovered.
 	Selection *Selection
 	// Identities populates Snapshot.Claims and Snapshot.References: every
-	// declaration of a uid:// identity and every use of one. Only uid asks
-	// for it, because collecting the references means reading every .tscn and
-	// .tres file through rather than only its header line, which the other
-	// tools have no use for.
+	// declaration of a uid:// identity and every use of one. It reads every
+	// .tscn and .tres file through rather than only its header line, and checks
+	// otherwise unmodelled file headers for opaque binary resource claim
+	// evidence, which the other tools have no use for.
 	//
 	// A claim is recorded even inside a path HonorIgnoreFile hides, carrying
 	// Claim.Ignored: an ignored file still owns its identity, and dropping it
@@ -212,9 +213,10 @@ type Snapshot struct {
 	// snapshot. An empty claim list is meaningful only when this is true.
 	IdentityEvidence bool
 	// IdentityIncomplete reports that an explicitly requested claim capture was
-	// narrowed or could not read one of its declaration sources. Consumers that
-	// need a unique UID claimant must fail closed rather than treating Claims as
-	// exhaustive when this is true.
+	// narrowed, could not read one of its declaration sources, or encountered
+	// an opaque binary resource declaration. Consumers that need a unique UID
+	// claimant must fail closed rather than treating Claims as exhaustive when
+	// this is true.
 	IdentityIncomplete bool
 	// Selected is the subset of Paths that Config.Selection admits, sorted. It
 	// is Paths itself when Selection is nil.
@@ -405,6 +407,25 @@ func Load(config Config) (*Snapshot, error) {
 				if strings.HasPrefix(uid, UIDScheme) {
 					uids[uid] = owner
 				}
+			case strings.HasSuffix(relative, ".scn"), strings.HasSuffix(relative, ".res"):
+				// Binary scenes and resources retain their own UID in an opaque
+				// binary header. This package deliberately does not decode that
+				// format, so a capture that needs unique claimants cannot call
+				// itself complete while one is present.
+				if config.Identities {
+					identityIncomplete = true
+				}
+			default:
+				// ResourceFormatSaverBinary supports each resource's base
+				// extension, not only .scn and .res. Its RSRC/RSCC magic is the
+				// evidence that an otherwise unmodelled regular file can carry
+				// an internal UID. A read failure is equally inconclusive.
+				if config.Identities {
+					binary, complete := binaryResourceClaimSource(name)
+					if binary || !complete {
+						identityIncomplete = true
+					}
+				}
 			}
 			return nil
 		})
@@ -497,8 +518,31 @@ func identityCaptureIsNarrowed(config Config) bool {
 func identityClaimSource(resourcePath string) bool {
 	return strings.HasSuffix(resourcePath, ".tscn") ||
 		strings.HasSuffix(resourcePath, ".tres") ||
+		strings.HasSuffix(resourcePath, ".scn") ||
+		strings.HasSuffix(resourcePath, ".res") ||
 		strings.HasSuffix(resourcePath, ".import") ||
 		strings.HasSuffix(resourcePath, ".uid")
+}
+
+// binaryResourceClaimSource identifies an opaque Godot binary resource by
+// the initial magic that ResourceFormatLoaderBinary accepts. It returns a
+// separate completeness signal so a file that cannot be read never lets a
+// requested identity capture claim there was no binary UID declaration.
+func binaryResourceClaimSource(name string) (binary, complete bool) {
+	file, err := os.Open(name)
+	if err != nil {
+		return false, false
+	}
+	defer file.Close()
+	var header [4]byte
+	n, err := io.ReadFull(file, header[:])
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return false, false
+	}
+	if n != len(header) {
+		return false, true
+	}
+	return string(header[:]) == "RSRC" || string(header[:]) == "RSCC", true
 }
 
 func addResource(resources map[string]ResourceKind, resourcePath string, kind ResourceKind) {

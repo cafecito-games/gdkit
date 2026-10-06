@@ -124,11 +124,25 @@ func (s *Snapshot) ResolvePath(from, target string) (string, bool) {
 	return resolved, true
 }
 
-// ResolveResource resolves one literal preload/load spelling exclusively from
-// the copied project inventory and lossless UID claims. It performs no I/O and
+// ResolvePreloadResource resolves one literal preload spelling exclusively
+// from the copied project inventory and lossless UID claims. A relative
+// preload is relative to the script that holds it. It performs no I/O and
 // never falls back to Snapshot.UIDs, whose selected winner cannot establish a
 // unique identity claimant.
-func (s *Snapshot) ResolveResource(from, target string) semantic.ResourceResolution {
+func (s *Snapshot) ResolvePreloadResource(from, target string) semantic.ResourceResolution {
+	return s.resolveResource(from, target, true)
+}
+
+// ResolveLoadResource resolves one literal load spelling exclusively from the
+// copied project inventory and lossless UID claims. Godot resolves a relative
+// load from res:// rather than from its calling script. It performs no I/O and
+// never falls back to Snapshot.UIDs, whose selected winner cannot establish a
+// unique identity claimant.
+func (s *Snapshot) ResolveLoadResource(from, target string) semantic.ResourceResolution {
+	return s.resolveResource(from, target, false)
+}
+
+func (s *Snapshot) resolveResource(from, target string, preload bool) semantic.ResourceResolution {
 	if s == nil {
 		return semantic.UnresolvedResource(semantic.ResourceInvalid, semantic.ResourceUnknown, target, resourceProvenance(target), "resource resolver is unavailable")
 	}
@@ -147,8 +161,10 @@ func (s *Snapshot) ResolveResource(from, target string) semantic.ResourceResolut
 		canonical = path.Clean(strings.TrimPrefix(target, project.ResourceScheme))
 	case strings.Contains(target, "://"):
 		return semantic.UnresolvedResource(semantic.ResourceInvalid, semantic.ResourceUnknown, target, semantic.ResourceLiteralPath, "resource path uses an unsupported scheme")
-	default:
+	case preload:
 		canonical = path.Clean(path.Join(path.Dir(from), target))
+	default:
+		canonical = path.Clean(target)
 	}
 	if canonical == "." || canonical == "" {
 		return semantic.UnresolvedResource(semantic.ResourceInvalid, semantic.ResourceUnknown, target, semantic.ResourceLiteralPath, "resource path names no project resource")

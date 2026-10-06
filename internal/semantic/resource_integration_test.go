@@ -21,7 +21,7 @@ func TestResourceReductionUsesRealProjectAndEngineProducers(t *testing.T) {
 		"project.godot":       "[application]\nconfig/name=\"resource fixture\"\n",
 		"actors/enemy.gd":     "class_name Enemy\n",
 		"actors/enemy.gd.uid": "uid://a\n",
-		"nested/loader.gd":    "class_name Loader\nfunc run():\n\tvar script_path := load(\"../actors/enemy.gd\")\n\tvar script_escaped := load(\"res://actors/\\u0065nemy.gd\")\n\tvar script_uid := load(\"uid://a\")\n\tvar created := load(\"uid://a\").new()\n\tvar scene_path := load(\"res://scenes/main.tscn\")\n\tvar scene_uid := load(\"uid://b\")\n\tvar scene_instance := load(\"res://scenes/main.tscn\").instantiate()\n\tvar text_path := load(\"res://assets/theme.tres\")\n\tvar text_uid := load(\"uid://c\")\n\tvar import_asset := load(\"res://art/icon.png\")\n\tvar import_uid := load(\"uid://d\")\n\tvar missing := load(\"res://missing.gd\")\n\tvar user := load(\"user://save.gd\")\n\tvar foreign := load(\"custom://thing.gd\")\n\tvar escapes := load(\"../../outside.gd\")\n\tvar ambiguous := load(\"uid://e\")\n\tvar malformed := load(\"uid://z\")\n",
+		"nested/loader.gd":    "class_name Loader\nfunc run():\n\tvar script_path := preload(\"../actors/enemy.gd\")\n\tvar script_escaped := load(\"res://actors/\\u0065nemy.gd\")\n\tvar script_uid := load(\"uid://a\")\n\tvar created := load(\"uid://a\").new()\n\tvar scene_path := load(\"res://scenes/main.tscn\")\n\tvar scene_uid := load(\"uid://b\")\n\tvar scene_instance := load(\"res://scenes/main.tscn\").instantiate()\n\tvar text_path := load(\"res://assets/theme.tres\")\n\tvar text_uid := load(\"uid://c\")\n\tvar import_asset := load(\"res://art/icon.png\")\n\tvar import_uid := load(\"uid://d\")\n\tvar missing := load(\"res://missing.gd\")\n\tvar user := load(\"user://save.gd\")\n\tvar foreign := load(\"custom://thing.gd\")\n\tvar escapes := load(\"../../outside.gd\")\n\tvar ambiguous := load(\"uid://e\")\n\tvar malformed := load(\"uid://z\")\n",
 		"scenes/main.tscn":    "[gd_scene format=3 uid=\"uid://b\"]\n",
 		"assets/theme.tres":   "[gd_resource type=\"Theme\" format=3 uid=\"uid://c\"]\n",
 		"art/icon.png":        "not-a-real-png-but-a-real-import-owner",
@@ -108,6 +108,34 @@ func TestResourceReductionUsesRealProjectAndEngineProducers(t *testing.T) {
 	}
 }
 
+func TestResourceReductionDistinguishesRelativePreloadAndLoad(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"project.godot":    "[application]\nconfig/name=\"relative resource fixture\"\n",
+		"target.gd":        "class_name RootTarget\n",
+		"nested/target.gd": "class_name NestedTarget\n",
+		"nested/loader.gd": "class_name Loader\nfunc run():\n\tvar preloaded := preload(\"target.gd\")\n\tvar loaded := load(\"target.gd\")\n",
+	}
+	writeResourceFixture(t, root, files)
+
+	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := semanticsource.NewSnapshot(snapshot)
+	loaded, err := engineschema.LoadEmbedded(4, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analyzer := semantic.NewAnalyzer(source, loaded.Engine)
+	file := source.File("nested/loader.gd")
+	if file == nil {
+		t.Fatal("real project loader did not retain nested/loader.gd")
+	}
+	assertResourceClass(t, analyzer.TypeOf(resourceVariableValue(t, file, "preloaded")), "nested/target.gd", true)
+	assertResourceClass(t, analyzer.TypeOf(resourceVariableValue(t, file, "loaded")), "target.gd", true)
+}
+
 func TestResourceReductionFailsClosedForRealParseFailedScriptTarget(t *testing.T) {
 	root := t.TempDir()
 	writeResourceFixture(t, root, map[string]string{
@@ -133,7 +161,7 @@ func TestResourceReductionFailsClosedForRealParseFailedScriptTarget(t *testing.T
 	}
 	source := semanticsource.NewSnapshot(snapshot)
 	file := source.File("loader.gd")
-	resolved := source.ResolveResource("loader.gd", "res://broken.gd")
+	resolved := source.ResolveLoadResource("loader.gd", "res://broken.gd")
 	if resolved.State() != semantic.ResourceFound || resolved.Kind() != semantic.ResourceScript || resolved.Path() != "broken.gd" {
 		t.Fatalf("parse-failed resource inventory = state=%s kind=%s path=%q reason=%q", resolved.State(), resolved.Kind(), resolved.Path(), resolved.Reason())
 	}
