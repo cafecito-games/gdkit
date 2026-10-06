@@ -57,17 +57,25 @@ the default branch.
   decides whether a typing rule's fix can be written at all, and a finding whose
   annotation the configured engine cannot parse is **dropped silently**: there is
   no "engine too old" diagnostic, because telling a project to write a type it
-  cannot parse is worse than saying nothing. So a bare `Dictionary` is not
-  reported below `4.4` and `require-typed-loop-variable` reports nothing below
-  `4.2`, and a maintainer asking why a bare `Dictionary` is quiet is asking about
-  this key. `Context` carries a `compiledConfig` — every name pattern, every
-  exempt glob, and the parsed engine version, compiled once by `validate` — so no
-  rule compiles or parses anything per file. An enabled rule that implements
-  `EngineSchemaRule` receives the immutable selected engine through `Context`.
-  With no explicit `extension_api`, that capability is the sole trigger for
-  lazily loading a bundled table; ordinary rules never load or version-gate on
-  semantic data. An explicit override is project-root-relative, validated once
-  at startup, and replaces the embedded table wholesale.
+  cannot parse is worse than saying nothing. In a syntactic typing run, a bare
+  `Dictionary` is not reported below `4.4` and `require-typed-loop-variable`
+  reports nothing below `4.2`, and a maintainer asking why a bare `Dictionary`
+  is quiet is asking about this key. `Context` carries a `compiledConfig` —
+  every name pattern, every exempt glob, and the parsed engine version, compiled
+  once by `validate` — so no rule compiles or parses anything per file. An
+  enabled rule that implements `EngineSchemaRule` receives the immutable
+  selected engine through `Context`. An enabled `semanticRule` whose
+  `NeedsSemanticAnalysis` is true also selects that engine and constructs one
+  run-local analyzer; today only `require-typed-collection` has that capability.
+  With no explicit `extension_api`, either enabled capability triggers lazy
+  loading of a bundled table. The semantic consumer is supported only for 4.7.x
+  or a numerically matching override: enabling it on an unsupported minor fails
+  startup as `config.invalid`, rather than borrowing 4.7 facts or silently
+  dropping the rule. Absent an explicit override, default lint, a disabled
+  collection rule, and the other typing rules never load semantic data. An
+  explicit override is
+  project-root-relative, validated once at startup, and replaces the embedded
+  table wholesale.
 - `format/` — the formatter: drives gdparser's formatter over a `project.Snapshot`
   and verifies every rewrite before offering it. Verification covers the syntax
   tree (the reparsed output must keep it), the token stream (no token other than

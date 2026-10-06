@@ -1,11 +1,14 @@
 package lint
 
 import (
+	"errors"
 	"regexp"
 	"sort"
 
+	"github.com/cafecito-games/gdkit/internal/failure"
 	"github.com/cafecito-games/gdkit/internal/semantic"
 	"github.com/cafecito-games/gdkit/internal/semantic/engineschema"
+	"github.com/cafecito-games/gdkit/internal/semanticsource"
 	"github.com/cafecito-games/gdkit/internal/versiongate"
 	"github.com/cafecito-games/gdkit/project"
 )
@@ -44,12 +47,22 @@ type EngineSchemaRule interface {
 	RequiresEngineSchema()
 }
 
+// semanticRule marks a rule whose result depends on one run-local semantic
+// analyzer. It is deliberately narrower than EngineSchemaRule: a shared rule
+// implementation can make only the one value-sensitive rule request semantic
+// analysis, leaving its syntactic siblings as cheap as they were before.
+type semanticRule interface {
+	Rule
+	NeedsSemanticAnalysis() bool
+}
+
 // Context gives a rule the project and its resolved configuration.
 type Context struct {
 	Config Config
 
 	compiled *compiledConfig
 	engine   *semantic.Engine
+	analyzer *semantic.Analyzer
 }
 
 // Engine returns the selected immutable engine schema, or nil for a run whose
@@ -156,11 +169,21 @@ func PendingRuleNames() []string {
 
 // Linter runs the enabled rules over a snapshot.
 type Linter struct {
-	context      Context
-	enabled      []Rule
-	disabled     map[string]bool
-	severity     map[string]Severity
-	engineSchema *engineschema.Provenance
+	context             Context
+	enabled             []Rule
+	disabled            map[string]bool
+	severity            map[string]Severity
+	engineSchema        *engineschema.Provenance
+	newSemanticAnalyzer semanticAnalyzerFactory
+}
+
+// semanticAnalyzerFactory is an internal construction seam. A linter keeps
+// no result from it: Lint supplies the current snapshot and stores the result
+// only in its run-local Context.
+type semanticAnalyzerFactory func(*project.Snapshot, *semantic.Engine) *semantic.Analyzer
+
+func newAnalyzerForSnapshot(snapshot *project.Snapshot, engine *semantic.Engine) *semantic.Analyzer {
+	return semantic.NewAnalyzer(semanticsource.NewSnapshot(snapshot), engine)
 }
 
 // New validates the configuration and compiles every name pattern, so a bad
@@ -203,6 +226,10 @@ func newLinterForProject(root string, config Config, rules []Rule) (*Linter, err
 }
 
 func buildLinter(root string, projectAware bool, config Config, rules []Rule) (*Linter, error) {
+	return buildLinterWithSchemaLoader(root, projectAware, config, rules, engineschema.LoadEmbedded)
+}
+
+func buildLinterWithSchemaLoader(root string, projectAware bool, config Config, rules []Rule, loadEmbedded embeddedSchemaLoader) (*Linter, error) {
 	compiled, err := config.validate()
 	if err != nil {
 		return nil, err
@@ -229,15 +256,20 @@ func buildLinter(root string, projectAware bool, config Config, rules []Rule) (*
 		}
 		enabled = append(enabled, rule)
 	}
-	selected, err := prepareEngineSchema(root, projectAware, config, compiled, enabled)
+	selected, err := prepareEngineSchemaWithLoader(root, projectAware, config, compiled, enabled, loadEmbedded)
 	if err != nil {
 		return nil, err
 	}
+	if rulesNeedSemanticAnalysis(enabled) && (selected == nil || selected.Engine == nil) {
+		return nil, failure.Wrap(failure.AnalysisFailed,
+			errors.New("enabled semantic lint rule has no selected engine schema"))
+	}
 	linter := &Linter{
-		context:  Context{Config: config, compiled: compiled},
-		enabled:  enabled,
-		disabled: disabled,
-		severity: config.Severity,
+		context:             Context{Config: config, compiled: compiled},
+		enabled:             enabled,
+		disabled:            disabled,
+		severity:            config.Severity,
+		newSemanticAnalyzer: newAnalyzerForSnapshot,
 	}
 	if selected != nil {
 		linter.context.engine = selected.Engine
@@ -255,6 +287,11 @@ func (l *Linter) Lint(snapshot *project.Snapshot) Report {
 		report.EngineSchema = &provenance
 	}
 
+	runContext := l.context
+	if rulesNeedSemanticAnalysis(l.enabled) {
+		runContext.analyzer = l.newSemanticAnalyzer(snapshot, runContext.Engine())
+	}
+
 	for _, path := range snapshot.Paths {
 		script := snapshot.Scripts[path]
 		if script.ParseError != nil {
@@ -269,7 +306,7 @@ func (l *Linter) Lint(snapshot *project.Snapshot) Report {
 		}
 		var found []Diagnostic
 		for _, rule := range l.enabled {
-			for _, diagnostic := range rule.Check(&l.context, script) {
+			for _, diagnostic := range rule.Check(&runContext, script) {
 				diagnostic.Rule = rule.Name()
 				found = append(found, diagnostic)
 			}
@@ -292,6 +329,15 @@ func (l *Linter) Lint(snapshot *project.Snapshot) Report {
 	}
 	report.sort()
 	return report
+}
+
+func rulesNeedSemanticAnalysis(rules []Rule) bool {
+	for _, rule := range rules {
+		if semantic, ok := rule.(semanticRule); ok && semantic.NeedsSemanticAnalysis() {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *Linter) severityOf(rule string) Severity {

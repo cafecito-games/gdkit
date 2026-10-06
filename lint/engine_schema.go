@@ -12,10 +12,6 @@ import (
 	"github.com/cafecito-games/gdkit/internal/semantic/engineschema"
 )
 
-func prepareEngineSchema(root string, projectAware bool, config Config, compiled *compiledConfig, enabled []Rule) (*engineschema.Loaded, error) {
-	return prepareEngineSchemaWithLoader(root, projectAware, config, compiled, enabled, engineschema.LoadEmbedded)
-}
-
 type embeddedSchemaLoader func(int, int) (*engineschema.Loaded, error)
 
 func prepareEngineSchemaWithLoader(root string, projectAware bool, config Config, compiled *compiledConfig, enabled []Rule, loadEmbedded embeddedSchemaLoader) (*engineschema.Loaded, error) {
@@ -47,6 +43,9 @@ func prepareEngineSchemaWithLoader(root string, projectAware bool, config Config
 func rulesNeedEngineSchema(rules []Rule) bool {
 	for _, rule := range rules {
 		if _, ok := rule.(EngineSchemaRule); ok {
+			return true
+		}
+		if semantic, ok := rule.(semanticRule); ok && semantic.NeedsSemanticAnalysis() {
 			return true
 		}
 	}
