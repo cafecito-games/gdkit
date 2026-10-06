@@ -117,10 +117,10 @@ func (i *identities) sort() {
 // later lines belong to other files. The whole file is read only when the
 // caller wants those, because the other tools that load a project need nothing
 // past the header.
-func scanResource(name string, references bool) (header string, refs []Reference) {
+func scanResource(name string, references bool) (header string, refs []Reference, complete bool) {
 	file, err := os.Open(name)
 	if err != nil {
-		return "", nil
+		return "", nil, false
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
@@ -132,7 +132,7 @@ func scanResource(name string, references bool) (header string, refs []Reference
 				header = quotedUID(line)
 			}
 			if !references {
-				return header, nil
+				return header, nil, true
 			}
 			continue
 		}
@@ -150,16 +150,16 @@ func scanResource(name string, references bool) (header string, refs []Reference
 			Kind:   ReferenceExternal,
 		})
 	}
-	return header, refs
+	return header, refs, scanner.Err() == nil
 }
 
 // importClaim returns the identity a .import file declares for its asset and
 // the line it sits on. Only the [remap] section is read, because a later
 // section describes the import's own dependencies.
-func importClaim(name string) (string, int) {
+func importClaim(name string) (string, int, bool) {
 	file, err := os.Open(name)
 	if err != nil {
-		return "", 0
+		return "", 0, false
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
@@ -169,7 +169,7 @@ func importClaim(name string) (string, int) {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "[") {
 			if remap {
-				return "", 0
+				return "", 0, true
 			}
 			remap = line == "[remap]"
 			continue
@@ -178,10 +178,10 @@ func importClaim(name string) (string, int) {
 			continue
 		}
 		if identifier := quotedUID(line); identifier != "" {
-			return identifier, number
+			return identifier, number, true
 		}
 	}
-	return "", 0
+	return "", 0, scanner.Err() == nil
 }
 
 // resourceAttribute returns the value of a key="value" attribute in a .tscn or

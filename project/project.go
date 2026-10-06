@@ -174,7 +174,10 @@ func (k ResourceKind) String() string {
 }
 
 // Resource is one discovered project-relative resource owner. Path is always
-// slash-separated; Resources is sorted by Path in Snapshot.
+// slash-separated; Resources is sorted by Path in Snapshot. A path hidden by
+// HonorIgnoreFile is never inventoried, even when Identities retains its
+// claimant evidence, so an ignored declaration cannot establish a typeable
+// resource target.
 type Resource struct {
 	Path string
 	Kind ResourceKind
@@ -195,9 +198,10 @@ type Snapshot struct {
 	// Sidecars is every discovered .uid file, sorted by path. It covers
 	// sidecars beside files this package does not parse, such as shaders.
 	Sidecars []Sidecar
-	// Resources inventories every discovered script, scene, text resource, and
-	// importer-backed owner. It is sorted by project-relative Path and is the
-	// only existence evidence exported for resource-aware consumers.
+	// Resources inventories every discovered, non-ignored script, scene, text
+	// resource, and importer-backed owner. It is sorted by project-relative
+	// Path and is the only existence evidence exported for resource-aware
+	// consumers. Identities does not change its membership.
 	Resources []Resource
 	// Claims is every declaration of a uid:// identity, sorted by path and
 	// line, and References is every use of one. Both are empty unless
@@ -207,6 +211,11 @@ type Snapshot struct {
 	// IdentityEvidence reports whether Claims was requested while loading this
 	// snapshot. An empty claim list is meaningful only when this is true.
 	IdentityEvidence bool
+	// IdentityIncomplete reports that an explicitly requested claim capture was
+	// narrowed or could not read one of its declaration sources. Consumers that
+	// need a unique UID claimant must fail closed rather than treating Claims as
+	// exhaustive when this is true.
+	IdentityIncomplete bool
 	// Selected is the subset of Paths that Config.Selection admits, sorted. It
 	// is Paths itself when Selection is nil.
 	Selected []string
@@ -245,6 +254,7 @@ func Load(config Config) (*Snapshot, error) {
 
 	seen := make(map[string]struct{})
 	resources := make(map[string]ResourceKind)
+	identityIncomplete := identityCaptureIsNarrowed(config)
 	uids := make(map[string]string)
 	// Identifiers declared inside a resource are merged after the walk so a
 	// .uid sidecar always wins a collision; the sidecars are what gdkit uid
@@ -312,12 +322,10 @@ func Load(config Config) (*Snapshot, error) {
 				if hidden && !config.Identities {
 					return nil
 				}
-				if strings.HasSuffix(relative, ".tscn") {
-					addResource(resources, relative, ResourceScene)
-				} else {
-					addResource(resources, relative, ResourceText)
+				header, refs, complete := scanResource(name, config.Identities && !hidden)
+				if config.Identities && !complete {
+					identityIncomplete = true
 				}
-				header, refs := scanResource(name, config.Identities && !hidden)
 				if header != "" {
 					if !hidden {
 						declared[header] = relative
@@ -333,6 +341,13 @@ func Load(config Config) (*Snapshot, error) {
 					reference.Path = relative
 					table.references = append(table.references, reference)
 				}
+				if !hidden {
+					if strings.HasSuffix(relative, ".tscn") {
+						addResource(resources, relative, ResourceScene)
+					} else {
+						addResource(resources, relative, ResourceText)
+					}
+				}
 			case strings.HasSuffix(relative, ".import"):
 				// An imported asset keeps its identifier in the .import file
 				// beside it; the asset itself is binary and unparsed.
@@ -341,8 +356,11 @@ func Load(config Config) (*Snapshot, error) {
 				if hidden && !config.Identities {
 					return nil
 				}
-				addResource(resources, owner, ResourceImported)
-				if uid, line := importClaim(name); uid != "" {
+				uid, line, complete := importClaim(name)
+				if config.Identities && !complete {
+					identityIncomplete = true
+				}
+				if uid != "" {
 					if !hidden {
 						declared[uid] = owner
 					}
@@ -353,6 +371,9 @@ func Load(config Config) (*Snapshot, error) {
 						})
 					}
 				}
+				if !hidden {
+					addResource(resources, owner, ResourceImported)
+				}
 			case strings.HasSuffix(relative, ".uid"):
 				owner := strings.TrimSuffix(relative, ".uid")
 				hidden := ignored.Ignored(relative, false) || ignored.Ignored(owner, false)
@@ -361,6 +382,9 @@ func Load(config Config) (*Snapshot, error) {
 				}
 				data, readErr := os.ReadFile(name)
 				if readErr != nil {
+					if config.Identities {
+						identityIncomplete = true
+					}
 					return nil
 				}
 				uid := strings.TrimSpace(string(data))
@@ -429,18 +453,41 @@ func Load(config Config) (*Snapshot, error) {
 		return nil, err
 	}
 	return &Snapshot{
-		Root:             root,
-		Paths:            paths,
-		Scripts:          scripts,
-		UIDs:             uids,
-		Sidecars:         sidecars,
-		Resources:        sortedResources(resources),
-		Claims:           table.claims,
-		References:       table.references,
-		IdentityEvidence: config.Identities,
-		Selected:         selected,
-		Autoloads:        autoloads,
+		Root:               root,
+		Paths:              paths,
+		Scripts:            scripts,
+		UIDs:               uids,
+		Sidecars:           sidecars,
+		Resources:          sortedResources(resources),
+		Claims:             table.claims,
+		References:         table.references,
+		IdentityEvidence:   config.Identities,
+		IdentityIncomplete: identityIncomplete,
+		Selected:           selected,
+		Autoloads:          autoloads,
 	}, nil
+}
+
+// identityCaptureIsNarrowed reports a capture that cannot establish every
+// project UID claimant. HonorIgnoreFile is deliberately not narrowing here:
+// Identities walks ignored paths and records their claims. Exclude and a
+// source-root set without the project root omit declaration sources entirely.
+func identityCaptureIsNarrowed(config Config) bool {
+	if !config.Identities {
+		return false
+	}
+	if len(config.Exclude) != 0 {
+		return true
+	}
+	if len(config.SourceRoots) == 0 {
+		return false
+	}
+	for _, root := range config.SourceRoots {
+		if filepath.Clean(root) == "." {
+			return false
+		}
+	}
+	return true
 }
 
 func addResource(resources map[string]ResourceKind, resourcePath string, kind ResourceKind) {

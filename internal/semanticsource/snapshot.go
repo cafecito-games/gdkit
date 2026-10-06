@@ -25,6 +25,7 @@ type Snapshot struct {
 	uidClaims  map[uint64][]string
 	badClaims  map[uint64]bool
 	identities bool
+	incomplete bool
 }
 
 var _ semantic.SourceSet = (*Snapshot)(nil)
@@ -52,6 +53,7 @@ func NewSnapshot(snapshot *project.Snapshot) *Snapshot {
 	adapter.scriptPath = make(map[string]bool, len(snapshot.Paths))
 	adapter.resources = make(map[string]semantic.ResourceKind, len(snapshot.Resources))
 	adapter.identities = snapshot.IdentityEvidence
+	adapter.incomplete = snapshot.IdentityIncomplete
 	sort.Strings(adapter.paths)
 	for _, filePath := range adapter.paths {
 		adapter.scriptPath[filePath] = true
@@ -154,6 +156,9 @@ func (s *Snapshot) ResolveResource(from, target string) semantic.ResourceResolut
 	if canonical == ".." || strings.HasPrefix(canonical, "../") {
 		return semantic.UnresolvedResource(semantic.ResourceEscapesProject, semantic.ResourceUnknown, target, semantic.ResourceLiteralPath, "resource path escapes the project")
 	}
+	if !canonicalProjectPath(canonical) {
+		return semantic.UnresolvedResource(semantic.ResourceInvalid, semantic.ResourceUnknown, target, semantic.ResourceLiteralPath, "resource path is malformed")
+	}
 	return s.resolveInventory(target, canonical, semantic.ResourceLiteralPath)
 }
 
@@ -164,6 +169,9 @@ func (s *Snapshot) resolveUID(target string) semantic.ResourceResolution {
 	}
 	if !s.identities {
 		return semantic.UnresolvedResource(semantic.ResourceInvalid, semantic.ResourceUnknown, target, semantic.ResourceUIDClaim, "resource UID claim evidence was not requested")
+	}
+	if s.incomplete {
+		return semantic.UnresolvedResource(semantic.ResourceInvalid, semantic.ResourceUnknown, target, semantic.ResourceUIDClaim, "resource UID claim evidence is incomplete")
 	}
 	if s.badClaims[identifier] {
 		return semantic.UnresolvedResource(semantic.ResourceInvalid, semantic.ResourceUnknown, target, semantic.ResourceUIDClaim, "resource UID has malformed captured claimant evidence")

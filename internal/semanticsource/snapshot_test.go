@@ -122,6 +122,7 @@ func TestSnapshotResolvesImmutableResourceInventoryAndUIDClaims(t *testing.T) {
 		{name: "invalid uid", target: "uid://z", state: semantic.ResourceInvalid, kind: semantic.ResourceUnknown, provenance: semantic.ResourceUIDClaim},
 		{name: "foreign scheme", target: "user://save.gd", state: semantic.ResourceInvalid, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
 		{name: "absolute", target: "/outside.gd", state: semantic.ResourceInvalid, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
+		{name: "absolute res path", target: "res:///outside.gd", state: semantic.ResourceInvalid, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
 		{name: "escapes", target: "../../outside.gd", state: semantic.ResourceEscapesProject, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
 		{name: "unknown source", from: "unknown.gd", target: "res://actors/enemy.gd", state: semantic.ResourceInvalid, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
 		{name: "ignored duplicate uid", target: "uid://c", state: semantic.ResourceAmbiguousUID, kind: semantic.ResourceUnknown, provenance: semantic.ResourceUIDClaim, reason: "resource UID has multiple captured claimants: actors/enemy.gd, ignored/other.gd"},
@@ -203,6 +204,51 @@ func TestSnapshotDoesNotUseUIDWinnerMapWithoutClaimEvidence(t *testing.T) {
 	got := NewSnapshot(snapshot).ResolveResource("loader.gd", "uid://b")
 	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "not requested") {
 		t.Fatalf("UID without claim evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
+	}
+}
+
+func TestSnapshotFailsClosedForIncompleteIdentityClaimEvidence(t *testing.T) {
+	source := NewSnapshot(&project.Snapshot{
+		Paths:              []string{"loader.gd"},
+		Scripts:            map[string]*project.Script{"loader.gd": {}},
+		Resources:          []project.Resource{{Path: "target.gd", Kind: project.ResourceScript}},
+		Claims:             []project.Claim{{UID: "uid://b", Owner: "target.gd", Path: "target.gd", Line: 1, Kind: project.ClaimSidecar}},
+		IdentityEvidence:   true,
+		IdentityIncomplete: true,
+	})
+	got := source.ResolveResource("loader.gd", "uid://b")
+	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "incomplete") {
+		t.Fatalf("incomplete UID evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
+	}
+}
+
+func TestSnapshotFailsClosedForProducerNarrowedIdentityEvidence(t *testing.T) {
+	root := t.TempDir()
+	for name, contents := range map[string]string{
+		"loader.gd":             "class_name Loader\n",
+		"target.gd":             "class_name Target\n",
+		"target.gd.uid":         "uid://b\n",
+		"excluded/other.gd":     "class_name Other\n",
+		"excluded/other.gd.uid": "uid://b\n",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := project.Load(project.Config{Root: root, Exclude: []string{"excluded/**"}, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityIncomplete {
+		t.Fatal("fixture did not retain narrowed identity evidence")
+	}
+	got := NewSnapshot(snapshot).ResolveResource("loader.gd", "uid://b")
+	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "incomplete") {
+		t.Fatalf("narrowed UID evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
 	}
 }
 

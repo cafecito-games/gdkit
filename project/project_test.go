@@ -2,6 +2,7 @@ package project
 
 import (
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -84,6 +85,92 @@ func TestLoadPublishesSortedResourceInventory(t *testing.T) {
 	}
 	if !slices.Equal(snapshot.Resources, want) {
 		t.Fatalf("Resources = %#v, want %#v", snapshot.Resources, want)
+	}
+}
+
+func TestLoadKeepsIgnoredResourceOwnersOutOfInventoryInEveryIdentityMode(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		".gdkitignore":           "hidden/\n",
+		"loader.gd":              "class_name Loader\n",
+		"hidden/script.gd":       "class_name Hidden\n",
+		"hidden/script.gd.uid":   "uid://b\n",
+		"hidden/scene.tscn":      "[gd_scene format=3 uid=\"uid://c\"]\n",
+		"hidden/theme.tres":      "[gd_resource type=\"Theme\" format=3 uid=\"uid://d\"]\n",
+		"hidden/icon.png":        "binary",
+		"hidden/icon.png.import": "[remap]\nuid=\"uid://e\"\n",
+	})
+	want := []Resource{{Path: "loader.gd", Kind: ResourceScript}}
+	for _, identities := range []bool{false, true} {
+		t.Run(fmt.Sprintf("identities=%t", identities), func(t *testing.T) {
+			snapshot, err := Load(Config{Root: root, HonorIgnoreFile: true, Identities: identities})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(snapshot.Resources, want) {
+				t.Fatalf("Resources = %#v, want ignored owners excluded regardless of Identities", snapshot.Resources)
+			}
+			if identities && len(snapshot.Claims) != 4 {
+				t.Fatalf("Claims = %#v, want all four ignored declarations retained", snapshot.Claims)
+			}
+		})
+	}
+}
+
+func TestLoadMarksIdentityEvidenceIncompleteWhenCoverageIsNarrowed(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"included/loader.gd":   "class_name Loader\n",
+		"outside/other.gd":     "class_name Other\n",
+		"outside/other.gd.uid": "uid://b\n",
+	})
+	for _, config := range []Config{
+		{Root: root, SourceRoots: []string{"included"}, Identities: true},
+		{Root: root, Exclude: []string{"outside/**"}, Identities: true},
+	} {
+		snapshot, err := Load(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
+			t.Fatalf("identity capture = requested:%t incomplete:%t, want requested but incomplete for narrowed discovery", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
+		}
+	}
+}
+
+func TestLoadMarksUnreadableIdentityClaimEvidenceIncomplete(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "unreadable.gd.uid")
+	writeFiles(t, root, map[string]string{
+		"loader.gd":         "class_name Loader\n",
+		"unreadable.gd":     "class_name Unreadable\n",
+		"unreadable.gd.uid": "uid://b\n",
+	})
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+	snapshot, err := Load(Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
+		t.Fatalf("identity capture = requested:%t incomplete:%t, want unreadable claimant evidence to be incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
+	}
+}
+
+func TestLoadMarksUnscannableIdentityClaimEvidenceIncomplete(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"loader.gd":     "class_name Loader\n",
+		"oversize.tscn": strings.Repeat("x", maxResourceLine+1) + "\n",
+	})
+	snapshot, err := Load(Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
+		t.Fatalf("identity capture = requested:%t incomplete:%t, want oversized claim source to be incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
 	}
 }
 
