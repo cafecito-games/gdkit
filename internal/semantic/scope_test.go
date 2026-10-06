@@ -649,15 +649,49 @@ func TestScopesComposeLocalMemberProjectAndEngineNamespaces(t *testing.T) {
 
 func TestScopesResolveSameNamedEngineSingletonAsInstance(t *testing.T) {
 	source := sources(t, map[string]string{
-		"player.gd": "class_name Player\nfunc run():\n\tInput\n",
+		"player.gd": "class_name Player\nconst DEFAULT_INPUT = Input\nfunc run():\n\tInput\n",
 	})
 	file := source.File("player.gd")
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeNamespaceEngine(t)))
 
-	binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "Input", 3), BindingEngineSingleton)
+	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "Input", 2), "non-constant singleton")
+	binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "Input", 4), BindingEngineSingleton)
 	if binding.Type().Kind() != KindClass || binding.Type().Name() != "Input" || binding.Type().Meta() {
 		t.Fatalf("Input singleton type = %v %q (meta %t), want Input instance", binding.Type().Kind(), binding.Type().Name(), binding.Type().Meta())
 	}
+}
+
+func TestScopesKeepSameNamedSingletonTypeCollisionsUnknown(t *testing.T) {
+	builder := NewEngineBuilder()
+	if err := builder.AddBuiltin("BuiltinOnly"); err != nil {
+		t.Fatal(err)
+	}
+	for _, class := range []struct{ name, parent string }{
+		{name: "Object"},
+		{name: "Foo", parent: "Object"},
+	} {
+		if err := builder.AddClass(class.name, class.parent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := builder.AddSingleton("BuiltinOnly", "Object"); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddSingleton("Foo", "Object"); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := sources(t, map[string]string{
+		"player.gd": "class_name Player\nfunc run():\n\tBuiltinOnly\n\tFoo\n",
+	})
+	file := source.File("player.gd")
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), engine))
+
+	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "BuiltinOnly", 3), "builtin/singleton collision")
+	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "Foo", 4), "different-type singleton collision")
 }
 
 func TestScopesKeepSameNamedSingletonUtilityCollisionUnknown(t *testing.T) {
