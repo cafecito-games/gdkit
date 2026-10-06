@@ -3,6 +3,7 @@ package semantic
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/cafecito-games/gdparser/ast"
@@ -16,6 +17,7 @@ type Analyzer struct {
 	interfaces *InterfaceSet
 	scopes     *ScopeIndex
 	engine     *Engine
+	resources  ResourceResolver
 
 	unavailable string
 
@@ -50,11 +52,14 @@ type reductionKey struct {
 }
 
 // reductionResult retains just enough provenance for an enclosing call to use
-// a declared callable signature. TypeOf never exposes this extra information.
+// a declared callable signature or a direct meta-class constructor. TypeOf
+// never exposes this extra information.
 type reductionResult struct {
-	typeValue Type
-	member    *Member
-	special   string
+	typeValue      Type
+	member         *Member
+	special        string
+	constructor    Type
+	hasConstructor bool
 }
 
 type reductionRequest struct {
@@ -75,6 +80,9 @@ func NewAnalyzer(source SourceSet, engine *Engine) *Analyzer {
 	if sourceUnavailable(source) {
 		analyzer.unavailable = "source set is unavailable"
 		return analyzer
+	}
+	if resources, ok := source.(ResourceResolver); ok && !sourceUnavailable(resources) {
+		analyzer.resources = resources
 	}
 	index := BuildIndex(source)
 	analyzer.interfaces = BuildInterfaces(index, engine)
@@ -119,7 +127,7 @@ func (a *Analyzer) typeOfIn(expression ast.Expression, scope *Scope, token reduc
 	return a.reduce(expression, reductionContext{scope: scope, token: token}, request)
 }
 
-func sourceUnavailable(source SourceSet) bool {
+func sourceUnavailable(source any) bool {
 	if source == nil {
 		return true
 	}
@@ -261,7 +269,20 @@ func knownReduction(typeValue Type) reductionResult {
 
 func memberReduction(member Member) reductionResult {
 	if member.Kind() == MemberEnum {
-		return unknownReduction(fmt.Sprintf("enum type value %q is deferred to #49", member.Name()))
+		return unknownReduction(fmt.Sprintf("enum type value %q is unavailable through ordinary instance member lookup", member.Name()))
+	}
+	copy := cloneMember(member)
+	return reductionResult{typeValue: copy.Type(), member: &copy}
+}
+
+// metaMemberReduction preserves only values that are usable through a class
+// object. A named enum declaration is itself a Dictionary object; its Enum
+// type describes an enum member value, so publishing it here would make
+// Actor.Mode look like an int-compatible enum value rather than its runtime
+// Dictionary and contaminate collection inference.
+func metaMemberReduction(member Member) reductionResult {
+	if member.Kind() == MemberEnum {
+		return knownReduction(Dictionary(nil, nil))
 	}
 	copy := cloneMember(member)
 	return reductionResult{typeValue: copy.Type(), member: &copy}
@@ -581,14 +602,17 @@ func (a *Analyzer) reduceCall(expression *ast.CallExpression, context reductionC
 			return resolved
 		}
 	}
+	if callee.hasConstructor {
+		return knownReduction(callee.constructor)
+	}
+	if callee.special == "preload" || callee.special == "load" {
+		return a.reduceResourceCall(expression, context, callee.special)
+	}
 	if callee.typeValue.Kind() == KindVariant {
 		return knownReduction(Variant())
 	}
 	if callee.typeValue.Meta() {
-		return unknownReduction("meta-class construction is deferred to #49")
-	}
-	if callee.special == "preload" || callee.special == "load" {
-		return unknownReduction(fmt.Sprintf("%s call is deferred to #49", callee.special))
+		return unknownReduction("direct meta-class call is not a supported constructor")
 	}
 	if callee.member != nil {
 		returned, ok := callee.member.ReturnType()
@@ -601,6 +625,117 @@ func (a *Analyzer) reduceCall(expression *ast.CallExpression, context reductionC
 		return unknownReduction("Callable value has no retained signature")
 	}
 	return unknownReduction(fmt.Sprintf("receiver %s is not callable", reductionTypeLabel(callee.typeValue)))
+}
+
+// reduceResourceCall consumes the dedicated language-special provenance from
+// Scope. No spelling-shaped ordinary call reaches this path: a local binding,
+// member (including ResourceLoader.load), alias, or unknown callee is reduced
+// through the normal callable rules above.
+func (a *Analyzer) reduceResourceCall(expression *ast.CallExpression, context reductionContext, special string) reductionResult {
+	if expression == nil {
+		return unknownReduction("resource call expression is unavailable")
+	}
+	if len(expression.Arguments) != 1 {
+		return unknownReduction(fmt.Sprintf("%s requires exactly one string literal argument", special))
+	}
+	target, err := decodeResourceLiteral(expression.Arguments[0])
+	if err != nil {
+		return unknownReduction(fmt.Sprintf("%s resource target is unavailable: %v", special, err))
+	}
+	if a == nil || a.resources == nil || sourceUnavailable(a.resources) {
+		return unknownReduction(fmt.Sprintf("%s resource resolver is unavailable", special))
+	}
+	from, problem := a.resourceSourcePath(context)
+	if problem != "" {
+		return unknownReduction(problem)
+	}
+	var resolution ResourceResolution
+	switch special {
+	case "preload":
+		resolution = a.resources.ResolvePreloadResource(from, target)
+	case "load":
+		resolution = a.resources.ResolveLoadResource(from, target)
+	default:
+		return unknownReduction(fmt.Sprintf("unsupported resource language special %q", special))
+	}
+	if resolution.Requested() != target {
+		return unknownReduction("resource resolver returned a result for a different requested spelling")
+	}
+	if want := resourceTargetProvenance(target); resolution.Provenance() != want {
+		return unknownReduction(fmt.Sprintf("resource resolver returned provenance %s for %s target", resolution.Provenance(), want))
+	}
+	if problem := resourceResolutionProblem(resolution); problem != "" {
+		return unknownReduction("resource resolver returned an invalid result: " + problem)
+	}
+	if resolution.State() != ResourceFound {
+		return unknownReduction(resolution.Reason())
+	}
+	return a.reduceFoundResource(resolution)
+}
+
+func resourceTargetProvenance(target string) ResourceProvenance {
+	if strings.HasPrefix(target, "uid://") {
+		return ResourceUIDClaim
+	}
+	return ResourceLiteralPath
+}
+
+// resourceSourcePath derives the loader's canonical source path solely from
+// the immutable interface index. It never asks a SourceSet to re-resolve or
+// read a path after NewAnalyzer has published its snapshot.
+func (a *Analyzer) resourceSourcePath(context reductionContext) (string, string) {
+	if a == nil || a.interfaces == nil || a.interfaces.index == nil {
+		return "", "interface set is unavailable while resolving a resource source"
+	}
+	if context.scope == nil {
+		return "", "resource call has no lexical source scope"
+	}
+	classID := context.scope.ClassID()
+	class := a.interfaces.index.Classes[classID]
+	if class == nil || !validResourcePath(class.Path) {
+		return "", "resource call source is absent from the immutable script index"
+	}
+	return class.Path, ""
+}
+
+func (a *Analyzer) reduceFoundResource(resolution ResourceResolution) reductionResult {
+	if a == nil {
+		return unknownReduction("semantic analyzer is unavailable")
+	}
+	switch resolution.Kind() {
+	case ResourceScript:
+		if a.interfaces == nil || a.interfaces.index == nil {
+			return unknownReduction("interface set is unavailable while resolving a script resource")
+		}
+		class := a.interfaces.index.TopLevel[resolution.Path()]
+		if class == nil {
+			return unknownReduction(fmt.Sprintf("script resource %q has no parsed top-level declaration", resolution.Path()))
+		}
+		if _, ok := a.interfaces.Class(class.ID); !ok {
+			return unknownReduction(fmt.Sprintf("script resource %q has no published class interface", resolution.Path()))
+		}
+		return knownReduction(Class(class.ID, nil, true))
+	case ResourceScene:
+		return a.engineResourceClass("PackedScene")
+	case ResourceText:
+		return a.engineResourceClass("Resource")
+	default:
+		return unknownReduction(fmt.Sprintf("resource resolver found unsupported resource kind %s", resolution.Kind()))
+	}
+}
+
+func (a *Analyzer) engineResourceClass(name string) reductionResult {
+	if a == nil || a.engine == nil {
+		return unknownReduction(fmt.Sprintf("engine schema is unavailable while resolving resource class %q", name))
+	}
+	resolved := a.engine.Class(name)
+	if resolved.Kind() == KindUnknown {
+		return knownReduction(resolved)
+	}
+	if resolved.Kind() != KindClass || resolved.Meta() {
+		return unknownReduction(fmt.Sprintf("engine resource class %q is not an instance class", name))
+	}
+	return knownReduction(resolved)
 }
 
 func (a *Analyzer) reduceMember(expression *ast.MemberExpression, context reductionContext, request *reductionRequest) reductionResult {
@@ -618,7 +753,21 @@ func (a *Analyzer) reduceMember(expression *ast.MemberExpression, context reduct
 		return memberReduction(*receiver.member)
 	}
 	if receiver.typeValue.Meta() {
-		return unknownReduction("meta-class member access is deferred to #49")
+		if expression.Property == "new" {
+			return a.reduceConstructorMember(receiver.typeValue)
+		}
+		if a.interfaces == nil {
+			return unknownReduction("interface set is unavailable while resolving meta member")
+		}
+		resolved := a.interfaces.LookupMetaMember(receiver.typeValue, expression.Property)
+		result := reduceMetaMemberLookup(receiver.typeValue, expression.Property, resolved)
+		if result.typeValue.Kind() != KindUnknown || result.member == nil {
+			return result
+		}
+		if result.member.Kind() != MemberVariable && result.member.Kind() != MemberConstant {
+			return result
+		}
+		return a.reduceDeferredMember(*result.member, result, request)
 	}
 	if a.interfaces == nil {
 		return unknownReduction("interface set is unavailable while resolving member")
@@ -632,6 +781,37 @@ func (a *Analyzer) reduceMember(expression *ast.MemberExpression, context reduct
 		return result
 	}
 	return a.reduceDeferredMember(*result.member, result, request)
+}
+
+// reduceConstructorMember recognizes the engine-private .new member only on
+// an already-resolved class object. It never treats a direct ClassMeta() call
+// as construction, and an incomplete user inheritance chain remains a valid
+// instance answer because the class interface owns that exact Type.
+func (a *Analyzer) reduceConstructorMember(receiver Type) reductionResult {
+	if receiver.Kind() != KindClass || !receiver.Meta() {
+		return unknownReduction("constructor receiver is not a meta class")
+	}
+	if a == nil || a.interfaces == nil {
+		return unknownReduction("interface set is unavailable while resolving a constructor")
+	}
+	if class, ok := a.interfaces.Class(receiver.Name()); ok {
+		instance := class.Type()
+		if instance.Kind() != KindClass || instance.Meta() {
+			return unknownReduction(fmt.Sprintf("user class %q has no instance constructor type", receiver.Name()))
+		}
+		return reductionResult{typeValue: Callable(), constructor: instance, hasConstructor: true}
+	}
+	if a.engine == nil {
+		return unknownReduction(fmt.Sprintf("engine schema is unavailable while resolving constructor %q", receiver.Name()))
+	}
+	instance := a.engine.Class(receiver.Name())
+	if instance.Kind() == KindUnknown {
+		return knownReduction(instance)
+	}
+	if instance.Kind() != KindClass || instance.Meta() {
+		return unknownReduction(fmt.Sprintf("engine class %q has no instance constructor type", receiver.Name()))
+	}
+	return reductionResult{typeValue: Callable(), constructor: instance, hasConstructor: true}
 }
 
 func (a *Analyzer) reduceDeferredMember(member Member, prior reductionResult, request *reductionRequest) reductionResult {
@@ -662,6 +842,26 @@ func reduceMemberLookup(receiver Type, name string, resolved LookupResult) reduc
 		return unknownReduction(fmt.Sprintf("member %q is absent from %s", name, reductionTypeLabel(receiver)))
 	default:
 		return unknownReduction(fmt.Sprintf("member lookup for %q returned invalid state", name))
+	}
+}
+
+// reduceMetaMemberLookup is the corresponding tri-state boundary for static
+// meta-class selection. A selected named enum is reduced as its Dictionary
+// object while ordinary receiver lookup remains conservative.
+func reduceMetaMemberLookup(receiver Type, name string, resolved LookupResult) reductionResult {
+	switch resolved.State() {
+	case LookupFound:
+		member, ok := resolved.Member()
+		if !ok {
+			return unknownReduction(fmt.Sprintf("meta member lookup for %q returned no member", name))
+		}
+		return metaMemberReduction(member)
+	case LookupUnknown:
+		return unknownReduction(resolved.Reason())
+	case LookupAbsent:
+		return unknownReduction(fmt.Sprintf("meta member %q is absent from %s", name, reductionTypeLabel(receiver)))
+	default:
+		return unknownReduction(fmt.Sprintf("meta member lookup for %q returned invalid state", name))
 	}
 }
 

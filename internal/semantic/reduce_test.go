@@ -294,6 +294,133 @@ func TestAnalyzerReducesMembersCallsAndDeferredSpecials(t *testing.T) {
 	}
 }
 
+func TestAnalyzerResolvesLanguageSpecialResourcesAndMetaMembers(t *testing.T) {
+	// Godot v4.7.2 reports typeof(Actor.Mode) as Dictionary. In particular,
+	// Array[Actor.Mode] rejects [Actor.Mode] because that annotation denotes
+	// the enum's int value type rather than the Dictionary enum object.
+	base := sources(t, map[string]string{
+		"actors/enemy.gd": "class_name Actor\nstatic var static_value: int\nvar instance_value: int\nstatic func static_method() -> int:\n\tpass\nfunc instance_method() -> int:\n\tpass\nenum Mode { IDLE }\nenum { READY }\nclass Inner:\n\tpass\n",
+		"broken.gd":       "class_name Broken extends Missing\n",
+		"loader.gd":       "class_name Loader\nvar actor_instance: Actor\nfunc shadow(load):\n\tvar shadowed := load(\"res://shadowed.gd\")\nfunc run():\n\tvar script := preload(\"res://actors/enemy.gd\")\n\tvar raw_script := load(r\"res://actors/enemy.gd\")\n\tvar triple_script := load(\"\"\"res://actors/enemy.gd\"\"\")\n\tvar created := preload(\"res://actors/enemy.gd\").new()\n\tvar scene := load(\"res://levels/arena.tscn\")\n\tvar scene_instance := load(\"res://levels/arena.tscn\").instantiate()\n\tvar text := preload(\"res://data/settings.tres\")\n\tvar static_method := Actor.static_method()\n\tvar static_value := Actor.static_value\n\tvar enum_type := Actor.Mode\n\tvar enum_type_array := [Actor.Mode]\n\tvar enum_type_dictionary := {Actor.Mode: 1}\n\tvar resource_enum_type := preload(\"res://actors/enemy.gd\").Mode\n\tvar resource_enum_type_array := [preload(\"res://actors/enemy.gd\").Mode]\n\tvar enum_value := Actor.READY\n\tvar inner := Actor.Inner\n\tvar actor := Actor.new()\n\tvar incomplete := Broken.new()\n\tvar node := Node.new()\n\tvar engine_static := Node.engine_static()\n\tvar resource_loader := ResourceLoader.load(\"res://resource-loader.gd\")\n\tvar missing := preload(\"res://gone.gd\")\n\tvar parse_failed := load(\"res://actors/broken.gd\")\n\tvar string_name := load(&\"res://string-name.gd\")\n\tvar wrong_arity := load(\"res://wrong-arity.gd\", \"res://wrong-arity.gd\")\n\tvar named := \"res://dynamic.gd\"\n\tvar dynamic_load := load(named)\n\tvar interpolated_load := load(\"res://%s.gd\" % \"dynamic\")\n\tvar unknown_argument := load(missing_argument)\n\tvar load_alias := load\n\tvar alias_load := load_alias(\"res://alias.gd\")\n\tvar instance := Actor.instance_value\n\tvar instance_method := Actor.instance_method()\n\tvar invalid_new := actor_instance.new()\n\tvar direct := Actor()\n",
+	})
+	if failures := base.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	source := &resourceTestSources{
+		memorySources: base,
+		resolutions: map[string]ResourceResolution{
+			"res://actors/enemy.gd":    FoundResource(ResourceScript, "res://actors/enemy.gd", "actors/enemy.gd", ResourceLiteralPath),
+			"res://actors/broken.gd":   FoundResource(ResourceScript, "res://actors/broken.gd", "actors/broken.gd", ResourceLiteralPath),
+			"res://levels/arena.tscn":  FoundResource(ResourceScene, "res://levels/arena.tscn", "levels/arena.tscn", ResourceLiteralPath),
+			"res://data/settings.tres": FoundResource(ResourceText, "res://data/settings.tres", "data/settings.tres", ResourceLiteralPath),
+			"res://gone.gd":            UnresolvedResource(ResourceMissing, ResourceUnknown, "res://gone.gd", ResourceLiteralPath, "resource is absent"),
+		},
+	}
+	analyzer := NewAnalyzer(source, reducerTestEngine(t))
+	file := source.File("loader.gd")
+	actor, ok := analyzer.interfaces.Class("actors/enemy.gd")
+	if !ok {
+		t.Fatal("Actor interface is unavailable")
+	}
+	broken, ok := analyzer.interfaces.Class("broken.gd")
+	if !ok {
+		t.Fatal("Broken interface is unavailable")
+	}
+	for _, testCase := range []struct {
+		name string
+		want Type
+	}{
+		{name: "script", want: Class("actors/enemy.gd", nil, true)},
+		{name: "raw_script", want: Class("actors/enemy.gd", nil, true)},
+		{name: "triple_script", want: Class("actors/enemy.gd", nil, true)},
+		{name: "created", want: actor.Type()},
+		{name: "scene", want: reducerTestEngine(t).Class("PackedScene")},
+		{name: "scene_instance", want: reducerTestEngine(t).Class("Node")},
+		{name: "text", want: reducerTestEngine(t).Class("Resource")},
+		{name: "static_method", want: Builtin("int")},
+		{name: "static_value", want: Builtin("int")},
+		{name: "enum_type", want: Dictionary(nil, nil)},
+		{name: "enum_type_array", want: reducerArray(Dictionary(nil, nil))},
+		{name: "enum_type_dictionary", want: reducerDictionary(Dictionary(nil, nil), Builtin("int"))},
+		{name: "resource_enum_type", want: Dictionary(nil, nil)},
+		{name: "resource_enum_type_array", want: reducerArray(Dictionary(nil, nil))},
+		{name: "enum_value", want: Builtin("int")},
+		{name: "inner", want: Class("actors/enemy.gd#Inner", nil, true)},
+		{name: "actor", want: actor.Type()},
+		{name: "incomplete", want: broken.Type()},
+		{name: "node", want: reducerTestEngine(t).Class("Node")},
+		{name: "engine_static", want: Builtin("int")},
+		{name: "resource_loader", want: reducerTestEngine(t).Class("Resource")},
+		{name: "shadowed", want: Variant()},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
+			if !got.Equal(testCase.want) {
+				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
+			}
+		})
+	}
+	for _, name := range []string{"missing", "parse_failed", "string_name", "wrong_arity", "dynamic_load", "interpolated_load", "unknown_argument", "alias_load", "instance", "instance_method", "invalid_new", "direct"} {
+		t.Run(name, func(t *testing.T) {
+			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
+			if got.Kind() != KindUnknown || got.Reason() == "" {
+				t.Fatalf("TypeOf(%s) = %s (%q), want reasoned Unknown", name, got, got.Reason())
+			}
+		})
+	}
+	for _, target := range []string{"res://shadowed.gd", "res://resource-loader.gd", "res://string-name.gd", "res://wrong-arity.gd", "res://dynamic.gd", "res://%s.gd", "res://alias.gd"} {
+		if got := source.callsFor("loader.gd", target); got != 0 {
+			t.Fatalf("ordinary/non-literal loader %q queried ResourceResolver %d times", target, got)
+		}
+	}
+	cacheSource := &resourceTestSources{memorySources: base, resolutions: source.resolutions}
+	cacheAnalyzer := NewAnalyzer(cacheSource, reducerTestEngine(t))
+	cacheExpression := reducerVariableValue(t, file, "script")
+	for attempt := 0; attempt < 2; attempt++ {
+		got := cacheAnalyzer.TypeOf(cacheExpression)
+		if !got.Equal(Class("actors/enemy.gd", nil, true)) {
+			t.Fatalf("cached resource reduction = %s (%q), want Actor meta class", got, got.Reason())
+		}
+	}
+	if got := cacheSource.callsFor("loader.gd", "res://actors/enemy.gd"); got != 1 {
+		t.Fatalf("resource resolver calls = %d, want one completed-result cache lookup", got)
+	}
+}
+
+func TestAnalyzerFailsClosedForUnavailableInvalidAndUnsupportedResourceEvidence(t *testing.T) {
+	base := sources(t, map[string]string{
+		"loader.gd": "class_name Loader\nfunc run():\n\tvar unavailable := load(\"res://levels/main.tscn\")\n\tvar invalid := load(\"res://invalid.tres\")\n\tvar mismatched := load(\"res://mismatched.tres\")\n\tvar wrong_provenance := load(\"res://wrong-provenance.gd\")\n\tvar scene := load(\"res://levels/main.tscn\")\n\tvar text := load(\"res://theme.tres\")\n",
+	})
+	if failures := base.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	minimal := resourceMinimalEngine(t)
+	withoutResolver := NewAnalyzer(base, minimal)
+	if got := withoutResolver.TypeOf(reducerVariableValue(t, base.File("loader.gd"), "unavailable")); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "resolver") {
+		t.Fatalf("unavailable resolver = %s (%q), want resolver-specific Unknown", got, got.Reason())
+	}
+	source := &resourceTestSources{
+		memorySources: base,
+		resolutions: map[string]ResourceResolution{
+			"res://invalid.tres":        {},
+			"res://mismatched.tres":     FoundResource(ResourceText, "res://other.tres", "other.tres", ResourceLiteralPath),
+			"res://wrong-provenance.gd": FoundResource(ResourceScript, "res://wrong-provenance.gd", "loader.gd", ResourceUIDClaim),
+			"res://levels/main.tscn":    FoundResource(ResourceScene, "res://levels/main.tscn", "levels/main.tscn", ResourceLiteralPath),
+			"res://theme.tres":          FoundResource(ResourceText, "res://theme.tres", "theme.tres", ResourceLiteralPath),
+		},
+	}
+	analyzer := NewAnalyzer(source, minimal)
+	file := source.File("loader.gd")
+	for _, name := range []string{"invalid", "mismatched", "wrong_provenance", "scene", "text"} {
+		t.Run(name, func(t *testing.T) {
+			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
+			if got.Kind() != KindUnknown || strings.TrimSpace(got.Reason()) == "" {
+				t.Fatalf("TypeOf(%s) = %s (%q), want reasoned Unknown", name, got, got.Reason())
+			}
+		})
+	}
+}
+
 func TestReducerMemberLookupStateClosure(t *testing.T) {
 	member := Member{name: "value", kind: MemberEngineProperty, typeValue: Builtin("int")}
 	for _, testCase := range []struct {
@@ -765,6 +892,9 @@ func reducerTestEngine(t *testing.T) *Engine {
 		{name: "Object"},
 		{name: "RefCounted", parent: "Object"},
 		{name: "Node", parent: "Object"},
+		{name: "Resource", parent: "RefCounted"},
+		{name: "PackedScene", parent: "Resource"},
+		{name: "ResourceLoader", parent: "Object"},
 	} {
 		if err := builder.AddClass(class.name, class.parent); err != nil {
 			t.Fatal(err)
@@ -788,7 +918,19 @@ func reducerTestEngine(t *testing.T) *Engine {
 	if err := builder.AddMethod("Node", "engine_method", "int", nil, false, false); err != nil {
 		t.Fatal(err)
 	}
+	if err := builder.AddMethod("Node", "engine_static", "int", nil, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddMethod("Node", "engine_instance", "int", nil, false, false); err != nil {
+		t.Fatal(err)
+	}
 	if err := builder.AddProperty("Node", "engine_property", "int"); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddMethod("PackedScene", "instantiate", "Node", nil, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddMethod("ResourceLoader", "load", "Resource", nil, true, false); err != nil {
 		t.Fatal(err)
 	}
 	engine, err := builder.Build()
@@ -796,6 +938,55 @@ func reducerTestEngine(t *testing.T) *Engine {
 		t.Fatal(err)
 	}
 	return engine
+}
+
+func resourceMinimalEngine(t *testing.T) *Engine {
+	t.Helper()
+	builder := NewEngineBuilder()
+	for _, class := range []struct{ name, parent string }{{name: "Object"}, {name: "RefCounted", parent: "Object"}} {
+		if err := builder.AddClass(class.name, class.parent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return engine
+}
+
+type resourceTestSources struct {
+	*memorySources
+	resolutions map[string]ResourceResolution
+	mu          sync.Mutex
+	calls       map[string]int
+}
+
+func (s *resourceTestSources) ResolvePreloadResource(from, target string) ResourceResolution {
+	return s.resolveResource("preload", from, target)
+}
+
+func (s *resourceTestSources) ResolveLoadResource(from, target string) ResourceResolution {
+	return s.resolveResource("load", from, target)
+}
+
+func (s *resourceTestSources) resolveResource(special, from, target string) ResourceResolution {
+	s.mu.Lock()
+	if s.calls == nil {
+		s.calls = map[string]int{}
+	}
+	s.calls[special+"\x00"+from+"\x00"+target]++
+	s.mu.Unlock()
+	if resolution, ok := s.resolutions[target]; ok {
+		return resolution
+	}
+	return UnresolvedResource(ResourceMissing, ResourceUnknown, target, ResourceLiteralPath, "resource is absent")
+}
+
+func (s *resourceTestSources) callsFor(from, target string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls["preload\x00"+from+"\x00"+target] + s.calls["load\x00"+from+"\x00"+target]
 }
 
 func reducerVariableValue(t *testing.T, file *ast.File, name string) ast.Expression {

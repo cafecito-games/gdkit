@@ -68,6 +68,22 @@ func TestLoadRecordsAClaimForEveryDeclarationMechanism(t *testing.T) {
 	}
 }
 
+func TestLoadRecordsHeaderClaimAfterLeadingComments(t *testing.T) {
+	// Godot v4.7.2 loads this exact text form: a text-resource header may
+	// follow leading semicolon comments and blank lines. The declaration still
+	// belongs to the header's physical line for uid diagnostics and repairs.
+	snapshot := loadIdentities(t, map[string]string{
+		"commented.tscn": "; retained by Godot\n\n[gd_scene format=3 uid=\"uid://b\"]\n",
+	})
+	claim := claimOf(t, snapshot, "commented.tscn")
+	if claim.UID != "uid://b" || claim.Path != "commented.tscn" || claim.Line != 3 || claim.Kind != ClaimHeader {
+		t.Fatalf("leading-comment header claim = %+v, want uid://b at commented.tscn:3", claim)
+	}
+	if snapshot.IdentityIncomplete {
+		t.Fatal("a header after leading comments must remain complete identity evidence")
+	}
+}
+
 // A declaration no decoder accepts is still a declaration: uid reports on it,
 // so dropping it here would hide it.
 func TestLoadKeepsADeclarationVerbatim(t *testing.T) {

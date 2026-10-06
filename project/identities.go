@@ -111,28 +111,36 @@ func (i *identities) sort() {
 
 // scanResource reads a .tscn or .tres file. It returns the identity the header
 // line declares, if any, and — when references is set — every [ext_resource]
-// line that names one.
+// line that names one. Its final result says whether the header declaration
+// was read completely; a later reference-scan failure cannot make that already
+// captured claimant incomplete.
 //
-// Only the first line can declare the file's own identity; the identifiers on
-// later lines belong to other files. The whole file is read only when the
-// caller wants those, because the other tools that load a project need nothing
-// past the header.
-func scanResource(name string, references bool) (header string, refs []Reference) {
+// The first nonblank, non-semicolon-comment line can declare the file's own
+// identity; the identifiers on later lines belong to other files. The whole
+// file is read only when the caller wants those, because the other tools that
+// load a project need nothing past the header.
+func scanResource(name string, references bool) (header string, headerLine int, refs []Reference, complete bool) {
 	file, err := os.Open(name)
 	if err != nil {
-		return "", nil
+		return "", 0, nil, false
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 4096), maxResourceLine)
+	headerRead := false
 	for number := 1; scanner.Scan(); number++ {
 		line := strings.TrimSpace(scanner.Text())
-		if number == 1 {
+		if !headerRead {
+			if line == "" || strings.HasPrefix(line, ";") {
+				continue
+			}
+			headerRead = true
 			if strings.HasPrefix(line, "[gd_scene") || strings.HasPrefix(line, "[gd_resource") {
 				header = quotedUID(line)
+				headerLine = number
 			}
 			if !references {
-				return header, nil
+				return header, headerLine, nil, true
 			}
 			continue
 		}
@@ -150,16 +158,19 @@ func scanResource(name string, references bool) (header string, refs []Reference
 			Kind:   ReferenceExternal,
 		})
 	}
-	return header, refs
+	if scanner.Err() != nil && !headerRead {
+		return header, headerLine, refs, false
+	}
+	return header, headerLine, refs, true
 }
 
 // importClaim returns the identity a .import file declares for its asset and
 // the line it sits on. Only the [remap] section is read, because a later
 // section describes the import's own dependencies.
-func importClaim(name string) (string, int) {
+func importClaim(name string) (string, int, bool) {
 	file, err := os.Open(name)
 	if err != nil {
-		return "", 0
+		return "", 0, false
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
@@ -169,7 +180,7 @@ func importClaim(name string) (string, int) {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "[") {
 			if remap {
-				return "", 0
+				return "", 0, true
 			}
 			remap = line == "[remap]"
 			continue
@@ -178,10 +189,10 @@ func importClaim(name string) (string, int) {
 			continue
 		}
 		if identifier := quotedUID(line); identifier != "" {
-			return identifier, number
+			return identifier, number, true
 		}
 	}
-	return "", 0
+	return "", 0, scanner.Err() == nil
 }
 
 // resourceAttribute returns the value of a key="value" attribute in a .tscn or

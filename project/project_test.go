@@ -1,7 +1,10 @@
 package project
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -9,6 +12,8 @@ import (
 	"strings"
 	"testing"
 )
+
+const godotThemeBinaryFixture = "UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAABgAAAFRoZW1lAAAAAAAAAAAAAwAAAPzo8aEmmiAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lABMAAABkZWZhdWx0X2Jhc2Vfc2NhbGUADQAAAGRlZmF1bHRfZm9udAASAAAAZGVmYXVsdF9mb250X3NpemUABwAAAHNjcmlwdAAAAAAAAQAAABQAAABsb2NhbDovL1RoZW1lX2I3NGl2AAUBAAAAAAAABgAAAFRoZW1lAAEAAAAFAAAAAQAAAFJTUkM="
 
 func writeFiles(t *testing.T, root string, files map[string]string) {
 	t.Helper()
@@ -53,6 +58,299 @@ func TestLoadDiscoversParsesAndExcludes(t *testing.T) {
 	}
 	if snapshot.UIDs["uid://abc123"] != "nested/enemy.gd" {
 		t.Errorf("UIDs = %v", snapshot.UIDs)
+	}
+}
+
+func TestLoadPublishesSortedResourceInventory(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"scripts/loader.gd":   "extends Node\n",
+		"scripts/broken.gd":   "func (((\n",
+		"world/main.tscn":     "[gd_scene format=3]\n",
+		"theme.tres":          "[gd_resource type=\"Theme\" format=3]\n",
+		"art/icon.png":        "binary",
+		"art/icon.png.import": "[remap]\nimporter=\"texture\"\n",
+		"notes.txt":           "not a Godot resource owner",
+	})
+
+	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"."}, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityEvidence {
+		t.Fatal("identity evidence request was not retained")
+	}
+	want := []Resource{
+		{Path: "art/icon.png", Kind: ResourceImported},
+		{Path: "scripts/broken.gd", Kind: ResourceScript},
+		{Path: "scripts/loader.gd", Kind: ResourceScript},
+		{Path: "theme.tres", Kind: ResourceText},
+		{Path: "world/main.tscn", Kind: ResourceScene},
+	}
+	if !slices.Equal(snapshot.Resources, want) {
+		t.Fatalf("Resources = %#v, want %#v", snapshot.Resources, want)
+	}
+}
+
+func TestLoadKeepsIgnoredResourceOwnersOutOfInventoryInEveryIdentityMode(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		".gdkitignore":           "hidden/\n",
+		"loader.gd":              "class_name Loader\n",
+		"hidden/script.gd":       "class_name Hidden\n",
+		"hidden/script.gd.uid":   "uid://b\n",
+		"hidden/scene.tscn":      "[gd_scene format=3 uid=\"uid://c\"]\n",
+		"hidden/theme.tres":      "[gd_resource type=\"Theme\" format=3 uid=\"uid://d\"]\n",
+		"hidden/icon.png":        "binary",
+		"hidden/icon.png.import": "[remap]\nuid=\"uid://e\"\n",
+	})
+	want := []Resource{{Path: "loader.gd", Kind: ResourceScript}}
+	for _, identities := range []bool{false, true} {
+		t.Run(fmt.Sprintf("identities=%t", identities), func(t *testing.T) {
+			snapshot, err := Load(Config{Root: root, HonorIgnoreFile: true, Identities: identities})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(snapshot.Resources, want) {
+				t.Fatalf("Resources = %#v, want ignored owners excluded regardless of Identities", snapshot.Resources)
+			}
+			if identities && len(snapshot.Claims) != 4 {
+				t.Fatalf("Claims = %#v, want all four ignored declarations retained", snapshot.Claims)
+			}
+		})
+	}
+}
+
+func TestLoadKeepsGeneratedMetadataOutOfInventoryInEveryIdentityMode(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"loader.gd":          "class_name Loader\n",
+		".godot/cache.gd":    "class_name Cache\n",
+		".godot/scene.tscn":  "[gd_scene format=3]\n",
+		".git/hooks/tool.gd": "class_name Hook\n",
+		".git/theme.tres":    "[gd_resource type=\"Theme\" format=3]\n",
+	})
+	want := []Resource{{Path: "loader.gd", Kind: ResourceScript}}
+	for _, identities := range []bool{false, true} {
+		t.Run(fmt.Sprintf("identities=%t", identities), func(t *testing.T) {
+			snapshot, err := Load(Config{Root: root, Identities: identities})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(snapshot.Resources, want) {
+				t.Fatalf("Resources = %#v, want generated metadata excluded regardless of Identities", snapshot.Resources)
+			}
+		})
+	}
+}
+
+func TestLoadMarksIdentityEvidenceIncompleteWhenCoverageIsNarrowed(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"included/loader.gd":   "class_name Loader\n",
+		"outside/other.gd":     "class_name Other\n",
+		"outside/other.gd.uid": "uid://b\n",
+	})
+	for _, config := range []Config{
+		{Root: root, SourceRoots: []string{"included"}, Identities: true},
+		{Root: root, Exclude: []string{"outside/**"}, Identities: true},
+	} {
+		snapshot, err := Load(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
+			t.Fatalf("identity capture = requested:%t incomplete:%t, want requested but incomplete for narrowed discovery", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
+		}
+	}
+}
+
+func TestLoadMarksUnreadableIdentityClaimEvidenceIncomplete(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "unreadable.gd.uid")
+	writeFiles(t, root, map[string]string{
+		"loader.gd":         "class_name Loader\n",
+		"unreadable.gd":     "class_name Unreadable\n",
+		"unreadable.gd.uid": "uid://b\n",
+	})
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+	snapshot, err := Load(Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
+		t.Fatalf("identity capture = requested:%t incomplete:%t, want unreadable claimant evidence to be incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
+	}
+}
+
+func TestLoadMarksUnscannableIdentityClaimEvidenceIncomplete(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"loader.gd":     "class_name Loader\n",
+		"oversize.tscn": strings.Repeat("x", maxResourceLine+1) + "\n",
+	})
+	snapshot, err := Load(Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
+		t.Fatalf("identity capture = requested:%t incomplete:%t, want oversized claim source to be incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
+	}
+}
+
+func TestLoadMarksLeadingCommentUnscannableIdentityClaimEvidenceIncomplete(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"loader.gd":     "class_name Loader\n",
+		"oversize.tscn": "; Godot permits leading comments\n" + strings.Repeat("x", maxResourceLine+1) + "\n",
+	})
+	snapshot, err := Load(Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
+		t.Fatalf("identity capture = requested:%t incomplete:%t, want an unreadable post-comment header to remain incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
+	}
+}
+
+func TestLoadMarksRealGodotBinaryResourceClaimEvidenceIncomplete(t *testing.T) {
+	// These are byte-for-byte outputs from Godot
+	// v4.7.2.stable.cafecito_e76255129.ed1daf0bf: ResourceSaver.save followed
+	// by ResourceSaver.set_uid for a Resource (.res), PackedScene (.scn), and
+	// Theme (.theme). They are intentionally opaque here: this loader must not
+	// claim complete UID evidence when a real binary resource can carry its own
+	// UID, regardless of its resource-base extension.
+	fixtures := []struct {
+		path string
+		data string
+	}{
+		{
+			path: "duplicate.res",
+			data: "UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAACQAAAFJlc291cmNlAAAAAAAAAAAAAwAAAH7QHZsmWj5hAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lAAcAAABzY3JpcHQAAAAAAAEAAAAXAAAAbG9jYWw6Ly9SZXNvdXJjZV9icm84aADNAAAAAAAAAAkAAABSZXNvdXJjZQABAAAAAgAAAAEAAABSU1JD",
+		},
+		{
+			path: "duplicate.scn",
+			data: "UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAADAAAAFBhY2tlZFNjZW5lAAAAAAAAAAAAAwAAADRLcSzKYVliAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lAAkAAABfYnVuZGxlZAAHAAAAc2NyaXB0AAAAAAABAAAAGgAAAGxvY2FsOi8vUGFja2VkU2NlbmVfM3Z1aGUA4AAAAAAAAAAMAAAAUGFja2VkU2NlbmUAAQAAAAMAAAABAAAAUlNSQw==",
+		},
+		{
+			path: "duplicate.theme",
+			data: godotThemeBinaryFixture,
+		},
+		{
+			path: "compressed.theme",
+			data: "UlNDQwIAAAAAEAAAHAEAAKoAAAAotS/9YBwABQUAgsgdJ5A5jQG7/////z/uxSDIavht2YhT2t5Fg/WlwFIEto0MU7yzFhVJATMkhyRgmBOKiIoSghb/4WeOkgpzq5Nqs3C84DRYX3Obug2S8WVt0shvWK12EdZL3SaM+ZqDL9VhGVzFfsTf3HgeSsXiXH7Aain1aH7nD3wPAFml0FgAfwyK2sFaG3kQjocpmkvT7CWdhstP7gGYj3tl5w4GsFJTQ0M=",
+		},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.path, func(t *testing.T) {
+			root := t.TempDir()
+			data, err := base64.StdEncoding.DecodeString(fixture.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(data) < 4 || (string(data[:4]) != "RSRC" && string(data[:4]) != "RSCC") {
+				t.Fatalf("producer fixture %s has unexpected binary resource magic", fixture.path)
+			}
+			writeFiles(t, root, map[string]string{"loader.gd": "class_name Loader\n"})
+			path := filepath.Join(root, fixture.path)
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			snapshot, err := Load(Config{Root: root, Identities: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
+				t.Fatalf("identity capture = requested:%t incomplete:%t, want real binary resource to make opaque UID evidence incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatalf("Load changed real producer bytes for %s", fixture.path)
+			}
+		})
+	}
+}
+
+func TestLoadExcludesGeneratedMetadataFromIdentityEvidence(t *testing.T) {
+	// This is the exact non-.res Theme producer fixture above. A .godot cache
+	// may contain it, but its UID is not part of the project's claimant
+	// universe and must not poison a complete project identity capture.
+	binary, err := base64.StdEncoding.DecodeString(godotThemeBinaryFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, testCase := range []struct {
+		name    string
+		exclude []string
+	}{
+		{name: "no explicit metadata exclusion"},
+		{name: "metadata-only exclusion", exclude: []string{".git/**", ".godot/**"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFiles(t, root, map[string]string{
+				"loader.gd":              "class_name Loader\n",
+				"target.gd":              "class_name Target\n",
+				"target.gd.uid":          "uid://b\n",
+				".godot/cache.gd.uid":    "uid://b\n",
+				".git/objects/claim.uid": "uid://b\n",
+			})
+			cachePath := filepath.Join(root, ".godot", "imported", "opaque.theme")
+			if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cachePath, binary, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			snapshot, err := Load(Config{Root: root, Exclude: testCase.exclude, Identities: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.IdentityIncomplete {
+				t.Fatal("generated metadata made project identity evidence incomplete")
+			}
+			if len(snapshot.Claims) != 1 || snapshot.Claims[0].Owner != "target.gd" || snapshot.Claims[0].UID != "uid://b" {
+				t.Fatalf("Claims = %#v, want only the project claimant", snapshot.Claims)
+			}
+			if snapshot.UIDs["uid://b"] != "target.gd" {
+				t.Fatalf("UIDs = %#v, want project claimant only", snapshot.UIDs)
+			}
+		})
+	}
+}
+
+func TestLoadKeepsHeaderClaimEvidenceCompleteAfterReferenceScanFailure(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"loader.gd":  "class_name Loader\n",
+		"scene.tscn": "[gd_scene format=3 uid=\"uid://b\"]\n" + strings.Repeat("x", maxResourceLine+1) + "\n",
+	})
+	snapshot, err := Load(Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.IdentityIncomplete {
+		t.Fatal("a later reference scan failure must not make the already-read header claimant incomplete")
+	}
+}
+
+func TestResourceKindVocabularyIsClosed(t *testing.T) {
+	for _, kind := range []ResourceKind{ResourceScript, ResourceScene, ResourceText, ResourceImported} {
+		if kind.String() == "" {
+			t.Fatalf("resource kind %d is not closed", kind)
+		}
 	}
 }
 

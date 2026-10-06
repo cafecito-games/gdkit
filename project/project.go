@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -64,16 +65,18 @@ type Config struct {
 	// every tool but generate passes, selects everything discovered.
 	Selection *Selection
 	// Identities populates Snapshot.Claims and Snapshot.References: every
-	// declaration of a uid:// identity and every use of one. Only uid asks
-	// for it, because collecting the references means reading every .tscn and
-	// .tres file through rather than only its header line, which the other
-	// tools have no use for.
+	// declaration of a uid:// identity and every use of one. It reads every
+	// .tscn and .tres file through rather than only its header line, and checks
+	// otherwise unmodelled file headers for opaque binary resource claim
+	// evidence, which the other tools have no use for.
 	//
 	// A claim is recorded even inside a path HonorIgnoreFile hides, carrying
 	// Claim.Ignored: an ignored file still owns its identity, and dropping it
-	// from the table would make every reference to it look dangling. A
-	// reference inside an ignored path is not recorded at all, because
-	// nothing reports or rewrites one.
+	// from the table would make every reference to it look dangling. Root
+	// .git and .godot metadata are the exception: neither belongs to the
+	// project claimant universe and are omitted from the resource inventory in
+	// every mode. A reference inside an ignored path is not recorded at all,
+	// because nothing reports or rewrites one.
 	Identities bool
 }
 
@@ -146,6 +149,43 @@ type Sidecar struct {
 	Text string
 }
 
+// ResourceKind identifies the on-disk producer evidence a Snapshot retained.
+// It is intentionally an inventory category, not a semantic type: adapters
+// decide what a selected engine can soundly infer from each kind.
+type ResourceKind uint8
+
+const (
+	ResourceScript ResourceKind = iota + 1
+	ResourceScene
+	ResourceText
+	ResourceImported
+)
+
+func (k ResourceKind) String() string {
+	switch k {
+	case ResourceScript:
+		return "script"
+	case ResourceScene:
+		return "scene"
+	case ResourceText:
+		return "text"
+	case ResourceImported:
+		return "imported"
+	default:
+		return fmt.Sprintf("ResourceKind(%d)", k)
+	}
+}
+
+// Resource is one discovered project-relative resource owner. Path is always
+// slash-separated; Resources is sorted by Path in Snapshot. A path hidden by
+// HonorIgnoreFile is never inventoried, even when Identities retains its
+// claimant evidence, so an ignored declaration cannot establish a typeable
+// resource target.
+type Resource struct {
+	Path string
+	Kind ResourceKind
+}
+
 // Snapshot is an immutable view of one project.
 type Snapshot struct {
 	Root string
@@ -161,11 +201,25 @@ type Snapshot struct {
 	// Sidecars is every discovered .uid file, sorted by path. It covers
 	// sidecars beside files this package does not parse, such as shaders.
 	Sidecars []Sidecar
+	// Resources inventories every discovered, non-ignored script, scene, text
+	// resource, and importer-backed owner. It is sorted by project-relative
+	// Path and is the only existence evidence exported for resource-aware
+	// consumers. Identities does not change its membership.
+	Resources []Resource
 	// Claims is every declaration of a uid:// identity, sorted by path and
 	// line, and References is every use of one. Both are empty unless
 	// Config.Identities was set.
 	Claims     []Claim
 	References []Reference
+	// IdentityEvidence reports whether Claims was requested while loading this
+	// snapshot. An empty claim list is meaningful only when this is true.
+	IdentityEvidence bool
+	// IdentityIncomplete reports that an explicitly requested claim capture was
+	// narrowed, could not read one of its declaration sources, or encountered
+	// an opaque binary resource declaration. Consumers that need a unique UID
+	// claimant must fail closed rather than treating Claims as exhaustive when
+	// this is true.
+	IdentityIncomplete bool
 	// Selected is the subset of Paths that Config.Selection admits, sorted. It
 	// is Paths itself when Selection is nil.
 	Selected []string
@@ -203,6 +257,8 @@ func Load(config Config) (*Snapshot, error) {
 	}
 
 	seen := make(map[string]struct{})
+	resources := make(map[string]ResourceKind)
+	identityIncomplete := identityCaptureIsNarrowed(config)
 	uids := make(map[string]string)
 	// Identifiers declared inside a resource are merged after the walk so a
 	// .uid sidecar always wins a collision; the sidecars are what gdkit uid
@@ -235,6 +291,13 @@ func Load(config Config) (*Snapshot, error) {
 			if relative == "." {
 				return nil
 			}
+			// Godot's cache and Git's administrative directory do not belong
+			// to the project identity universe. In particular, .godot/imported
+			// contains binary resource cache entries with internal UIDs that must
+			// not make project claimant evidence ambiguous or incomplete.
+			if entry.IsDir() && identityMetadataPath(relative) {
+				return filepath.SkipDir
+			}
 			if glob.MatchAny(config.Exclude, relative) || entry.IsDir() && glob.MatchAny(config.Exclude, relative+"/") {
 				if entry.IsDir() {
 					return filepath.SkipDir
@@ -244,15 +307,19 @@ func Load(config Config) (*Snapshot, error) {
 			if entry.IsDir() {
 				// A negated pattern can re-include something below an ignored
 				// directory, so the directory is only pruned when there is none.
-				// Identities prunes nothing either: a hidden file still owns
-				// its uid:// identity, and the walk has to reach it to record
-				// the claim.
+				// Apart from generated metadata above, Identities prunes no
+				// ignored directory: a hidden file still owns its uid://
+				// identity, and the walk has to reach it to record the claim.
 				if !config.Identities && !ignored.HasNegation() && ignored.Ignored(relative, true) {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if !entry.Type().IsRegular() {
+			entryType := entry.Type()
+			if !entryType.IsRegular() {
+				if config.Identities && (entryType&fs.ModeSymlink != 0 || identityClaimSource(relative)) {
+					identityIncomplete = true
+				}
 				return nil
 			}
 			switch {
@@ -261,6 +328,7 @@ func Load(config Config) (*Snapshot, error) {
 					return nil
 				}
 				seen[relative] = struct{}{}
+				addResource(resources, relative, ResourceScript)
 			case strings.HasSuffix(relative, ".tscn"), strings.HasSuffix(relative, ".tres"):
 				// A scene or text resource carries its own identifier in its
 				// header line rather than in a sidecar, so the header is the
@@ -269,7 +337,10 @@ func Load(config Config) (*Snapshot, error) {
 				if hidden && !config.Identities {
 					return nil
 				}
-				header, refs := scanResource(name, config.Identities && !hidden)
+				header, headerLine, refs, complete := scanResource(name, config.Identities && !hidden)
+				if config.Identities && !complete {
+					identityIncomplete = true
+				}
 				if header != "" {
 					if !hidden {
 						declared[header] = relative
@@ -277,13 +348,20 @@ func Load(config Config) (*Snapshot, error) {
 					if config.Identities {
 						table.claims = append(table.claims, Claim{
 							UID: header, Owner: relative, Path: relative,
-							Line: 1, Kind: ClaimHeader, Ignored: hidden,
+							Line: headerLine, Kind: ClaimHeader, Ignored: hidden,
 						})
 					}
 				}
 				for _, reference := range refs {
 					reference.Path = relative
 					table.references = append(table.references, reference)
+				}
+				if !hidden {
+					if strings.HasSuffix(relative, ".tscn") {
+						addResource(resources, relative, ResourceScene)
+					} else {
+						addResource(resources, relative, ResourceText)
+					}
 				}
 			case strings.HasSuffix(relative, ".import"):
 				// An imported asset keeps its identifier in the .import file
@@ -293,7 +371,11 @@ func Load(config Config) (*Snapshot, error) {
 				if hidden && !config.Identities {
 					return nil
 				}
-				if uid, line := importClaim(name); uid != "" {
+				uid, line, complete := importClaim(name)
+				if config.Identities && !complete {
+					identityIncomplete = true
+				}
+				if uid != "" {
 					if !hidden {
 						declared[uid] = owner
 					}
@@ -304,6 +386,9 @@ func Load(config Config) (*Snapshot, error) {
 						})
 					}
 				}
+				if !hidden {
+					addResource(resources, owner, ResourceImported)
+				}
 			case strings.HasSuffix(relative, ".uid"):
 				owner := strings.TrimSuffix(relative, ".uid")
 				hidden := ignored.Ignored(relative, false) || ignored.Ignored(owner, false)
@@ -312,6 +397,9 @@ func Load(config Config) (*Snapshot, error) {
 				}
 				data, readErr := os.ReadFile(name)
 				if readErr != nil {
+					if config.Identities {
+						identityIncomplete = true
+					}
 					return nil
 				}
 				uid := strings.TrimSpace(string(data))
@@ -327,6 +415,25 @@ func Load(config Config) (*Snapshot, error) {
 				sidecars = append(sidecars, Sidecar{Path: relative, Owner: owner, Text: uid})
 				if strings.HasPrefix(uid, UIDScheme) {
 					uids[uid] = owner
+				}
+			case strings.HasSuffix(relative, ".scn"), strings.HasSuffix(relative, ".res"):
+				// Binary scenes and resources retain their own UID in an opaque
+				// binary header. This package deliberately does not decode that
+				// format, so a capture that needs unique claimants cannot call
+				// itself complete while one is present.
+				if config.Identities {
+					identityIncomplete = true
+				}
+			default:
+				// ResourceFormatSaverBinary supports each resource's base
+				// extension, not only .scn and .res. Its RSRC/RSCC magic is the
+				// evidence that an otherwise unmodelled regular file can carry
+				// an internal UID. A read failure is equally inconclusive.
+				if config.Identities && !identityIncomplete {
+					binary, complete := binaryResourceClaimSource(name)
+					if binary || !complete {
+						identityIncomplete = true
+					}
 				}
 			}
 			return nil
@@ -380,16 +487,124 @@ func Load(config Config) (*Snapshot, error) {
 		return nil, err
 	}
 	return &Snapshot{
-		Root:       root,
-		Paths:      paths,
-		Scripts:    scripts,
-		UIDs:       uids,
-		Sidecars:   sidecars,
-		Claims:     table.claims,
-		References: table.references,
-		Selected:   selected,
-		Autoloads:  autoloads,
+		Root:               root,
+		Paths:              paths,
+		Scripts:            scripts,
+		UIDs:               uids,
+		Sidecars:           sidecars,
+		Resources:          sortedResources(resources),
+		Claims:             table.claims,
+		References:         table.references,
+		IdentityEvidence:   config.Identities,
+		IdentityIncomplete: identityIncomplete,
+		Selected:           selected,
+		Autoloads:          autoloads,
 	}, nil
+}
+
+// identityCaptureIsNarrowed reports a capture that cannot establish every
+// project UID claimant. HonorIgnoreFile is deliberately not narrowing here:
+// Identities walks ignored paths and records their claims. Excluding only
+// generated metadata is also complete, because those directories do not carry
+// project claimants. Any other exclusion or a source-root set without the
+// project root omits declaration sources entirely.
+func identityCaptureIsNarrowed(config Config) bool {
+	if !config.Identities {
+		return false
+	}
+	for _, pattern := range config.Exclude {
+		if !identityMetadataExclude(pattern) {
+			return true
+		}
+	}
+	if len(config.SourceRoots) == 0 {
+		return false
+	}
+	for _, root := range config.SourceRoots {
+		if filepath.Clean(root) == "." {
+			return false
+		}
+	}
+	return true
+}
+
+func identityMetadataPath(resourcePath string) bool {
+	return resourcePath == ".git" || strings.HasPrefix(resourcePath, ".git/") ||
+		resourcePath == ".godot" || strings.HasPrefix(resourcePath, ".godot/")
+}
+
+func identityMetadataExclude(pattern string) bool {
+	switch pattern {
+	case ".git", ".git/", ".git/**", ".godot", ".godot/", ".godot/**":
+		return true
+	default:
+		return false
+	}
+}
+
+func identityClaimSource(resourcePath string) bool {
+	return strings.HasSuffix(resourcePath, ".tscn") ||
+		strings.HasSuffix(resourcePath, ".tres") ||
+		strings.HasSuffix(resourcePath, ".scn") ||
+		strings.HasSuffix(resourcePath, ".res") ||
+		strings.HasSuffix(resourcePath, ".import") ||
+		strings.HasSuffix(resourcePath, ".uid")
+}
+
+// binaryResourceClaimSource identifies an opaque Godot binary resource by
+// the initial magic that ResourceFormatLoaderBinary accepts. It returns a
+// separate completeness signal so a file that cannot be read never lets a
+// requested identity capture claim there was no binary UID declaration.
+func binaryResourceClaimSource(name string) (binary, complete bool) {
+	file, err := os.Open(name)
+	if err != nil {
+		return false, false
+	}
+	defer file.Close()
+	var header [4]byte
+	n, err := io.ReadFull(file, header[:])
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return false, false
+	}
+	if n != len(header) {
+		return false, true
+	}
+	return string(header[:]) == "RSRC" || string(header[:]) == "RSCC", true
+}
+
+func addResource(resources map[string]ResourceKind, resourcePath string, kind ResourceKind) {
+	if existing, found := resources[resourcePath]; found && resourceRank(existing) <= resourceRank(kind) {
+		return
+	}
+	resources[resourcePath] = kind
+}
+
+func resourceRank(kind ResourceKind) int {
+	switch kind {
+	case ResourceScript:
+		return 0
+	case ResourceScene:
+		return 1
+	case ResourceText:
+		return 2
+	case ResourceImported:
+		return 3
+	default:
+		return 4
+	}
+}
+
+func sortedResources(resources map[string]ResourceKind) []Resource {
+	paths := make([]string, 0, len(resources))
+	for resourcePath := range resources {
+		paths = append(paths, resourcePath)
+	}
+	sort.Strings(paths)
+	result := make([]Resource, len(paths))
+	for index, resourcePath := range paths {
+		result[index] = Resource{Path: resourcePath, Kind: resources[resourcePath]}
+	}
+	return result
 }
 
 // loadAutoloads reads the [autoload] section of project.godot. A project

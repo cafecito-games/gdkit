@@ -881,6 +881,98 @@ func TestInterfacesLookupMemberBridgesReceiverKindsAndTriState(t *testing.T) {
 	}
 }
 
+func TestInterfacesLookupMetaMemberFiltersStaticFactsAndPreservesOwnerChains(t *testing.T) {
+	builder := NewEngineBuilder()
+	for _, builtin := range []string{"int", "String"} {
+		if err := builder.AddBuiltin(builtin); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, class := range []struct{ name, parent string }{
+		{name: "Object"},
+		{name: "RefCounted", parent: "Object"},
+		{name: "Node", parent: "Object"},
+		{name: "Broken", parent: "Missing"},
+	} {
+		if err := builder.AddClass(class.name, class.parent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, method := range []struct {
+		owner, name string
+		static      bool
+	}{
+		{owner: "Object", name: "inherited_static", static: true},
+		{owner: "Node", name: "static_engine", static: true},
+		{owner: "Node", name: "instance_engine"},
+		{owner: "Broken", name: "direct_static", static: true},
+	} {
+		if err := builder.AddMethod(method.owner, method.name, "int", nil, method.static, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := builder.AddProperty("Node", "engine_property", "int"); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	interfaces := BuildInterfaces(BuildIndex(sources(t, map[string]string{
+		"base.gd":  "class_name Base\nconst ANSWER = 42\nstatic var static_field: int\nvar instance_field: int\nstatic func static_method() -> int:\n\tpass\nfunc instance_method() -> int:\n\tpass\nsignal changed\nenum Named { VALUE }\nenum { ANON }\nclass Inner:\n\tpass\n",
+		"child.gd": "class_name Child extends Base\nvar static_field: int\n",
+	})), engine)
+
+	assertResult := func(t *testing.T, receiver Type, name string, want LookupState, wantKind MemberKind) {
+		t.Helper()
+		got := interfaces.LookupMetaMember(receiver, name)
+		if got.State() != want {
+			t.Fatalf("LookupMetaMember(%s, %q) = %s (%q), want %s", receiver, name, got.State(), got.Reason(), want)
+		}
+		if want == LookupFound {
+			member, ok := got.Member()
+			if !ok || member.Kind() != wantKind {
+				t.Fatalf("LookupMetaMember(%s, %q) member = %#v, %t; want %s", receiver, name, member, ok, wantKind)
+			}
+		}
+	}
+
+	base := Class("base.gd", nil, true)
+	for _, testCase := range []struct {
+		name string
+		kind MemberKind
+	}{
+		{name: "ANSWER", kind: MemberConstant},
+		{name: "static_field", kind: MemberVariable},
+		{name: "static_method", kind: MemberMethod},
+		{name: "Named", kind: MemberEnum},
+		{name: "ANON", kind: MemberEnumMember},
+		{name: "Inner", kind: MemberClass},
+	} {
+		t.Run("user "+testCase.name, func(t *testing.T) {
+			assertResult(t, base, testCase.name, LookupFound, testCase.kind)
+		})
+	}
+	for _, name := range []string{"instance_field", "instance_method", "changed"} {
+		t.Run("user instance "+name, func(t *testing.T) {
+			assertResult(t, base, name, LookupUnknown, MemberVariable)
+		})
+	}
+	assertResult(t, base, "missing", LookupUnknown, MemberVariable)
+	assertResult(t, Class("child.gd", nil, true), "ANSWER", LookupFound, MemberConstant)
+	assertResult(t, Class("child.gd", nil, true), "static_field", LookupUnknown, MemberVariable)
+
+	node := Class("Node", nil, true)
+	assertResult(t, node, "static_engine", LookupFound, MemberEngineMethod)
+	assertResult(t, node, "inherited_static", LookupFound, MemberEngineMethod)
+	assertResult(t, node, "instance_engine", LookupUnknown, MemberEngineMethod)
+	assertResult(t, node, "engine_property", LookupUnknown, MemberEngineProperty)
+	assertResult(t, node, "missing", LookupUnknown, MemberEngineMethod)
+	assertResult(t, Class("Broken", nil, true), "direct_static", LookupFound, MemberEngineMethod)
+	assertResult(t, Class("Broken", nil, true), "missing", LookupUnknown, MemberEngineMethod)
+	assertResult(t, Class("Node", nil, false), "static_engine", LookupUnknown, MemberEngineMethod)
+}
+
 type interfaceEngineClass struct {
 	name   string
 	parent string

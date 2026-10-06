@@ -1,14 +1,18 @@
 package semanticsource
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cafecito-games/gdkit/internal/semantic"
 	"github.com/cafecito-games/gdkit/project"
 )
+
+const godotThemeBinaryFixture = "UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAABgAAAFRoZW1lAAAAAAAAAAAAAwAAAPzo8aEmmiAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lABMAAABkZWZhdWx0X2Jhc2Vfc2NhbGUADQAAAGRlZmF1bHRfZm9udAASAAAAZGVmYXVsdF9mb250X3NpemUABwAAAHNjcmlwdAAAAAAAAQAAABQAAABsb2NhbDovL1RoZW1lX2I3NGl2AAUBAAAAAAAABgAAAFRoZW1lAAEAAAAFAAAAAQAAAFJTUkM="
 
 func TestSnapshotUsesFullUniverseAndResolvesStaticScriptPaths(t *testing.T) {
 	root := t.TempDir()
@@ -68,12 +72,403 @@ func TestSnapshotUsesFullUniverseAndResolvesStaticScriptPaths(t *testing.T) {
 	}
 }
 
+func TestSnapshotResolvesImmutableResourceInventoryAndUIDClaims(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		".gdkitignore":         "ignored/\n",
+		"scripts/loader.gd":    "class_name Loader\n",
+		"actors/enemy.gd":      "class_name Enemy\n",
+		"actors/enemy.gd.uid":  "uid://c\n",
+		"ignored/other.gd":     "class_name Other\n",
+		"ignored/other.gd.uid": "uid://c\n",
+		"scenes/main.tscn":     "[gd_scene format=3 uid=\"uid://d\"]\n",
+		"theme.tres":           "[gd_resource type=\"Theme\" format=3 uid=\"uid://e\"]\n",
+		"art/icon.png":         "binary",
+		"art/icon.png.import":  "[remap]\nuid=\"uid://f\"\n",
+		"shared.tscn":          "[gd_scene format=3 uid=\"uid://g\"]\n",
+		"shared.tscn.import":   "[remap]\nuid=\"uid://g\"\n",
+	}
+	for name, contents := range files {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := project.Load(project.Config{Root: root, HonorIgnoreFile: true, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := NewSnapshot(snapshot)
+	var resolver semantic.ResourceResolver = source
+	for _, testCase := range []struct {
+		name, from, target string
+		state              semantic.ResourceState
+		kind               semantic.ResourceKind
+		path               string
+		provenance         semantic.ResourceProvenance
+		reason             string
+	}{
+		{name: "relative script", target: "../actors/enemy.gd", state: semantic.ResourceFound, kind: semantic.ResourceScript, path: "actors/enemy.gd", provenance: semantic.ResourceLiteralPath},
+		{name: "scene", target: "res://scenes/main.tscn", state: semantic.ResourceFound, kind: semantic.ResourceScene, path: "scenes/main.tscn", provenance: semantic.ResourceLiteralPath},
+		{name: "text resource", target: "res://theme.tres", state: semantic.ResourceFound, kind: semantic.ResourceText, path: "theme.tres", provenance: semantic.ResourceLiteralPath},
+		{name: "unique uid", target: "uid://d", state: semantic.ResourceFound, kind: semantic.ResourceScene, path: "scenes/main.tscn", provenance: semantic.ResourceUIDClaim},
+		{name: "text uid", target: "uid://e", state: semantic.ResourceFound, kind: semantic.ResourceText, path: "theme.tres", provenance: semantic.ResourceUIDClaim},
+		{name: "imported", target: "res://art/icon.png", state: semantic.ResourceUnsupportedKind, kind: semantic.ResourceImported, provenance: semantic.ResourceLiteralPath},
+		{name: "imported uid", target: "uid://f", state: semantic.ResourceUnsupportedKind, kind: semantic.ResourceImported, provenance: semantic.ResourceUIDClaim},
+		{name: "same owner header import", target: "uid://g", state: semantic.ResourceFound, kind: semantic.ResourceScene, path: "shared.tscn", provenance: semantic.ResourceUIDClaim},
+		{name: "missing", target: "res://gone.gd", state: semantic.ResourceMissing, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
+		{name: "empty", target: "", state: semantic.ResourceInvalid, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
+		{name: "backslash", target: `res:\\bad.gd`, state: semantic.ResourceInvalid, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
+		{name: "invalid uid", target: "uid://z", state: semantic.ResourceInvalid, kind: semantic.ResourceUnknown, provenance: semantic.ResourceUIDClaim},
+		{name: "foreign scheme", target: "user://save.gd", state: semantic.ResourceInvalid, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
+		{name: "absolute", target: "/outside.gd", state: semantic.ResourceInvalid, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
+		{name: "absolute res path", target: "res:///outside.gd", state: semantic.ResourceInvalid, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
+		{name: "escapes", target: "../../outside.gd", state: semantic.ResourceEscapesProject, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
+		{name: "unknown source", from: "unknown.gd", target: "res://actors/enemy.gd", state: semantic.ResourceInvalid, kind: semantic.ResourceUnknown, provenance: semantic.ResourceLiteralPath},
+		{name: "ignored duplicate uid", target: "uid://c", state: semantic.ResourceAmbiguousUID, kind: semantic.ResourceUnknown, provenance: semantic.ResourceUIDClaim, reason: "resource UID has multiple captured claimants: actors/enemy.gd, ignored/other.gd"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			from := testCase.from
+			if from == "" {
+				from = "scripts/loader.gd"
+			}
+			got := resolver.ResolvePreloadResource(from, testCase.target)
+			if got.State() != testCase.state || got.Kind() != testCase.kind || got.Path() != testCase.path || got.Provenance() != testCase.provenance {
+				t.Fatalf("ResolvePreloadResource(%q) = state=%s kind=%s path=%q provenance=%s reason=%q", testCase.target, got.State(), got.Kind(), got.Path(), got.Provenance(), got.Reason())
+			}
+			if got.State() != semantic.ResourceFound && strings.TrimSpace(got.Reason()) == "" {
+				t.Fatalf("ResolvePreloadResource(%q) returned an unexplained non-found result", testCase.target)
+			}
+			if testCase.reason != "" && got.Reason() != testCase.reason {
+				t.Fatalf("ResolvePreloadResource(%q) reason = %q, want deterministic %q", testCase.target, got.Reason(), testCase.reason)
+			}
+			if strings.Contains(got.Reason(), root) {
+				t.Fatalf("ResolvePreloadResource(%q) leaked host root in reason %q", testCase.target, got.Reason())
+			}
+		})
+	}
+}
+
+func TestSnapshotFailsClosedForLeadingCommentHeaderUIDCollision(t *testing.T) {
+	root := t.TempDir()
+	for name, contents := range map[string]string{
+		"loader.gd":     "class_name Loader\n",
+		"target.gd":     "class_name Target\n",
+		"target.gd.uid": "uid://b\n",
+		// Godot v4.7.2 loads this exact leading-comment text-resource form.
+		"scene.tscn": "; retained by Godot\n\n[gd_scene format=3 uid=\"uid://b\"]\n",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.IdentityIncomplete {
+		t.Fatal("leading-comment text resource unexpectedly made claim evidence incomplete")
+	}
+	got := NewSnapshot(snapshot).ResolveLoadResource("loader.gd", "uid://b")
+	if got.State() != semantic.ResourceAmbiguousUID || got.Provenance() != semantic.ResourceUIDClaim || got.Reason() != "resource UID has multiple captured claimants: scene.tscn, target.gd" {
+		t.Fatalf("leading-comment UID collision = state=%s provenance=%s reason=%q, want fail-closed ambiguity", got.State(), got.Provenance(), got.Reason())
+	}
+}
+
+func TestSnapshotDistinguishesRelativePreloadAndLoad(t *testing.T) {
+	root := t.TempDir()
+	for name, contents := range map[string]string{
+		"target.gd":        "class_name RootTarget\n",
+		"nested/target.gd": "class_name NestedTarget\n",
+		"nested/loader.gd": "class_name Loader\n",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := project.Load(project.Config{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := NewSnapshot(snapshot)
+	preloaded := source.ResolvePreloadResource("nested/loader.gd", "target.gd")
+	if preloaded.State() != semantic.ResourceFound || preloaded.Kind() != semantic.ResourceScript || preloaded.Path() != "nested/target.gd" {
+		t.Fatalf("relative preload = state=%s kind=%s path=%q reason=%q, want nested target", preloaded.State(), preloaded.Kind(), preloaded.Path(), preloaded.Reason())
+	}
+	loaded := source.ResolveLoadResource("nested/loader.gd", "target.gd")
+	if loaded.State() != semantic.ResourceFound || loaded.Kind() != semantic.ResourceScript || loaded.Path() != "target.gd" {
+		t.Fatalf("relative load = state=%s kind=%s path=%q reason=%q, want project-root target", loaded.State(), loaded.Kind(), loaded.Path(), loaded.Reason())
+	}
+}
+
+func TestSnapshotResourceResolutionDoesNotConsultDiskAfterConstruction(t *testing.T) {
+	root := t.TempDir()
+	for name, contents := range map[string]string{
+		"loader.gd":  "class_name Loader\n",
+		"theme.tres": "[gd_resource type=\"Theme\" format=3 uid=\"uid://b\"]\n",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := NewSnapshot(snapshot)
+	if err := os.Remove(filepath.Join(root, "theme.tres")); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"res://theme.tres", "uid://b"} {
+		got := source.ResolvePreloadResource("loader.gd", target)
+		if got.State() != semantic.ResourceFound || got.Kind() != semantic.ResourceText || got.Path() != "theme.tres" {
+			t.Fatalf("ResolvePreloadResource(%q) after disk removal = state=%s kind=%s path=%q reason=%q", target, got.State(), got.Kind(), got.Path(), got.Reason())
+		}
+	}
+}
+
+func TestSnapshotDoesNotUseUIDWinnerMapWithoutClaimEvidence(t *testing.T) {
+	root := t.TempDir()
+	for name, contents := range map[string]string{
+		"loader.gd":     "class_name Loader\n",
+		"target.gd":     "class_name Target\n",
+		"target.gd.uid": "uid://b\n",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := project.Load(project.Config{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.UIDs["uid://b"] != "target.gd" {
+		t.Fatalf("fixture did not produce the compatibility winner map: %v", snapshot.UIDs)
+	}
+	got := NewSnapshot(snapshot).ResolvePreloadResource("loader.gd", "uid://b")
+	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "not requested") {
+		t.Fatalf("UID without claim evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
+	}
+}
+
+func TestSnapshotFailsClosedForIncompleteIdentityClaimEvidence(t *testing.T) {
+	source := NewSnapshot(&project.Snapshot{
+		Paths:              []string{"loader.gd"},
+		Scripts:            map[string]*project.Script{"loader.gd": {}},
+		Resources:          []project.Resource{{Path: "target.gd", Kind: project.ResourceScript}},
+		Claims:             []project.Claim{{UID: "uid://b", Owner: "target.gd", Path: "target.gd", Line: 1, Kind: project.ClaimSidecar}},
+		IdentityEvidence:   true,
+		IdentityIncomplete: true,
+	})
+	got := source.ResolvePreloadResource("loader.gd", "uid://b")
+	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "incomplete") {
+		t.Fatalf("incomplete UID evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
+	}
+}
+
+func TestSnapshotFailsClosedForProducerNarrowedIdentityEvidence(t *testing.T) {
+	root := t.TempDir()
+	for name, contents := range map[string]string{
+		"loader.gd":             "class_name Loader\n",
+		"target.gd":             "class_name Target\n",
+		"target.gd.uid":         "uid://b\n",
+		"excluded/other.gd":     "class_name Other\n",
+		"excluded/other.gd.uid": "uid://b\n",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := project.Load(project.Config{Root: root, Exclude: []string{"excluded/**"}, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityIncomplete {
+		t.Fatal("fixture did not retain narrowed identity evidence")
+	}
+	got := NewSnapshot(snapshot).ResolvePreloadResource("loader.gd", "uid://b")
+	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "incomplete") {
+		t.Fatalf("narrowed UID evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
+	}
+}
+
+func TestSnapshotFailsClosedForProducerSymlinkedClaimEvidence(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	for name, contents := range map[string]string{
+		"loader.gd":     "class_name Loader\n",
+		"target.gd":     "class_name Target\n",
+		"target.gd.uid": "uid://b\n",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(outside, "other.gd.uid"), []byte("uid://b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Skipf("symlinks are unavailable in this test environment: %v", err)
+	}
+	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityIncomplete {
+		t.Fatal("fixture did not retain omitted symlinked claim evidence")
+	}
+	got := NewSnapshot(snapshot).ResolvePreloadResource("loader.gd", "uid://b")
+	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "incomplete") {
+		t.Fatalf("symlinked UID evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
+	}
+}
+
+func TestSnapshotFailsClosedForProducerBinaryResourceClaimEvidence(t *testing.T) {
+	// Exact Godot v4.7.2 ResourceSaver output for a Theme saved as .theme
+	// after ResourceSaver.set_uid. Its non-.res extension proves this fixture
+	// reaches the opaque binary-header path rather than the suffix fallback.
+	data, err := base64.StdEncoding.DecodeString(godotThemeBinaryFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	for name, contents := range map[string]string{
+		"loader.gd":     "class_name Loader\n",
+		"target.gd":     "class_name Target\n",
+		"target.gd.uid": "uid://knq6ium74go7\n",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "opaque.theme"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityIncomplete {
+		t.Fatal("real binary resource did not make UID evidence incomplete")
+	}
+	got := NewSnapshot(snapshot).ResolveLoadResource("loader.gd", "uid://knq6ium74go7")
+	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "incomplete") {
+		t.Fatalf("binary-resource UID evidence = state=%s provenance=%s reason=%q, want fail-closed incomplete result", got.State(), got.Provenance(), got.Reason())
+	}
+}
+
+func TestSnapshotResolvesUIDPastGeneratedMetadata(t *testing.T) {
+	data, err := base64.StdEncoding.DecodeString(godotThemeBinaryFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	for name, contents := range map[string]string{
+		"loader.gd":     "class_name Loader\n",
+		"target.gd":     "class_name Target\n",
+		"target.gd.uid": "uid://b\n",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cachePath := filepath.Join(root, ".godot", "imported", "opaque.theme")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.IdentityIncomplete {
+		t.Fatal("generated metadata made project identity evidence incomplete")
+	}
+	got := NewSnapshot(snapshot).ResolveLoadResource("loader.gd", "uid://b")
+	if got.State() != semantic.ResourceFound || got.Kind() != semantic.ResourceScript || got.Path() != "target.gd" {
+		t.Fatalf("UID past generated metadata = state=%s kind=%s path=%q reason=%q", got.State(), got.Kind(), got.Path(), got.Reason())
+	}
+}
+
+func TestSnapshotRejectsUnknownResourceInventoryKinds(t *testing.T) {
+	source := NewSnapshot(&project.Snapshot{
+		Paths:     []string{"loader.gd"},
+		Scripts:   map[string]*project.Script{"loader.gd": {}},
+		Resources: []project.Resource{{Path: "mystery.asset", Kind: project.ResourceKind(99)}},
+	})
+	got := source.ResolvePreloadResource("loader.gd", "res://mystery.asset")
+	if got.State() != semantic.ResourceMissing || got.Kind() != semantic.ResourceUnknown || !strings.Contains(got.Reason(), "inventory") {
+		t.Fatalf("unknown resource kind = state=%s kind=%s reason=%q, want missing Unknown inventory result", got.State(), got.Kind(), got.Reason())
+	}
+}
+
+func TestSnapshotFailsClosedForMalformedCapturedClaimEvidence(t *testing.T) {
+	source := NewSnapshot(&project.Snapshot{
+		Paths:            []string{"loader.gd"},
+		Scripts:          map[string]*project.Script{"loader.gd": {}},
+		Resources:        []project.Resource{{Path: "target.tres", Kind: project.ResourceText}},
+		Claims:           []project.Claim{{UID: "uid://b", Owner: "../target.tres", Path: "target.tres", Line: 1, Kind: project.ClaimHeader}},
+		IdentityEvidence: true,
+	})
+	got := source.ResolvePreloadResource("loader.gd", "uid://b")
+	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "malformed") {
+		t.Fatalf("malformed claim evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
+	}
+}
+
 func TestSnapshotCopiesProviderCollections(t *testing.T) {
-	snapshot := &project.Snapshot{Paths: []string{"a.gd"}, Scripts: map[string]*project.Script{"a.gd": {}}, UIDs: map[string]string{"uid://a": "a.gd"}, Autoloads: map[string]string{"A": "a.gd"}}
+	snapshot := &project.Snapshot{
+		Paths:            []string{"a.gd"},
+		Scripts:          map[string]*project.Script{"a.gd": {}},
+		UIDs:             map[string]string{"uid://a": "a.gd"},
+		Autoloads:        map[string]string{"A": "a.gd"},
+		Resources:        []project.Resource{{Path: "a.gd", Kind: project.ResourceScript}, {Path: "theme.tres", Kind: project.ResourceText}},
+		Claims:           []project.Claim{{UID: "uid://b", Owner: "theme.tres", Path: "theme.tres", Line: 1, Kind: project.ClaimHeader}},
+		IdentityEvidence: true,
+	}
 	source := NewSnapshot(snapshot)
 	snapshot.Paths[0] = "changed.gd"
 	snapshot.UIDs["uid://a"] = "changed.gd"
 	snapshot.Autoloads["A"] = "changed.gd"
+	snapshot.Resources[1] = project.Resource{Path: "changed.tres", Kind: project.ResourceImported}
+	snapshot.Claims[0] = project.Claim{UID: "uid://b", Owner: "changed.tres", Path: "changed.tres", Line: 1, Kind: project.ClaimHeader}
 	if !slices.Equal(source.Paths(), []string{"a.gd"}) {
 		t.Errorf("Paths = %v", source.Paths())
 	}
@@ -82,5 +477,11 @@ func TestSnapshotCopiesProviderCollections(t *testing.T) {
 	}
 	if source.Autoloads()["A"] != "a.gd" {
 		t.Errorf("Autoloads = %v", source.Autoloads())
+	}
+	if got := source.ResolvePreloadResource("a.gd", "res://theme.tres"); got.State() != semantic.ResourceFound || got.Kind() != semantic.ResourceText || got.Path() != "theme.tres" {
+		t.Errorf("resource inventory copy = state=%s kind=%s path=%q", got.State(), got.Kind(), got.Path())
+	}
+	if got := source.ResolvePreloadResource("a.gd", "uid://b"); got.State() != semantic.ResourceFound || got.Kind() != semantic.ResourceText || got.Path() != "theme.tres" {
+		t.Errorf("UID claim copy = state=%s kind=%s path=%q reason=%q", got.State(), got.Kind(), got.Path(), got.Reason())
 	}
 }
