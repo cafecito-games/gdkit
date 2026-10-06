@@ -12,7 +12,7 @@ import (
 
 func TestAnalyzerReducesScalarAndCollectionLiterals(t *testing.T) {
 	source := sources(t, map[string]string{
-		"values.gd": "class_name Values\nfunc run():\n\tvar whole := 1\n\tvar decimal := 1.5\n\tvar text := \"text\"\n\tvar name := &\"name\"\n\tvar path := ^\"child\"\n\tvar truth := true\n\tvar nothing := null\n\tvar empty_array := []\n\tvar typed_array := [1, 2]\n\tvar nested_array := [[1], [1]]\n\tvar mixed_array := [1, \"two\"]\n\tvar variant_array := [null, null]\n\tvar unknown_array := [missing]\n\tvar empty_dictionary := {}\n\tvar typed_dictionary := {\"one\": 1, \"two\": 2}\n\tvar variant_dictionary := {null: null}\n\tvar mixed_dictionary := {\"one\": 1, 2: 3}\n\tvar unknown_dictionary := {missing: 1}\n",
+		"values.gd": "class_name Values\nfunc run():\n\tvar whole := 1\n\tvar decimal := 1.5\n\tvar text := \"text\"\n\tvar name := &\"name\"\n\tvar path := ^\"child\"\n\tvar truth := true\n\tvar nothing := null\n\tvar empty_array := []\n\tvar typed_array := [1, 2]\n\tvar nested_array := [[1], [1]]\n\tvar mixed_array := [1, \"two\"]\n\tvar variant_array := [null, null]\n\tvar unknown_array := [missing]\n\tvar mixed_unknown_array := [1, \"two\", missing]\n\tvar empty_dictionary := {}\n\tvar typed_dictionary := {\"one\": 1, \"two\": 2}\n\tvar variant_dictionary := {null: null}\n\tvar mixed_dictionary := {\"one\": 1, 2: 3}\n\tvar unknown_dictionary := {missing: 1}\n\tvar mixed_unknown_dictionary := {\"one\": 1, 2: 3, \"three\": missing}\n",
 	})
 	if failures := source.ParseFailures(); len(failures) != 0 {
 		t.Fatalf("real parser fixture failed: %v", failures)
@@ -47,7 +47,26 @@ func TestAnalyzerReducesScalarAndCollectionLiterals(t *testing.T) {
 			}
 		})
 	}
-	for _, name := range []string{"unknown_array", "unknown_dictionary"} {
+	for _, name := range []string{"unknown_array", "mixed_unknown_array", "unknown_dictionary", "mixed_unknown_dictionary"} {
+		t.Run(name, func(t *testing.T) {
+			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
+			if got.Kind() != KindUnknown || got.Reason() == "" {
+				t.Fatalf("TypeOf(%s) = %s (%q), want reasoned Unknown", name, got, got.Reason())
+			}
+		})
+	}
+}
+
+func TestAnalyzerFailsClosedForNonRepresentableCollectionComponents(t *testing.T) {
+	source := sources(t, map[string]string{
+		"collections.gd": "class_name Collections\nfunc returns_void() -> void:\n\tpass\nfunc run():\n\tvar void_array := [returns_void(), returns_void()]\n\tvar meta_array := [Node, Node]\n\tvar void_dictionary := {returns_void(): returns_void()}\n\tvar meta_dictionary := {Node: Node}\n",
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	analyzer := NewAnalyzer(source, reducerTestEngine(t))
+	file := source.File("collections.gd")
+	for _, name := range []string{"void_array", "meta_array", "void_dictionary", "meta_dictionary"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
 			if got.Kind() != KindUnknown || got.Reason() == "" {

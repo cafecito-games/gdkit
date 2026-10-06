@@ -691,18 +691,25 @@ func (a *Analyzer) reduceArray(expression *ast.ArrayLiteral, context reductionCo
 		return knownReduction(Array(nil))
 	}
 	var element Type
+	homogeneous := true
 	for at, item := range expression.Elements {
 		resolved := a.reduceChild(item, context, request)
 		if resolved.typeValue.Kind() == KindUnknown {
 			return resolved
+		}
+		if problem := collectionComponentProblem(resolved.typeValue); problem != "" {
+			return unknownReduction(problem)
 		}
 		if at == 0 {
 			element = resolved.typeValue
 			continue
 		}
 		if !element.Equal(resolved.typeValue) {
-			return knownReduction(Array(nil))
+			homogeneous = false
 		}
+	}
+	if !homogeneous {
+		return knownReduction(Array(nil))
 	}
 	return knownReduction(Array(&element))
 }
@@ -715,24 +722,46 @@ func (a *Analyzer) reduceDictionary(expression *ast.DictionaryLiteral, context r
 		return knownReduction(Dictionary(nil, nil))
 	}
 	var key, value Type
+	homogeneous := true
 	for at, entry := range expression.Entries {
 		resolvedKey := a.reduceChild(entry.Key, context, request)
 		if resolvedKey.typeValue.Kind() == KindUnknown {
 			return resolvedKey
 		}
+		if problem := collectionComponentProblem(resolvedKey.typeValue); problem != "" {
+			return unknownReduction(problem)
+		}
 		resolvedValue := a.reduceChild(entry.Value, context, request)
 		if resolvedValue.typeValue.Kind() == KindUnknown {
 			return resolvedValue
+		}
+		if problem := collectionComponentProblem(resolvedValue.typeValue); problem != "" {
+			return unknownReduction(problem)
 		}
 		if at == 0 {
 			key, value = resolvedKey.typeValue, resolvedValue.typeValue
 			continue
 		}
 		if !key.Equal(resolvedKey.typeValue) || !value.Equal(resolvedValue.typeValue) {
-			return knownReduction(Dictionary(nil, nil))
+			homogeneous = false
 		}
 	}
+	if !homogeneous {
+		return knownReduction(Dictionary(nil, nil))
+	}
 	return knownReduction(Dictionary(&key, &value))
+}
+
+func collectionComponentProblem(value Type) string {
+	switch value.Kind() {
+	case KindVoid:
+		return "void value cannot be a collection component"
+	case KindClass:
+		if value.Meta() {
+			return fmt.Sprintf("meta-class %q cannot be a collection component", value.Name())
+		}
+	}
+	return ""
 }
 
 func (a *Analyzer) reduceLambda(expression *ast.LambdaExpression, context reductionContext, request *reductionRequest) reductionResult {
