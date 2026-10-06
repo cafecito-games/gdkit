@@ -239,6 +239,56 @@ func TestSemanticRuleRejectsEveryUnbundledMinorWithoutFallback(t *testing.T) {
 	}
 }
 
+func TestEnabledCollectionRuleRejectsAnUnsupportedMinorBeforeLinting(t *testing.T) {
+	config := DefaultConfig()
+	config.GodotVersion = "4.6"
+	config.Enable = []string{ruleRequireTypedCollection}
+	linter, err := newLinter(config, []Rule{typingRule{rule: ruleRequireTypedCollection}})
+	if err == nil || linter != nil {
+		t.Fatalf("newLinter() = %+v, %v", linter, err)
+	}
+	assertFailure(t, err, failure.ConfigInvalid, "")
+}
+
+func TestEnabledCollectionRuleFailsClosedWithoutASelectedEngine(t *testing.T) {
+	config := DefaultConfig()
+	config.Enable = []string{ruleRequireTypedCollection}
+	linter, err := buildLinterWithSchemaLoader("", false, config,
+		[]Rule{typingRule{rule: ruleRequireTypedCollection}},
+		func(int, int) (*engineschema.Loaded, error) { return &engineschema.Loaded{}, nil })
+	if err == nil || linter != nil {
+		t.Fatalf("buildLinterWithSchemaLoader() = %+v, %v", linter, err)
+	}
+	assertFailure(t, err, failure.AnalysisFailed, "")
+}
+
+func TestEnabledCollectionRuleUsesTheWholesaleOverrideAndPublishesProvenance(t *testing.T) {
+	root := t.TempDir()
+	path := "tools/godot/extension_api.json"
+	writeEngineOverride(t, root, path, readOfficialEngineFixture(t))
+	if err := os.WriteFile(filepath.Join(root, "a.gd"), []byte("var items := [1]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := DefaultConfig()
+	config.Enable = []string{ruleRequireTypedCollection}
+	config.ExtensionAPI = &path
+	linter, err := newLinterForProject(root, config, []Rule{typingRule{rule: ruleRequireTypedCollection}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := linter.Lint(snapshot)
+	if report.EngineSchema == nil || report.EngineSchema.Source != engineschema.SourceOverride {
+		t.Fatalf("engine_schema = %+v", report.EngineSchema)
+	}
+	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Message != "Array has no element type; write Array[int]" {
+		t.Fatalf("diagnostics = %+v", report.Diagnostics)
+	}
+}
+
 func TestEmbeddedSchemaCorruptionIsAnAnalysisFailure(t *testing.T) {
 	config := DefaultConfig()
 	compiled, err := config.validate()

@@ -226,6 +226,22 @@ func TestRunLintEnableAcceptsARunningRule(t *testing.T) {
 	}
 }
 
+func TestRunLintEnabledCollectionInfersAPopulatedLiteral(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", "var items := [1, 2, 3]\n")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "check", "--enable", "require-typed-collection", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d, want 1: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Array has no element type; write Array[int]") ||
+		!strings.Contains(stdout.String(), "(require-typed-collection)") {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
 func TestRunLintWarningSeverityDoesNotFail(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")

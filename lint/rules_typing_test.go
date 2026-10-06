@@ -2,8 +2,15 @@ package lint
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/cafecito-games/gdkit/internal/semantic"
+	"github.com/cafecito-games/gdkit/internal/versiongate"
+	"github.com/cafecito-games/gdkit/project"
 )
 
 // typingConfig enables every typing rule and nothing else. The rules ship
@@ -18,6 +25,28 @@ func typingConfig() Config {
 	config := DefaultConfig()
 	config.Enable = append(config.Enable, typingRuleNames...)
 	return config
+}
+
+// collectionFindingsWithoutSemanticSetup exercises the pre-existing syntax
+// floors directly. An enabled semantic consumer is intentionally rejected at
+// an unsupported engine minor before Lint starts, so this helper isolates the
+// per-site floor contract that both empty literals and written annotations
+// retain.
+func collectionFindingsWithoutSemanticSetup(t *testing.T, config Config, source string) []Diagnostic {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.gd"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := config.validate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return (typingRule{rule: ruleRequireTypedCollection}).Check(&Context{Config: config, compiled: compiled}, snapshot.Scripts["a.gd"])
 }
 
 func TestRequireReturnTypeReportsAnUnannotatedFunction(t *testing.T) {
@@ -376,18 +405,14 @@ var lookup: Dictionary = {}
 	}
 }
 
-// Nothing but an empty literal is inferred. A populated literal is an untyped
-// collection in Godot too, but choosing its element type is the expression
-// inference this package does not have, and a call or a reference says even
-// less.
-func TestRequireTypedCollectionIgnoresAnythingButAnEmptyLiteral(t *testing.T) {
+// Direct populated literals have one source expression the rule can ask the
+// analyzer about. Calls and references remain out of scope: their values are
+// not a literal the author can annotate directly.
+func TestRequireTypedCollectionLeavesNonLiteralInitializersQuiet(t *testing.T) {
 	sources := map[string]string{
-		"populated array":      "var items := [1, 2, 3]\n",
-		"populated dictionary": "var lookup := {\"a\": 1}\n",
-		"nested empty array":   "var rows := [[]]\n",
-		"call":                 "var items := build()\n\nfunc build() -> Array[int]:\n\treturn []\n",
-		"reference":            "var source := [1]\nvar items := source\n",
-		"other literal":        "var count := 0\n",
+		"call":          "var items := build()\n\nfunc build() -> Array[int]:\n\treturn []\n",
+		"reference":     "var source: Array[int] = [1]\nvar items := source\n",
+		"other literal": "var count := 0\n",
 	}
 	for name, source := range sources {
 		t.Run(name, func(t *testing.T) {
@@ -395,6 +420,216 @@ func TestRequireTypedCollectionIgnoresAnythingButAnEmptyLiteral(t *testing.T) {
 				t.Fatalf("got %v, want none", found)
 			}
 		})
+	}
+}
+
+func TestRequireTypedCollectionUsesGenericFallbackForKnownIncompleteLiterals(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+var mixed := [1, "two"]
+var lookup := {"one": 1, "two": "two"}
+var rows := [[]]
+`)
+	want := []struct {
+		line    int
+		message string
+	}{
+		{line: 2, message: "Array has no element type; write Array[T]"},
+		{line: 3, message: "Dictionary has no element type; write Dictionary[K, V]"},
+		{line: 4, message: "Array has no element type; write Array[T]"},
+	}
+	if len(found) != len(want) {
+		t.Fatalf("got %v, want %d diagnostics", found, len(want))
+	}
+	for index, expected := range want {
+		if found[index].Line != expected.line || found[index].Message != expected.message {
+			t.Errorf("diagnostic %d = %+v, want line %d message %q", index, found[index], expected.line, expected.message)
+		}
+		if strings.Contains(found[index].Message, "Variant") || strings.Contains(found[index].Message, "unknown:") {
+			t.Errorf("diagnostic %d leaked an inferred fallback: %q", index, found[index].Message)
+		}
+	}
+}
+
+func TestRequireTypedCollectionStaysSilentForUnknownLiteralComponents(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+var items := [not_declared]
+var lookup := {"key": also_not_declared}
+`)
+	if len(found) != 0 {
+		t.Fatalf("got %v, want no collection diagnostics for Unknown components", found)
+	}
+}
+
+func TestRequireTypedCollectionDoesNotDuplicateWrittenPopulatedAnnotations(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+var items: Array = [1, 2, 3]
+var lookup: Dictionary = {"a": 1}
+`)
+	if len(found) != 2 {
+		t.Fatalf("got %v, want one written-annotation diagnostic per declaration", found)
+	}
+	for index, wantColumn := range []int{12, 13} {
+		if found[index].Column != wantColumn {
+			t.Errorf("diagnostic %d column = %d, want annotation column %d", index, found[index].Column, wantColumn)
+		}
+	}
+}
+
+func TestCollectionTypeMessageFailsClosedAndNeverLeaksUnsafeNames(t *testing.T) {
+	engine := selectedCollectionEngine(t)
+	intType := semantic.Builtin("int")
+	unknown := semantic.Unknown("unresolved value")
+	localClass := semantic.Class("LocalInventory", nil, false)
+	enum := semantic.Enum("InventoryKind")
+
+	tests := []struct {
+		name      string
+		typeValue semantic.Type
+		message   string
+		reported  bool
+	}{
+		{
+			name:      "precise nested array",
+			typeValue: semantic.Array(typePointer(semantic.Array(&intType))),
+			message:   "Array has no element type; write Array[Array[int]]",
+			reported:  true,
+		},
+		{
+			name:      "untyped heterogeneous array",
+			typeValue: semantic.Array(nil),
+			message:   "Array has no element type; write Array[T]",
+			reported:  true,
+		},
+		{
+			name:      "unknown component",
+			typeValue: semantic.Array(&unknown),
+			reported:  false,
+		},
+		{
+			name:      "user class component",
+			typeValue: semantic.Array(&localClass),
+			message:   "Array has no element type; write Array[T]",
+			reported:  true,
+		},
+		{
+			name:      "enum dictionary component",
+			typeValue: semantic.Dictionary(&enum, &intType),
+			message:   "Dictionary has no element type; write Dictionary[K, V]",
+			reported:  true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			message, reported := collectionTypeMessage(engine, test.typeValue)
+			if reported != test.reported || message != test.message {
+				t.Fatalf("collectionTypeMessage() = %q, %t; want %q, %t", message, reported, test.message, test.reported)
+			}
+			if strings.Contains(message, "LocalInventory") || strings.Contains(message, "InventoryKind") {
+				t.Fatalf("unsafe internal spelling leaked into %q", message)
+			}
+		})
+	}
+}
+
+func TestSourceWritableTypeAcceptsOnlySelectedVocabulary(t *testing.T) {
+	engine := selectedCollectionEngine(t)
+	intType := semantic.Builtin("int")
+	node := engine.Class("Node")
+	unknown := semantic.Unknown("unresolved value")
+	localClass := semantic.Class("LocalInventory", nil, false)
+	metaNode := semantic.Class("Node", nil, true)
+	enum := semantic.Enum("InventoryKind")
+
+	tests := []struct {
+		name      string
+		typeValue semantic.Type
+		spelling  string
+		status    sourceTypeStatus
+	}{
+		{name: "selected builtin", typeValue: intType, spelling: "int", status: sourceTypeWritable},
+		{name: "Variant", typeValue: semantic.Variant(), spelling: "Variant", status: sourceTypeWritable},
+		{name: "Callable", typeValue: semantic.Callable(), spelling: "Callable", status: sourceTypeWritable},
+		{name: "Signal", typeValue: semantic.Signal(), spelling: "Signal", status: sourceTypeWritable},
+		{name: "selected engine class", typeValue: node, spelling: "Node", status: sourceTypeWritable},
+		{name: "nested writable dictionary", typeValue: semantic.Dictionary(&intType, typePointer(semantic.Array(&node))), spelling: "Dictionary[int, Array[Node]]", status: sourceTypeWritable},
+		{name: "unknown", typeValue: unknown, status: sourceTypeUnknown},
+		{name: "unknown nested component", typeValue: semantic.Array(&unknown), status: sourceTypeUnknown},
+		{name: "untyped nested container", typeValue: semantic.Array(typePointer(semantic.Array(nil))), status: sourceTypeUnwritable},
+		{name: "user class", typeValue: localClass, status: sourceTypeUnwritable},
+		{name: "meta class", typeValue: metaNode, status: sourceTypeUnwritable},
+		{name: "enum", typeValue: enum, status: sourceTypeUnwritable},
+		{name: "void", typeValue: semantic.Void(), status: sourceTypeUnwritable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spelling, status := sourceWritableType(engine, test.typeValue)
+			if spelling != test.spelling || status != test.status {
+				t.Fatalf("sourceWritableType() = %q, %v; want %q, %v", spelling, status, test.spelling, test.status)
+			}
+		})
+	}
+}
+
+func TestCollectionTypeMessageDoesNotSuggestNestedDictionaryBeforeGodot44(t *testing.T) {
+	engine := selectedCollectionEngine(t)
+	key, value := semantic.Builtin("String"), semantic.Builtin("int")
+	dictionary := semantic.Dictionary(&key, &value)
+	collection := semantic.Array(&dictionary)
+	message, reported := collectionTypeMessageForVersion(engine, collection, func(floor versiongate.Version) bool {
+		return floor == godot40
+	})
+	if !reported || message != "Array has no element type; write Array[T]" {
+		t.Fatalf("collectionTypeMessageForVersion() = %q, %t; want generic Array fallback", message, reported)
+	}
+}
+
+func selectedCollectionEngine(t *testing.T) *semantic.Engine {
+	t.Helper()
+	config := DefaultConfig()
+	config.Enable = []string{ruleRequireTypedCollection}
+	linter, err := newLinter(config, []Rule{typingRule{rule: ruleRequireTypedCollection}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine := linter.context.Engine(); engine != nil {
+		return engine
+	}
+	t.Fatal("enabled require-typed-collection selected no engine")
+	return nil
+}
+
+func typePointer(value semantic.Type) *semantic.Type { return &value }
+
+func TestRequireTypedCollectionInfersDirectPopulatedLiterals(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+var items := [1, 2, 3]
+var lookup := {"a": 1}
+var variants := [null, null]
+`)
+	want := []struct {
+		line    int
+		column  int
+		message string
+	}{
+		{line: 2, column: 14, message: "Array has no element type; write Array[int]"},
+		{line: 3, column: 15, message: "Dictionary has no element type; write Dictionary[String, int]"},
+		{line: 4, column: 17, message: "Array has no element type; write Array[Variant]"},
+	}
+	if len(found) != len(want) {
+		t.Fatalf("got %v, want %d diagnostics", found, len(want))
+	}
+	for index, expected := range want {
+		if found[index].Line != expected.line || found[index].Column != expected.column {
+			t.Errorf("diagnostic %d reported at %d:%d, want %d:%d", index,
+				found[index].Line, found[index].Column, expected.line, expected.column)
+		}
+		if found[index].EndLine != expected.line || found[index].EndColumn <= expected.column {
+			t.Errorf("diagnostic %d span = %d:%d-%d:%d, want the literal span on line %d", index,
+				found[index].Line, found[index].Column, found[index].EndLine, found[index].EndColumn, expected.line)
+		}
+		if found[index].Message != expected.message {
+			t.Errorf("diagnostic %d message = %q, want %q", index, found[index].Message, expected.message)
+		}
 	}
 }
 
@@ -416,7 +651,7 @@ var cache := {}
 	for _, test := range tests {
 		config := typingConfig()
 		config.GodotVersion = test.version
-		found := lintSourceWithConfig(t, config, "require-typed-collection", source)
+		found := collectionFindingsWithoutSemanticSetup(t, config, source)
 		if len(found) != len(test.want) {
 			t.Fatalf("godot_version %q: got %v, want %d diagnostics", test.version, found, len(test.want))
 		}
@@ -477,7 +712,7 @@ var lookup: Dictionary = {}
 	for _, test := range tests {
 		config := typingConfig()
 		config.GodotVersion = test.version
-		found := lintSourceWithConfig(t, config, "require-typed-collection", source)
+		found := collectionFindingsWithoutSemanticSetup(t, config, source)
 		if len(found) != len(test.want) {
 			t.Fatalf("godot_version %q: got %v, want %d diagnostics", test.version, found, len(test.want))
 		}
@@ -592,7 +827,8 @@ func tally(items: Array[int]) -> int:
 	return total
 `
 	for version, want := range map[string]int{"4.1": 0, "4.2": 1} {
-		config := typingConfig()
+		config := DefaultConfig()
+		config.Enable = []string{ruleRequireTypedLoopVariable}
 		config.GodotVersion = version
 		found := lintSourceWithConfig(t, config, "require-typed-loop-variable", source)
 		if len(found) != want {
@@ -721,7 +957,6 @@ func tally(start) -> int:
 			version: "4.0",
 			want: []string{
 				"require-signal-argument-type:2",
-				"require-typed-collection:4",
 				"require-return-type:7",
 				"require-argument-type:10",
 				"require-variable-type:11",
@@ -743,6 +978,12 @@ func tally(start) -> int:
 	for _, test := range tests {
 		config := typingConfig()
 		config.GodotVersion = test.version
+		if test.version == "4.0" {
+			// The populated-literal consumer needs a selected semantic schema,
+			// which gdkit deliberately does not borrow for 4.0. Disabling it
+			// leaves this test focused on the older syntactic rules.
+			config.Disable = append(config.Disable, ruleRequireTypedCollection)
+		}
 		report := lintProject(t, config, map[string]string{"a.gd": source})
 		// Report.sort() orders by path, line, column and rule. No two findings
 		// in this source share a line, so column and rule never tiebreak and

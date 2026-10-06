@@ -251,7 +251,7 @@ all.
 | `require-return-type` | `func f():` with no `->` | the function being declared | 4.0 |
 | `require-argument-type` | a parameter with no `: Type` and no `:=` default | the function being declared; for a lambda's parameter, the enclosing function | 4.0 |
 | `require-variable-type` | `var x` or `var x = v`, at class or function scope, `@export` included | the enclosing function | 4.0 |
-| `require-typed-collection` | an annotation of bare `Array` or `Dictionary`, and an empty `[]` or `{}` initializer on a declaration with no written type | the enclosing function | `Array[T]` 4.0, `Dictionary[K, V]` 4.4 |
+| `require-typed-collection` | an annotation of bare `Array` or `Dictionary`, an empty `[]` or `{}` initializer, and (when semantic facts are available) a direct populated collection literal on a declaration with no written type | the enclosing function | `Array[T]` 4.0, `Dictionary[K, V]` 4.4 |
 | `require-signal-argument-type` | `signal s(arg)` with an untyped parameter | the signal's own name | 4.0 |
 | `require-typed-loop-variable` | `for item in …` with no `: Type` | the enclosing function | 4.2 |
 
@@ -278,22 +278,28 @@ is not inside a function.
 
 Three limits are worth knowing before a project reads a clean run as proof:
 
-- **A collection is inferred only from an empty literal.** `var x := []` and
-  `var x := {}` are reported, because an empty literal declares the collection
-  and nothing else: the element type can only come from the author. A
-  *populated* literal is not. `var x := [1, 2, 3]` is an untyped `Array` in
-  Godot too, but naming its element type means typing every element and
-  deciding what their common type is, which is expression inference this
-  package does not have. Nor is any other initializer: `var x := build()` may
-  well be a collection, and deciding that is the same problem. A declaration
-  that carries a written annotation is reported from the annotation alone, so
-  `var x: Array = []` is one finding and not two.
+- **A collection is inferred only from a direct literal.** `var x := []` and
+  `var x := {}` retain the syntactic finding: their element type can only come
+  from the author. When the inert `require-typed-collection` rule is enabled
+  with a supported semantic engine, a populated direct literal is checked too:
+  `var x := [1, 2, 3]` suggests `Array[int]`, and
+  `var labels := {"a": 1}` suggests `Dictionary[String, int]`. This is a
+  suggestion, not an autofix. An inconclusive (`Unknown`) result is silent;
+  a known heterogeneous, untyped, or unsafe-to-spell result keeps the generic
+  `Array[T]` or `Dictionary[K, V]` wording rather than inventing a type. Calls,
+  references, and every other non-literal initializer remain out of scope. A
+  declaration that carries a written annotation is reported from the
+  annotation alone, so `var x: Array = []` is one finding and not two.
 - **A finding whose fix the configured engine cannot parse is dropped, with no
   output at all.** There is no "your engine is too old" diagnostic, because
   telling a project to write a type it cannot parse is worse than saying
   nothing. So on `"godot_version": "4.3"` a bare `Dictionary` is not reported
   while a bare `Array` still is, and on anything below `4.2`
-  `require-typed-loop-variable` reports nothing at all.
+  `require-typed-loop-variable` reports nothing at all. The value-sensitive
+  `require-typed-collection` consumer is additionally semantic-aware: when it
+  is enabled on an unsupported minor (currently 4.0–4.6), startup instead
+  fails as `config.invalid` unless a numerically matching `extension_api`
+  override supplies the engine facts; gdkit never borrows 4.7 facts.
 - **A class-scope declaration cannot be exempted by a list.** It has no
   enclosing function, so no glob can name it, not even `["*"]`; it is
   suppressed with a `# gdkit:ignore` comment like anything else. That includes a
@@ -397,7 +403,10 @@ another unregistered minor: it requires a numerically matching
 that only use `godot_version` for syntax gating do not load an engine table and
 continue to work for older versions. An explicit dump is always validated once
 at startup; otherwise the bundled table is decompressed once, lazily, only if
-an enabled semantic-aware rule requests engine facts.
+an enabled semantic-aware rule requests engine facts. Today that is the enabled
+`require-typed-collection` populated-literal path; default lint, a disabled
+collection rule, and the other typing rules do not select an engine or perform
+whole-project semantic analysis.
 
 When a schema is loaded, JSON reports include `engine_schema` with its source,
 numeric version, status, build, full name, and raw/schema digests. The raw dump
