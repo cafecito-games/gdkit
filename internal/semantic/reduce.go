@@ -397,7 +397,7 @@ func (a *Analyzer) reduceDeferredBinding(binding Binding, prior reductionResult,
 			if isNilNode(node.Value) {
 				return prior
 			}
-			return a.reduceChild(node.Value, context, request)
+			return knownReduction(a.reduceChild(node.Value, context, request).typeValue)
 		}
 		if node.Value != nil && node.Type == "" {
 			return knownReduction(Variant())
@@ -424,7 +424,7 @@ func (a *Analyzer) reduceInferredParameter(parameters []ast.Parameter, binding B
 	if !parameter.Inferred || isNilNode(parameter.Default) {
 		return prior
 	}
-	return a.reduceChild(parameter.Default, context, request)
+	return knownReduction(a.reduceChild(parameter.Default, context, request).typeValue)
 }
 
 func (a *Analyzer) reduceUnary(expression *ast.UnaryExpression, context reductionContext, request *reductionRequest) reductionResult {

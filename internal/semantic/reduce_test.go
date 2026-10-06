@@ -130,7 +130,7 @@ func TestAnalyzerReducesIdentifiersDeferredHeadersAndSuper(t *testing.T) {
 	source := sources(t, map[string]string{
 		"base.gd":        "class_name Base\nfunc same() -> String:\n\tpass\nfunc named() -> int:\n\tpass\n",
 		"child.gd":       "class_name Child extends Base\nfunc same():\n\tvar bare := super()\nfunc caller():\n\tvar named_result := super.named()\n",
-		"identifiers.gd": "class_name Identifiers\nvar shadowed: String\nconst TOP := 1 + 2\nconst BROKEN: Missing = 1\nfunc values(inferred_default := 1 + 2, ordinary_default = 1 + 2, explicit_default: int = 1 + 2):\n\tvar top_use := TOP\n\tvar broken_use := BROKEN\n\tvar inferred := 1 + 2\n\tvar inferred_use := inferred\n\tvar dynamic = 1 + 2\n\tvar dynamic_use := dynamic\n\tvar explicit: float = 1\n\tvar explicit_use := explicit\n\tvar inferred_default_use := inferred_default\n\tvar ordinary_default_use := ordinary_default\n\tvar explicit_default_use := explicit_default\n\tvar before := later\n\tvar later := 1\n\tvar before_use := before\nfunc shadows(shadowed := 2):\n\tvar shadowed_use := shadowed\nfunc default_scope(late_default := later):\n\tvar later := 1\n\tvar late_default_use := late_default\n",
+		"identifiers.gd": "class_name Identifiers\nvar shadowed: String\nconst TOP := 1 + 2\nconst BROKEN: Missing = 1\nfunc helper() -> int:\n\tpass\nfunc values(inferred_default := 1 + 2, ordinary_default = 1 + 2, explicit_default: int = 1 + 2):\n\tvar top_use := TOP\n\tvar broken_use := BROKEN\n\tvar inferred := 1 + 2\n\tvar inferred_use := inferred\n\tvar dynamic = 1 + 2\n\tvar dynamic_use := dynamic\n\tvar explicit: float = 1\n\tvar explicit_use := explicit\n\tvar inferred_default_use := inferred_default\n\tvar ordinary_default_use := ordinary_default\n\tvar explicit_default_use := explicit_default\n\tvar inferred_method := helper\n\tvar inferred_method_call := inferred_method()\n\tvar before := later\n\tvar later := 1\n\tvar before_use := before\nfunc shadows(shadowed := 2):\n\tvar shadowed_use := shadowed\nfunc callable_default(callback := helper):\n\tvar callback_call := callback()\nfunc default_scope(late_default := later):\n\tvar later := 1\n\tvar late_default_use := late_default\n",
 	})
 	if failures := source.ParseFailures(); len(failures) != 0 {
 		t.Fatalf("real parser fixture failed: %v", failures)
@@ -165,6 +165,11 @@ func TestAnalyzerReducesIdentifiersDeferredHeadersAndSuper(t *testing.T) {
 	}
 	if got := analyzer.TypeOf(reducerVariableValue(t, identifiers, "late_default_use")); got.Kind() != KindUnknown || got.Reason() == "" {
 		t.Fatalf("inferred default reduced in later use scope = %s (%q), want reasoned Unknown", got, got.Reason())
+	}
+	for _, name := range []string{"inferred_method_call", "callback_call"} {
+		if got := analyzer.TypeOf(reducerVariableValue(t, identifiers, name)); got.Kind() != KindUnknown || got.Reason() == "" {
+			t.Fatalf("deferred callable %s = %s (%q), want reasoned Unknown", name, got, got.Reason())
+		}
 	}
 
 	child := source.File("child.gd")
