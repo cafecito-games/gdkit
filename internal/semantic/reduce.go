@@ -491,7 +491,7 @@ func (a *Analyzer) reduceBinary(expression *ast.BinaryExpression, context reduct
 	if left.typeValue.Kind() == KindUnknown {
 		return left
 	}
-	if expression.Operator == "as" || expression.Operator == "is" {
+	if expression.Operator == "as" || expression.Operator == "is" || expression.Operator == "is not" {
 		typeExpression, ok := expression.Right.(*ast.TypeExpression)
 		if !ok || typeExpression == nil {
 			return unknownReduction(fmt.Sprintf("operator %q requires a type expression", expression.Operator))
@@ -541,6 +541,8 @@ func engineBinaryOperator(operator string) string {
 		return "and"
 	case "||":
 		return "or"
+	case "not in":
+		return "in"
 	default:
 		return operator
 	}

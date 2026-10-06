@@ -300,18 +300,9 @@ func (c *ClassInterface) lookupFrom(start int, name string) LookupResult {
 			}
 		}
 
-		method, hasMethod := c.set.engine.Method(owner.engineOwner, name)
-		property, hasProperty := c.set.engine.Property(owner.engineOwner, name)
-		if hasMethod && hasProperty {
-			return unknownLookup(fmt.Sprintf("engine member %s.%s has conflicting direct method and property declarations", owner.engineOwner, name))
-		}
-		if hasMethod {
-			member := engineMethodMember(method)
-			return LookupResult{state: LookupFound, member: &member}
-		}
-		if hasProperty {
-			member := enginePropertyMember(property)
-			return LookupResult{state: LookupFound, member: &member}
+		result := c.set.lookupDirectEngineMember(owner.engineOwner, name)
+		if result.State() != LookupAbsent {
+			return result
 		}
 	}
 	if c.complete {

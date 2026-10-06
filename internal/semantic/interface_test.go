@@ -869,6 +869,9 @@ func TestInterfacesLookupMemberBridgesReceiverKindsAndTriState(t *testing.T) {
 			}
 		})
 	}
+	if result := player.Lookup("conflict"); result.State() != LookupUnknown {
+		t.Fatalf("user lookup inherited engine direct collision = %s (%q), want unknown", result.State(), result.Reason())
+	}
 
 	withoutEngine := BuildInterfaces(BuildIndex(sources(t, map[string]string{
 		"plain.gd": "class_name Plain\n",

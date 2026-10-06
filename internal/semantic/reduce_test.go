@@ -113,7 +113,7 @@ func TestAnalyzerFailsClosedForUnsupportedOrUnavailableExpressionForms(t *testin
 
 func TestAnalyzerReducesOperatorsTernariesAndSubscripts(t *testing.T) {
 	source := sources(t, map[string]string{
-		"operators.gd": "class_name Operators\nfunc run():\n\tvar promise := 1\n\tvar unary := -1\n\tvar negated := !1\n\tvar awaited := await promise\n\tvar binary := 1 + 2\n\tvar widened := 1 + 2.0\n\tvar symbolic_and := true && false\n\tvar symbolic_or := true || false\n\tvar word_and := true and false\n\tvar word_or := true or false\n\tvar casted := 1 as float\n\tvar checked := 1 is int\n\tvar ternary_equal := 1 if true else 1\n\tvar ternary_float := 1 if true else 2.0\n\tvar ternary_conflict := 1 if true else \"two\"\n\tvar missing_operator := 1 * 2\n\tvar missing_unary := ~1\n\tvar meta_operand := Node + 1\n\tvar unsupported_cast := 1 as Missing\n\tvar typed_array: Array[int] = [1]\n\tvar array_item := typed_array[0]\n\tvar plain_array := []\n\tvar plain_item := plain_array[0]\n\tvar typed_dictionary: Dictionary[String, int] = {\"one\": 1}\n\tvar dictionary_item := typed_dictionary[\"one\"]\n\tvar dynamic: Variant\n\tvar variant_item := dynamic[0]\n\tvar missing_index := typed_array[missing]\n",
+		"operators.gd": "class_name Operators\nfunc run():\n\tvar promise := 1\n\tvar unary := -1\n\tvar negated := !1\n\tvar awaited := await promise\n\tvar binary := 1 + 2\n\tvar widened := 1 + 2.0\n\tvar symbolic_and := true && false\n\tvar symbolic_or := true || false\n\tvar word_and := true and false\n\tvar word_or := true or false\n\tvar casted := 1 as float\n\tvar checked := 1 is int\n\tvar checked_not := 1 is not int\n\tvar not_in := 1 not in 2\n\tvar ternary_equal := 1 if true else 1\n\tvar ternary_float := 1 if true else 2.0\n\tvar ternary_conflict := 1 if true else \"two\"\n\tvar missing_operator := 1 * 2\n\tvar missing_unary := ~1\n\tvar meta_operand := Node + 1\n\tvar unsupported_cast := 1 as Missing\n\tvar typed_array: Array[int] = [1]\n\tvar array_item := typed_array[0]\n\tvar plain_array := []\n\tvar plain_item := plain_array[0]\n\tvar typed_dictionary: Dictionary[String, int] = {\"one\": 1}\n\tvar dictionary_item := typed_dictionary[\"one\"]\n\tvar dynamic: Variant\n\tvar variant_item := dynamic[0]\n\tvar missing_index := typed_array[missing]\n",
 	})
 	if failures := source.ParseFailures(); len(failures) != 0 {
 		t.Fatalf("real parser fixture failed: %v", failures)
@@ -135,6 +135,8 @@ func TestAnalyzerReducesOperatorsTernariesAndSubscripts(t *testing.T) {
 		{name: "word_or", want: Builtin("bool")},
 		{name: "casted", want: Builtin("float")},
 		{name: "checked", want: Builtin("bool")},
+		{name: "checked_not", want: Builtin("bool")},
+		{name: "not_in", want: Builtin("bool")},
 		{name: "ternary_equal", want: Builtin("int")},
 		{name: "ternary_float", want: Builtin("float")},
 		{name: "ternary_conflict", want: Variant()},
@@ -777,6 +779,7 @@ func reducerTestEngine(t *testing.T) *Engine {
 		{left: "int", operator: "+", right: "float", result: "float"},
 		{left: "bool", operator: "and", right: "bool", result: "bool"},
 		{left: "bool", operator: "or", right: "bool", result: "bool"},
+		{left: "int", operator: "in", right: "int", result: "bool"},
 	} {
 		if err := builder.AddOperator(operator.left, operator.operator, operator.right, operator.result); err != nil {
 			t.Fatal(err)
