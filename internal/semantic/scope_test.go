@@ -495,6 +495,56 @@ func TestScopesFailClosedForSharedDeclarationNodes(t *testing.T) {
 	}
 }
 
+func TestScopesFailClosedForSharedAndCyclicExpressionGraphs(t *testing.T) {
+	t.Run("diamond", func(t *testing.T) {
+		source := sources(t, map[string]string{
+			"player.gd": "class_name Player\nfunc run():\n\tpass\n",
+		})
+		function := source.File("player.gd").Statements[1].(*ast.FunctionDeclaration)
+		leaf := &ast.Identifier{Name: "Node"}
+		var expression ast.Expression = leaf
+		for range 24 {
+			expression = &ast.BinaryExpression{Left: expression, Operator: "+", Right: expression}
+		}
+		function.Body = []ast.Statement{&ast.ExpressionStatement{Expression: expression}}
+
+		scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
+		scopeRequireUnknown(t, scopes, leaf, "shared expression DAG")
+	})
+
+	t.Run("cycle", func(t *testing.T) {
+		source := sources(t, map[string]string{
+			"player.gd": "class_name Player\nfunc run():\n\tpass\n",
+		})
+		function := source.File("player.gd").Statements[1].(*ast.FunctionDeclaration)
+		cycle := &ast.BinaryExpression{Operator: "+"}
+		cycleUse := &ast.Identifier{Name: "Node"}
+		cycle.Left = cycle
+		cycle.Right = cycleUse
+		function.Body = []ast.Statement{&ast.ExpressionStatement{Expression: cycle}}
+
+		scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
+		scopeRequireUnknown(t, scopes, cycleUse, "cyclic expression")
+	})
+
+	t.Run("cycle inside unsupported statement", func(t *testing.T) {
+		source := sources(t, map[string]string{
+			"player.gd": "class_name Player\nfunc run():\n\tpass\n",
+		})
+		function := source.File("player.gd").Statements[1].(*ast.FunctionDeclaration)
+		nested := &ast.FunctionDeclaration{Name: "nested"}
+		cycle := &ast.BinaryExpression{Operator: "+"}
+		cycleUse := &ast.Identifier{Name: "Node"}
+		cycle.Left = cycle
+		cycle.Right = cycleUse
+		nested.Body = []ast.Statement{&ast.ExpressionStatement{Expression: cycle}}
+		function.Body = []ast.Statement{nested}
+
+		scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
+		scopeRequireUnknown(t, scopes, cycleUse, "cyclic unsupported statement")
+	})
+}
+
 func TestScopesComposeLocalMemberProjectAndEngineNamespaces(t *testing.T) {
 	source := sources(t, map[string]string{
 		"global.gd":   "class_name Global\n",

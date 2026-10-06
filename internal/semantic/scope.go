@@ -354,28 +354,21 @@ func (i *ScopeIndex) findSharedNodes() {
 		i.shared = map[ast.Node]bool{}
 	}
 	seen := map[ast.Node]bool{}
-	var markTree func(ast.Node)
-	markTree = func(node ast.Node) {
-		if isNilNode(node) || i.shared[node] {
-			return
-		}
-		i.shared[node] = true
-		for _, child := range ast.Children(node) {
-			markTree(child)
-		}
-	}
-	var visit func(ast.Node)
-	visit = func(node ast.Node) {
-		if isNilNode(node) {
-			return
-		}
-		if seen[node] {
-			markTree(node)
-			return
-		}
-		seen[node] = true
-		for _, child := range ast.Children(node) {
-			visit(child)
+	visit := func(root ast.Node) {
+		pending := []ast.Node{root}
+		for len(pending) > 0 {
+			at := len(pending) - 1
+			node := pending[at]
+			pending = pending[:at]
+			if isNilNode(node) {
+				continue
+			}
+			if seen[node] {
+				i.markSharedTree(node)
+				continue
+			}
+			seen[node] = true
+			pending = append(pending, ast.Children(node)...)
 		}
 	}
 	for _, id := range i.interfaces.ClassIDs() {
@@ -394,6 +387,25 @@ func (i *ScopeIndex) findSharedNodes() {
 				visit(declaration.Node)
 			}
 		}
+	}
+}
+
+func (i *ScopeIndex) markSharedTree(root ast.Node) {
+	if isNilNode(root) || i.nodeShared(root) {
+		return
+	}
+	pending := []ast.Node{root}
+	marked := map[ast.Node]bool{}
+	for len(pending) > 0 {
+		at := len(pending) - 1
+		node := pending[at]
+		pending = pending[:at]
+		if isNilNode(node) || marked[node] {
+			continue
+		}
+		marked[node] = true
+		i.shared[node] = true
+		pending = append(pending, ast.Children(node)...)
 	}
 }
 
@@ -438,10 +450,18 @@ func (i *ScopeIndex) buildClass(class *ClassDecl) {
 			// A lambda held in a class property is still an indexed lambda,
 			// even though it has no enclosing function frame to capture.
 			propertyScope := i.newScope(nil, scopeContext{classID: class.ID, static: node.Static || node.Constant, constantExpression: node.Constant})
+			if i.nodeShared(node) {
+				i.blockSharedTree(node, propertyScope)
+				continue
+			}
 			i.visitExpression(node.Value, propertyScope)
 			i.buildAccessors(class.ID, node)
 		case *ast.EnumDeclaration:
 			enumScope := i.newScope(nil, scopeContext{classID: class.ID, static: true, constantExpression: true})
+			if i.nodeShared(node) {
+				i.blockSharedTree(node, enumScope)
+				continue
+			}
 			for _, member := range node.Members {
 				i.visitExpression(member.Value, enumScope)
 			}
@@ -452,7 +472,9 @@ func (i *ScopeIndex) buildClass(class *ClassDecl) {
 func (i *ScopeIndex) buildFunction(classID string, node *ast.FunctionDeclaration) {
 	context := scopeContext{classID: classID, static: node.Static, methodName: node.Name}
 	parameters := i.newScope(nil, context)
-	i.record(node, parameters)
+	if i.record(node, parameters) {
+		return
+	}
 	for at, parameter := range node.Parameters {
 		i.visitExpression(parameter.Default, parameters)
 		binding := i.newBinding(
@@ -473,6 +495,10 @@ func (i *ScopeIndex) buildFunction(classID string, node *ast.FunctionDeclaration
 
 func (i *ScopeIndex) buildAccessors(classID string, node *ast.VariableDeclaration) {
 	context := scopeContext{classID: classID, static: node.Static}
+	if i.nodeShared(node) {
+		i.blockSharedTree(node, i.newScope(nil, context))
+		return
+	}
 	if node.Getter != nil {
 		i.visitStatements(node.Getter, i.newScope(nil, context))
 	}
@@ -620,19 +646,20 @@ func (i *ScopeIndex) ambiguous(scope *Scope, name, reason string) *Scope {
 	return next
 }
 
-func (i *ScopeIndex) record(node ast.Node, scope *Scope) {
+func (i *ScopeIndex) record(node ast.Node, scope *Scope) bool {
 	if isNilNode(node) || scope == nil {
-		return
+		return false
 	}
 	if i.nodeShared(node) {
-		i.blockSharedNode(node, scope)
-		return
+		i.blockSharedTree(node, scope)
+		return true
 	}
 	if prior, recorded := i.scopes[node]; recorded && prior != scope {
-		i.blockSharedNode(node, scope)
-		return
+		i.blockSharedTree(node, scope)
+		return true
 	}
 	i.scopes[node] = scope
+	return false
 }
 
 const sharedASTNodeReason = "AST node is shared between lexical positions"
@@ -641,14 +668,36 @@ func (i *ScopeIndex) nodeShared(node ast.Node) bool {
 	return i != nil && !isNilNode(node) && i.shared != nil && i.shared[node]
 }
 
-func (i *ScopeIndex) blockSharedNode(node ast.Node, scope *Scope) {
+func (i *ScopeIndex) blockSharedTree(root ast.Node, scope *Scope) {
+	if isNilNode(root) {
+		return
+	}
+	if prior, recorded := i.scopes[root]; recorded && prior != nil && prior.blocked == sharedASTNodeReason {
+		return
+	}
 	if i.shared == nil {
 		i.shared = map[ast.Node]bool{}
 	}
-	i.shared[node] = true
-	blocked := i.newScope(nil, scope.context)
+	context := scopeContext{}
+	if scope != nil {
+		context = scope.context
+	}
+	blocked := i.newScope(nil, context)
 	blocked.blocked = sharedASTNodeReason
-	i.scopes[node] = blocked
+	pending := []ast.Node{root}
+	visited := map[ast.Node]bool{}
+	for len(pending) > 0 {
+		at := len(pending) - 1
+		node := pending[at]
+		pending = pending[:at]
+		if isNilNode(node) || visited[node] {
+			continue
+		}
+		visited[node] = true
+		i.shared[node] = true
+		i.scopes[node] = blocked
+		pending = append(pending, ast.Children(node)...)
+	}
 }
 
 func isNilNode(node ast.Node) bool {
@@ -676,7 +725,9 @@ func (i *ScopeIndex) visitStatement(statement ast.Statement, scope *Scope) *Scop
 	if isNilNode(statement) {
 		return scope
 	}
-	i.record(statement, scope)
+	if i.record(statement, scope) {
+		return i.ambiguousSharedStatement(scope, statement)
+	}
 	switch node := statement.(type) {
 	case *ast.ExpressionStatement:
 		i.visitExpression(node.Expression, scope)
@@ -761,6 +812,38 @@ func (i *ScopeIndex) visitStatement(statement ast.Statement, scope *Scope) *Scop
 	return scope
 }
 
+func (i *ScopeIndex) ambiguousSharedStatement(scope *Scope, statement ast.Statement) *Scope {
+	names := []string{}
+	switch node := statement.(type) {
+	case *ast.VariableDeclaration:
+		names = append(names, node.Name)
+	case *ast.FunctionDeclaration:
+		names = append(names, node.Name)
+	case *ast.ClassDeclaration:
+		names = append(names, node.Name)
+	case *ast.SignalDeclaration:
+		names = append(names, node.Name)
+	case *ast.EnumDeclaration:
+		if node.Name != "" {
+			names = append(names, node.Name)
+		} else {
+			for _, member := range node.Members {
+				names = append(names, member.Name)
+			}
+		}
+	}
+	current := scope
+	seen := map[string]bool{}
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		current = i.ambiguous(current, name, sharedASTNodeReason)
+	}
+	return current
+}
+
 func (i *ScopeIndex) forType(classID string, node *ast.ForStatement) Type {
 	if strings.TrimSpace(node.Type) != "" {
 		if i.interfaces == nil {
@@ -772,12 +855,25 @@ func (i *ScopeIndex) forType(classID string, node *ast.ForStatement) Type {
 }
 
 func (i *ScopeIndex) visitMatch(node *ast.MatchStatement, scope *Scope) {
+	if i.nodeShared(node) {
+		i.blockSharedTree(node, scope)
+		return
+	}
 	i.visitExpression(node.Value, scope)
 	for caseIndex, matchCase := range node.Cases {
 		body := i.newScope(scope, scope.context)
 		patterns := make([]map[string][]*ast.BindingPattern, len(matchCase.Patterns))
+		patternShared := false
 		for at, pattern := range matchCase.Patterns {
-			patterns[at] = i.collectPatternBindings(pattern, scope)
+			var shared bool
+			patterns[at], shared = i.collectPatternBindings(pattern, scope)
+			patternShared = patternShared || shared
+		}
+		if patternShared {
+			body.blocked = sharedASTNodeReason
+			i.visitExpression(matchCase.Guard, body)
+			i.visitStatements(matchCase.Body, body)
+			continue
 		}
 		names, compatible := compatibleMatchBindings(patterns)
 		if !compatible {
@@ -835,16 +931,21 @@ func compatibleMatchBindings(patterns []map[string][]*ast.BindingPattern) ([]str
 	return ordered, true
 }
 
-func (i *ScopeIndex) collectPatternBindings(expression ast.Expression, scope *Scope) map[string][]*ast.BindingPattern {
+func (i *ScopeIndex) collectPatternBindings(expression ast.Expression, scope *Scope) (map[string][]*ast.BindingPattern, bool) {
 	result := map[string][]*ast.BindingPattern{}
+	shared := false
 	var collect func(ast.Expression)
 	collect = func(current ast.Expression) {
 		if isNilNode(current) {
 			return
 		}
-		i.record(current, scope)
 		if binding, ok := current.(*ast.BindingPattern); ok {
+			shared = i.record(current, scope) || shared
 			result[binding.Name] = append(result[binding.Name], binding)
+			return
+		}
+		if i.record(current, scope) {
+			shared = true
 			return
 		}
 		for _, child := range ast.Children(current) {
@@ -854,14 +955,16 @@ func (i *ScopeIndex) collectPatternBindings(expression ast.Expression, scope *Sc
 		}
 	}
 	collect(expression)
-	return result
+	return result, shared
 }
 
 func (i *ScopeIndex) visitExpression(expression ast.Expression, scope *Scope) {
 	if isNilNode(expression) {
 		return
 	}
-	i.record(expression, scope)
+	if i.record(expression, scope) {
+		return
+	}
 	switch node := expression.(type) {
 	case *ast.LambdaExpression:
 		i.visitLambda(node, scope)
@@ -898,6 +1001,13 @@ func (i *ScopeIndex) superScope(scope *Scope, target string) *Scope {
 }
 
 func (i *ScopeIndex) visitLambda(lambda *ast.LambdaExpression, creation *Scope) {
+	if isNilNode(lambda) {
+		return
+	}
+	if i.nodeShared(lambda) {
+		i.blockSharedTree(lambda, creation)
+		return
+	}
 	// A lambda captures lexical values and static context, but Godot rejects a
 	// bare super() from its anonymous method body. Keep the enclosing method
 	// name out of its context rather than accidentally dispatching it as though
@@ -927,6 +1037,10 @@ func (i *ScopeIndex) visitChildren(node ast.Node, scope *Scope) {
 	if isNilNode(node) {
 		return
 	}
+	if i.nodeShared(node) {
+		i.blockSharedTree(node, scope)
+		return
+	}
 	for _, child := range ast.Children(node) {
 		switch child := child.(type) {
 		case ast.Expression:
@@ -941,27 +1055,32 @@ func (i *ScopeIndex) visitUnsupported(node ast.Node, scope *Scope, reason string
 	if isNilNode(node) {
 		return
 	}
+	if i.record(node, scope) {
+		return
+	}
+	i.blockUnsupportedTree(node, scope, reason)
+}
+
+func (i *ScopeIndex) blockUnsupportedTree(root ast.Node, scope *Scope, reason string) {
 	blocked := i.newScope(scope, scope.context)
 	blocked.blocked = reason
-	// visitStatement already records its root in scope. Replace that expected
-	// record with the unsupported boundary directly; routing it through record
-	// would mistake the two legitimate lexical views for a shared AST node. A
-	// pre-existing different view still goes through record, preserving the
-	// fail-closed shared-node behavior.
-	if i.nodeShared(node) {
-		i.record(node, scope)
-	} else if prior, recorded := i.scopes[node]; !recorded || prior == scope {
-		i.scopes[node] = blocked
-	} else {
-		i.record(node, blocked)
-	}
-	ast.Inspect(node, func(child ast.Node) bool {
-		if child == node {
-			return true
+	pending := []ast.Node{root}
+	visited := map[ast.Node]bool{}
+	for len(pending) > 0 {
+		at := len(pending) - 1
+		node := pending[at]
+		pending = pending[:at]
+		if isNilNode(node) || visited[node] {
+			continue
 		}
-		i.record(child, blocked)
-		return true
-	})
+		visited[node] = true
+		if i.nodeShared(node) {
+			i.blockSharedTree(node, scope)
+			continue
+		}
+		i.scopes[node] = blocked
+		pending = append(pending, ast.Children(node)...)
+	}
 }
 
 func (i *ScopeIndex) ambiguousUnsupported(scope *Scope, node ast.Node, reason string, names ...string) *Scope {
