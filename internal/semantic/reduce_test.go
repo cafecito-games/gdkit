@@ -528,6 +528,66 @@ func TestAnalyzerIsSnapshotBoundCachesCompletedResultsAndTerminatesCycles(t *tes
 	}
 }
 
+func TestAnalyzerReducesDeferredHeadersUnderTheBaseOverlay(t *testing.T) {
+	source := sources(t, map[string]string{
+		"overlay.gd": "class_name Overlay\nvar field := 1 + 2\nfunc locals():\n\tvar local := 1 + 2\n\tvar local_use := local\nfunc members():\n\tvar field_use := self.field\nfunc defaults(parameter := 1 + 2):\n\tvar parameter_use := parameter\nfunc lambdas():\n\tvar closure := func(default := 1 + 2): return default\n",
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	file := source.File("overlay.gd")
+	var parameterDefault ast.Expression
+	ast.Inspect(file, func(node ast.Node) bool {
+		function, ok := node.(*ast.FunctionDeclaration)
+		if ok && function.Name == "defaults" && len(function.Parameters) == 1 {
+			parameterDefault = function.Parameters[0].Default
+		}
+		return true
+	})
+	if parameterDefault == nil {
+		t.Fatal("real parser fixture did not retain the inferred parameter default")
+	}
+	lambda, ok := reducerVariableValue(t, file, "closure").(*ast.LambdaExpression)
+	if !ok || len(lambda.Parameters) != 1 || lambda.Parameters[0].Default == nil {
+		t.Fatalf("real parser fixture did not retain the lambda default: %#v", lambda)
+	}
+	for _, testCase := range []struct {
+		name     string
+		use      ast.Expression
+		deferred ast.Expression
+		want     Type
+	}{
+		{name: "local", use: reducerVariableValue(t, file, "local_use"), deferred: reducerVariableValue(t, file, "local"), want: Builtin("int")},
+		{name: "member", use: reducerVariableValue(t, file, "field_use"), deferred: reducerVariableValue(t, file, "field"), want: Builtin("int")},
+		{name: "parameter", use: reducerVariableValue(t, file, "parameter_use"), deferred: parameterDefault, want: Builtin("int")},
+		{name: "lambda", use: lambda, deferred: lambda.Parameters[0].Default, want: Callable()},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			analyzer := NewAnalyzer(source, reducerTestEngine(t))
+			scope, ok := analyzer.scopes.ScopeAt(testCase.use)
+			if !ok {
+				t.Fatal("use expression has no recorded scope")
+			}
+			overlay := reductionContextToken{overlay: &reductionOverlay{}}
+			if got := analyzer.typeOfIn(testCase.use, scope, overlay); !got.typeValue.Equal(testCase.want) {
+				t.Fatalf("overlay reduction = %s (%q), want %s", got.typeValue, got.typeValue.Reason(), testCase.want)
+			}
+			deferredScope, ok := analyzer.scopes.ScopeAt(testCase.deferred)
+			if !ok {
+				t.Fatal("deferred expression has no recorded scope")
+			}
+			baseKey := reductionKey{expression: testCase.deferred, scope: deferredScope.ID(), token: reductionContextToken{}}
+			overlayKey := reductionKey{expression: testCase.deferred, scope: deferredScope.ID(), token: overlay}
+			if _, found := analyzer.cache[baseKey]; !found {
+				t.Fatal("deferred expression was not cached under its base context")
+			}
+			if _, found := analyzer.cache[overlayKey]; found {
+				t.Fatal("deferred expression inherited the use-site overlay context")
+			}
+		})
+	}
+}
+
 func TestAnalyzerDoesNotPublishCycleTaintedLambdaDefaults(t *testing.T) {
 	source := sources(t, map[string]string{
 		"cycles.gd": "class_name Cycles\nfunc run():\n\tvar holder := missing\n\tvar closure := func(default := holder): return default\n\tvar observed := holder\n",

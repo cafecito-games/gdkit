@@ -285,6 +285,13 @@ func (a *Analyzer) reduceChild(expression ast.Expression, parent reductionContex
 	return a.reduce(expression, reductionContext{scope: scope, token: parent.token}, request)
 }
 
+// reduceDeferredChild evaluates a retained declaration/default under its own
+// recorded lexical scope and the immutable base view. A future flow overlay is
+// attached to a use, never to a declaration written elsewhere.
+func (a *Analyzer) reduceDeferredChild(expression ast.Expression, request *reductionRequest) reductionResult {
+	return a.reduceChild(expression, reductionContext{}, request)
+}
+
 func (a *Analyzer) reduceExpression(expression ast.Expression, context reductionContext, request *reductionRequest) reductionResult {
 	switch node := expression.(type) {
 	case *ast.Literal:
@@ -318,7 +325,7 @@ func (a *Analyzer) reduceExpression(expression ast.Expression, context reduction
 	case *ast.RestPattern:
 		return unknownReduction("rest pattern is not a value")
 	case *ast.LambdaExpression:
-		return a.reduceLambda(node, context, request)
+		return a.reduceLambda(node, request)
 	default:
 		return unknownReduction(fmt.Sprintf("unsupported expression form %T", expression))
 	}
@@ -383,27 +390,27 @@ func (a *Analyzer) reduceIdentifier(identifier *ast.Identifier, context reductio
 			}
 			return result
 		}
-		return a.reduceDeferredBinding(binding, result, context, request)
+		return a.reduceDeferredBinding(binding, result, request)
 	default:
 		return unknownReduction(fmt.Sprintf("identifier %q resolution returned invalid state", identifier.Name))
 	}
 }
 
-func (a *Analyzer) reduceDeferredBinding(binding Binding, prior reductionResult, context reductionContext, request *reductionRequest) reductionResult {
+func (a *Analyzer) reduceDeferredBinding(binding Binding, prior reductionResult, request *reductionRequest) reductionResult {
 	declaration := binding.Declaration()
 	switch node := declaration.(type) {
 	case *ast.VariableDeclaration:
-		return a.reduceDeferredVariable(node, prior, context, request)
+		return a.reduceDeferredVariable(node, prior, request)
 	case *ast.FunctionDeclaration:
-		return a.reduceInferredParameter(node.Parameters, binding, prior, context, request)
+		return a.reduceInferredParameter(node.Parameters, binding, prior, request)
 	case *ast.LambdaExpression:
-		return a.reduceInferredParameter(node.Parameters, binding, prior, context, request)
+		return a.reduceInferredParameter(node.Parameters, binding, prior, request)
 	default:
 		return prior
 	}
 }
 
-func (a *Analyzer) reduceDeferredVariable(node *ast.VariableDeclaration, prior reductionResult, context reductionContext, request *reductionRequest) reductionResult {
+func (a *Analyzer) reduceDeferredVariable(node *ast.VariableDeclaration, prior reductionResult, request *reductionRequest) reductionResult {
 	if node == nil {
 		return prior
 	}
@@ -411,7 +418,7 @@ func (a *Analyzer) reduceDeferredVariable(node *ast.VariableDeclaration, prior r
 		if isNilNode(node.Value) {
 			return prior
 		}
-		return knownReduction(a.reduceChild(node.Value, context, request).typeValue)
+		return knownReduction(a.reduceDeferredChild(node.Value, request).typeValue)
 	}
 	if node.Value != nil && node.Type == "" {
 		return knownReduction(Variant())
@@ -419,7 +426,7 @@ func (a *Analyzer) reduceDeferredVariable(node *ast.VariableDeclaration, prior r
 	return prior
 }
 
-func (a *Analyzer) reduceInferredParameter(parameters []ast.Parameter, binding Binding, prior reductionResult, context reductionContext, request *reductionRequest) reductionResult {
+func (a *Analyzer) reduceInferredParameter(parameters []ast.Parameter, binding Binding, prior reductionResult, request *reductionRequest) reductionResult {
 	if binding.Kind() != BindingParameter {
 		return prior
 	}
@@ -431,7 +438,7 @@ func (a *Analyzer) reduceInferredParameter(parameters []ast.Parameter, binding B
 	if !parameter.Inferred || isNilNode(parameter.Default) {
 		return prior
 	}
-	return knownReduction(a.reduceChild(parameter.Default, context, request).typeValue)
+	return knownReduction(a.reduceDeferredChild(parameter.Default, request).typeValue)
 }
 
 func (a *Analyzer) reduceUnary(expression *ast.UnaryExpression, context reductionContext, request *reductionRequest) reductionResult {
@@ -622,10 +629,10 @@ func (a *Analyzer) reduceMember(expression *ast.MemberExpression, context reduct
 	if result.member.Kind() != MemberVariable && result.member.Kind() != MemberConstant {
 		return result
 	}
-	return a.reduceDeferredMember(*result.member, result, context, request)
+	return a.reduceDeferredMember(*result.member, result, request)
 }
 
-func (a *Analyzer) reduceDeferredMember(member Member, prior reductionResult, context reductionContext, request *reductionRequest) reductionResult {
+func (a *Analyzer) reduceDeferredMember(member Member, prior reductionResult, request *reductionRequest) reductionResult {
 	if a == nil || a.scopes == nil {
 		return prior
 	}
@@ -633,7 +640,7 @@ func (a *Analyzer) reduceDeferredMember(member Member, prior reductionResult, co
 	if !ok {
 		return prior
 	}
-	return a.reduceDeferredVariable(declaration, prior, context, request)
+	return a.reduceDeferredVariable(declaration, prior, request)
 }
 
 // reduceMemberLookup is the reducer's one tri-state boundary for ordinary
@@ -767,7 +774,7 @@ func collectionComponentProblem(value Type) string {
 	return ""
 }
 
-func (a *Analyzer) reduceLambda(expression *ast.LambdaExpression, context reductionContext, request *reductionRequest) reductionResult {
+func (a *Analyzer) reduceLambda(expression *ast.LambdaExpression, request *reductionRequest) reductionResult {
 	if expression == nil {
 		return unknownReduction("lambda expression is unavailable")
 	}
@@ -778,7 +785,7 @@ func (a *Analyzer) reduceLambda(expression *ast.LambdaExpression, context reduct
 		// Defaults have their own #47-recorded lexical scopes. Their result
 		// does not change the representable Callable answer, but evaluating it
 		// populates the same immutable cache a future signature pass can reuse.
-		_ = a.reduceChild(parameter.Default, context, request)
+		_ = a.reduceDeferredChild(parameter.Default, request)
 	}
 	return knownReduction(Callable())
 }
