@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -98,9 +99,11 @@ type ScopeID struct {
 func (id ScopeID) String() string { return fmt.Sprintf("scope:%d", id.ordinal) }
 
 // Binding records one resolved identifier without mutating the parsed AST.
-// Declaration is nil for retained engine and language globals. Slot
-// distinguishes AST-owned records such as parameters, loop variables, setter
-// parameters, and match cases that do not each have a declaration statement.
+// Declaration is retained for lexical bindings and user members when the
+// snapshot owns their AST header; namespace origins with no retained header
+// leave it nil. Slot distinguishes AST-owned records such as parameters, loop
+// variables, setter parameters, and match cases that do not each have a
+// declaration statement.
 type Binding struct {
 	id          BindingID
 	kind        BindingKind
@@ -135,7 +138,9 @@ func (b Binding) ClassID() string { return b.classID }
 // binding. Namespace bindings use the frame that performed the lookup.
 func (b Binding) ScopeID() ScopeID { return b.scopeID }
 
-// Declaration returns the retained AST owner when one exists.
+// Declaration returns the retained AST owner when one exists. It is nil for
+// origins without a retained AST header, including engine/language globals,
+// manifest-backed autoloads, and global class-name declarations.
 func (b Binding) Declaration() ast.Node { return b.declaration }
 
 // Slot distinguishes bindings held by one AST record.
@@ -335,7 +340,7 @@ func BuildScopes(interfaces *InterfaceSet) *ScopeIndex {
 // ScopeAt returns the effective lexical view recorded for node. A node from a
 // separately parsed snapshot has no entry, even if it has identical text.
 func (i *ScopeIndex) ScopeAt(node ast.Node) (*Scope, bool) {
-	if i == nil || node == nil {
+	if i == nil || isNilNode(node) {
 		return nil, false
 	}
 	scope, ok := i.scopes[node]
@@ -362,7 +367,7 @@ func (i *ScopeIndex) Resolve(identifier *ast.Identifier) BindingResult {
 func (i *ScopeIndex) buildClass(class *ClassDecl) {
 	seen := map[ast.Node]bool{}
 	for _, declaration := range class.Declarations {
-		if declaration.Node == nil || seen[declaration.Node] {
+		if isNilNode(declaration.Node) || seen[declaration.Node] {
 			continue
 		}
 		seen[declaration.Node] = true
@@ -550,8 +555,28 @@ func (i *ScopeIndex) ambiguous(scope *Scope, name, reason string) *Scope {
 }
 
 func (i *ScopeIndex) record(node ast.Node, scope *Scope) {
-	if node != nil && scope != nil {
-		i.scopes[node] = scope
+	if isNilNode(node) || scope == nil {
+		return
+	}
+	if prior, recorded := i.scopes[node]; recorded && prior != scope {
+		blocked := i.newScope(nil, scope.context)
+		blocked.blocked = "AST node is shared between lexical positions"
+		i.scopes[node] = blocked
+		return
+	}
+	i.scopes[node] = scope
+}
+
+func isNilNode(node ast.Node) bool {
+	if node == nil {
+		return true
+	}
+	value := reflect.ValueOf(node)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
 	}
 }
 
@@ -564,7 +589,7 @@ func (i *ScopeIndex) visitStatements(statements []ast.Statement, scope *Scope) *
 }
 
 func (i *ScopeIndex) visitStatement(statement ast.Statement, scope *Scope) *Scope {
-	if statement == nil {
+	if isNilNode(statement) {
 		return scope
 	}
 	i.record(statement, scope)
@@ -730,7 +755,7 @@ func (i *ScopeIndex) collectPatternBindings(expression ast.Expression, scope *Sc
 	result := map[string][]*ast.BindingPattern{}
 	var collect func(ast.Expression)
 	collect = func(current ast.Expression) {
-		if current == nil {
+		if isNilNode(current) {
 			return
 		}
 		i.record(current, scope)
@@ -749,7 +774,7 @@ func (i *ScopeIndex) collectPatternBindings(expression ast.Expression, scope *Sc
 }
 
 func (i *ScopeIndex) visitExpression(expression ast.Expression, scope *Scope) {
-	if expression == nil {
+	if isNilNode(expression) {
 		return
 	}
 	i.record(expression, scope)
@@ -815,6 +840,9 @@ func (i *ScopeIndex) visitLambda(lambda *ast.LambdaExpression, creation *Scope) 
 }
 
 func (i *ScopeIndex) visitChildren(node ast.Node, scope *Scope) {
+	if isNilNode(node) {
+		return
+	}
 	for _, child := range ast.Children(node) {
 		switch child := child.(type) {
 		case ast.Expression:
@@ -826,6 +854,9 @@ func (i *ScopeIndex) visitChildren(node ast.Node, scope *Scope) {
 }
 
 func (i *ScopeIndex) visitUnsupported(node ast.Node, scope *Scope, reason string) {
+	if isNilNode(node) {
+		return
+	}
 	blocked := i.newScope(scope, scope.context)
 	blocked.blocked = reason
 	ast.Inspect(node, func(child ast.Node) bool {
@@ -918,7 +949,25 @@ func (i *ScopeIndex) memberBinding(scope *Scope, kind BindingKind, name string, 
 		member.Line(),
 		member.Column(),
 	)
-	return i.namespaceBinding(scope, key, kind, name, member.DeclaringClassID(), member.Type(), &member, nil, member.Line(), member.Column())
+	binding := i.namespaceBinding(scope, key, kind, name, member.DeclaringClassID(), member.Type(), &member, nil, member.Line(), member.Column())
+	binding.declaration = i.memberDeclaration(member)
+	return binding
+}
+
+func (i *ScopeIndex) memberDeclaration(member Member) ast.Node {
+	if i == nil || i.interfaces == nil || i.interfaces.index == nil || member.DeclaringClassID() == "" {
+		return nil
+	}
+	class := i.interfaces.index.Classes[member.DeclaringClassID()]
+	if class == nil {
+		return nil
+	}
+	for _, declaration := range class.Declarations {
+		if declaration.Name == member.Name() && declaration.Line == member.Line() && declaration.Column == member.Column() {
+			return declaration.Node
+		}
+	}
+	return nil
 }
 
 func (i *ScopeIndex) resolveSelf(scope *Scope) BindingResult {
@@ -974,7 +1023,9 @@ func (i *ScopeIndex) resolveSuper(scope *Scope) BindingResult {
 			return unknownBinding(fmt.Sprintf("base method %q has static/instance mismatch", scope.context.superTarget))
 		}
 		key := fmt.Sprintf("super:%s:%s:%s:%s:%d:%d", scope.context.classID, scope.context.superTarget, member.DeclaringClassID(), member.EngineOwner(), member.Line(), member.Column())
-		return foundBinding(i.namespaceBinding(scope, key, BindingSuper, "super", member.DeclaringClassID(), member.Type(), nil, &member, member.Line(), member.Column()))
+		binding := i.namespaceBinding(scope, key, BindingSuper, "super", member.DeclaringClassID(), member.Type(), nil, &member, member.Line(), member.Column())
+		binding.declaration = i.memberDeclaration(member)
+		return foundBinding(binding)
 	default:
 		return unknownBinding(fmt.Sprintf("base lookup for method %q returned invalid state", scope.context.superTarget))
 	}

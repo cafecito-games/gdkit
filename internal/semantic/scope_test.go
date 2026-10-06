@@ -425,6 +425,42 @@ func TestScopesDoNotLetMalformedLexicalBindingsShadowReservedNames(t *testing.T)
 	scopeRequireUnknown(t, scopes, selfUse, "malformed lexical self")
 }
 
+func TestScopesFailClosedForSharedAndTypedNilASTNodes(t *testing.T) {
+	source := sources(t, map[string]string{
+		"player.gd": "class_name Player\nfunc run():\n\tpass\n",
+	})
+	function := source.File("player.gd").Statements[1].(*ast.FunctionDeclaration)
+	shared := &ast.Identifier{Name: "local"}
+	var nilCall *ast.CallExpression
+	var nilVariable *ast.VariableDeclaration
+	function.Body = []ast.Statement{
+		&ast.ExpressionStatement{Expression: shared},
+		nilVariable,
+		&ast.VariableDeclaration{Name: "local", Value: &ast.Literal{Kind: ast.IntegerLiteral, Raw: "1"}},
+		&ast.ExpressionStatement{Expression: shared},
+		&ast.ExpressionStatement{Expression: nilCall},
+	}
+	interfaces := BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t))
+	scopes := BuildScopes(interfaces)
+	scopeRequireUnknown(t, scopes, shared, "shared AST node")
+	if _, ok := scopes.ScopeAt(nilCall); ok {
+		t.Error("typed-nil call expression was indexed")
+	}
+	if _, ok := scopes.ScopeAt(nilVariable); ok {
+		t.Error("typed-nil declaration was indexed")
+	}
+	// The published interface snapshot remains immutable. Exercise the direct
+	// scope-builder boundary with a detached malformed class record instead of
+	// mutating the snapshot that InterfaceSet has already validated.
+	malformedClass := *interfaces.index.Classes["player.gd"]
+	malformedClass.Declarations = append(append([]Declaration(nil), malformedClass.Declarations...), Declaration{Node: nilVariable})
+	malformedScopes := &ScopeIndex{interfaces: interfaces, scopes: map[ast.Node]*Scope{}}
+	malformedScopes.buildClass(&malformedClass)
+	if _, ok := malformedScopes.ScopeAt(nilVariable); ok {
+		t.Error("direct scope builder indexed typed-nil declaration")
+	}
+}
+
 func TestScopesComposeLocalMemberProjectAndEngineNamespaces(t *testing.T) {
 	source := sources(t, map[string]string{
 		"global.gd":   "class_name Global\n",
@@ -521,6 +557,19 @@ func TestScopesKeepFoundUnknownMembersAheadOfRetainedGlobals(t *testing.T) {
 	binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, source.File("player.gd"), "instance_field", 4), BindingMember)
 	if binding.Type().Kind() != KindUnknown || binding.Type().Reason() == "" {
 		t.Fatalf("found member type = %v %q (%q), want its reasoned unknown declaration type", binding.Type().Kind(), binding.Type().Name(), binding.Type().Reason())
+	}
+}
+
+func TestScopesRetainUserMemberDeclarationProvenance(t *testing.T) {
+	source := sources(t, map[string]string{
+		"player.gd": "class_name Player\nconst LIMIT = 1\nfunc run():\n\tLIMIT\n",
+	})
+	file := source.File("player.gd")
+	declaration := file.Statements[1]
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
+	binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "LIMIT", 4), BindingMember)
+	if binding.Declaration() != declaration {
+		t.Fatalf("member declaration = %#v, want retained constant declaration %#v", binding.Declaration(), declaration)
 	}
 }
 
