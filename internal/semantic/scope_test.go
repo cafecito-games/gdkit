@@ -306,6 +306,15 @@ func TestScopesFailClosedForUnsupportedStatementBoundaries(t *testing.T) {
 		&ast.ExpressionStatement{Expression: enumSibling},
 	}
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeNamespaceEngine(t)))
+	unsupportedStatement := function.Body[0]
+	unsupportedScope, ok := scopes.ScopeAt(unsupportedStatement)
+	if !ok {
+		t.Fatal("unsupported statement was not indexed")
+	}
+	const unsupportedReason = "unsupported nested *ast.EnumDeclaration has no established lexical scope boundary"
+	if unsupportedScope.blocked != unsupportedReason {
+		t.Fatalf("unsupported statement scope reason = %q, want %q", unsupportedScope.blocked, unsupportedReason)
+	}
 	scopeRequireUnknown(t, scopes, unsupportedUse, "unsupported nested enum")
 	scopeRequireUnknown(t, scopes, accessorUse, "unsupported local accessor")
 	for _, testCase := range []struct {

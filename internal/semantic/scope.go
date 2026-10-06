@@ -859,7 +859,20 @@ func (i *ScopeIndex) visitUnsupported(node ast.Node, scope *Scope, reason string
 	}
 	blocked := i.newScope(scope, scope.context)
 	blocked.blocked = reason
+	// visitStatement already records its root in scope. Replace that expected
+	// record with the unsupported boundary directly; routing it through record
+	// would mistake the two legitimate lexical views for a shared AST node. A
+	// pre-existing different view still goes through record, preserving the
+	// fail-closed shared-node behavior.
+	if prior, recorded := i.scopes[node]; !recorded || prior == scope {
+		i.scopes[node] = blocked
+	} else {
+		i.record(node, blocked)
+	}
 	ast.Inspect(node, func(child ast.Node) bool {
+		if child == node {
+			return true
+		}
 		i.record(child, blocked)
 		return true
 	})
