@@ -77,7 +77,7 @@ func TestAnalyzerFailsClosedForUnsupportedOrUnavailableExpressionForms(t *testin
 
 func TestAnalyzerReducesOperatorsTernariesAndSubscripts(t *testing.T) {
 	source := sources(t, map[string]string{
-		"operators.gd": "class_name Operators\nfunc run():\n\tvar promise := 1\n\tvar unary := -1\n\tvar negated := !1\n\tvar awaited := await promise\n\tvar binary := 1 + 2\n\tvar widened := 1 + 2.0\n\tvar casted := 1 as float\n\tvar checked := 1 is int\n\tvar ternary_equal := 1 if true else 1\n\tvar ternary_float := 1 if true else 2.0\n\tvar ternary_conflict := 1 if true else \"two\"\n\tvar missing_operator := 1 * 2\n\tvar missing_unary := ~1\n\tvar meta_operand := Node + 1\n\tvar unsupported_cast := 1 as Missing\n\tvar typed_array: Array[int] = [1]\n\tvar array_item := typed_array[0]\n\tvar plain_array := []\n\tvar plain_item := plain_array[0]\n\tvar typed_dictionary: Dictionary[String, int] = {\"one\": 1}\n\tvar dictionary_item := typed_dictionary[\"one\"]\n\tvar dynamic: Variant\n\tvar variant_item := dynamic[0]\n\tvar missing_index := typed_array[missing]\n",
+		"operators.gd": "class_name Operators\nfunc run():\n\tvar promise := 1\n\tvar unary := -1\n\tvar negated := !1\n\tvar awaited := await promise\n\tvar binary := 1 + 2\n\tvar widened := 1 + 2.0\n\tvar symbolic_and := true && false\n\tvar symbolic_or := true || false\n\tvar word_and := true and false\n\tvar word_or := true or false\n\tvar casted := 1 as float\n\tvar checked := 1 is int\n\tvar ternary_equal := 1 if true else 1\n\tvar ternary_float := 1 if true else 2.0\n\tvar ternary_conflict := 1 if true else \"two\"\n\tvar missing_operator := 1 * 2\n\tvar missing_unary := ~1\n\tvar meta_operand := Node + 1\n\tvar unsupported_cast := 1 as Missing\n\tvar typed_array: Array[int] = [1]\n\tvar array_item := typed_array[0]\n\tvar plain_array := []\n\tvar plain_item := plain_array[0]\n\tvar typed_dictionary: Dictionary[String, int] = {\"one\": 1}\n\tvar dictionary_item := typed_dictionary[\"one\"]\n\tvar dynamic: Variant\n\tvar variant_item := dynamic[0]\n\tvar missing_index := typed_array[missing]\n",
 	})
 	if failures := source.ParseFailures(); len(failures) != 0 {
 		t.Fatalf("real parser fixture failed: %v", failures)
@@ -93,6 +93,10 @@ func TestAnalyzerReducesOperatorsTernariesAndSubscripts(t *testing.T) {
 		{name: "awaited", want: Builtin("int")},
 		{name: "binary", want: Builtin("int")},
 		{name: "widened", want: Builtin("float")},
+		{name: "symbolic_and", want: Builtin("bool")},
+		{name: "symbolic_or", want: Builtin("bool")},
+		{name: "word_and", want: Builtin("bool")},
+		{name: "word_or", want: Builtin("bool")},
 		{name: "casted", want: Builtin("float")},
 		{name: "checked", want: Builtin("bool")},
 		{name: "ternary_equal", want: Builtin("int")},
@@ -433,6 +437,64 @@ func TestAnalyzerIsSnapshotBoundCachesCompletedResultsAndTerminatesCycles(t *tes
 	}
 }
 
+func TestAnalyzerDoesNotPublishCycleTaintedLambdaDefaults(t *testing.T) {
+	source := sources(t, map[string]string{
+		"cycles.gd": "class_name Cycles\nfunc run():\n\tvar holder := missing\n\tvar closure := func(default := holder): return default\n\tvar observed := holder\n",
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	file := source.File("cycles.gd")
+	lambda, ok := reducerVariableValue(t, file, "closure").(*ast.LambdaExpression)
+	if !ok || len(lambda.Parameters) != 1 || lambda.Parameters[0].Default == nil {
+		t.Fatalf("real parser fixture did not produce one lambda default: %#v", lambda)
+	}
+	defaultValue := lambda.Parameters[0].Default
+	observed := reducerVariableValue(t, file, "observed")
+	var holder *ast.VariableDeclaration
+	ast.Inspect(file, func(node ast.Node) bool {
+		declaration, ok := node.(*ast.VariableDeclaration)
+		if ok && declaration.Name == "holder" {
+			holder = declaration
+		}
+		return true
+	})
+	if holder == nil || !holder.Inferred {
+		t.Fatalf("real parser fixture did not produce inferred holder: %#v", holder)
+	}
+	originalHolderValue := holder.Value
+
+	for _, testCase := range []struct {
+		name  string
+		order []ast.Expression
+	}{
+		{name: "use then default", order: []ast.Expression{observed, defaultValue}},
+		{name: "default then use", order: []ast.Expression{defaultValue, observed}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			holder.Value = originalHolderValue
+			analyzer := NewAnalyzer(source, reducerTestEngine(t))
+			// Build scopes from the valid parser fixture, then form the malformed
+			// retained-header cycle that the reducer must terminate without
+			// publishing a query-order-dependent child result.
+			holder.Value = lambda
+			t.Cleanup(func() { holder.Value = originalHolderValue })
+			for _, expression := range testCase.order {
+				if got := analyzer.TypeOf(expression); !got.Equal(Callable()) {
+					t.Fatalf("TypeOf(%T) = %s (%q), want Callable", expression, got, got.Reason())
+				}
+			}
+			scope, found := analyzer.scopes.ScopeAt(defaultValue)
+			if !found {
+				t.Fatal("lambda default has no recorded scope")
+			}
+			if _, found := analyzer.cache[reductionKey{expression: defaultValue, scope: scope.ID()}]; found {
+				t.Fatal("cycle-tainted lambda default was published to the completed cache")
+			}
+		})
+	}
+}
+
 func TestAnalyzerUnifiesTernaryClassesOnlyAcrossCompleteAncestry(t *testing.T) {
 	source := sources(t, map[string]string{
 		"base.gd":   "class_name Base\n",
@@ -488,6 +550,8 @@ func reducerTestEngine(t *testing.T) *Engine {
 		{left: "int", operator: "not", result: "bool"},
 		{left: "int", operator: "+", right: "int", result: "int"},
 		{left: "int", operator: "+", right: "float", result: "float"},
+		{left: "bool", operator: "and", right: "bool", result: "bool"},
+		{left: "bool", operator: "or", right: "bool", result: "bool"},
 	} {
 		if err := builder.AddOperator(operator.left, operator.operator, operator.right, operator.result); err != nil {
 			t.Fatal(err)

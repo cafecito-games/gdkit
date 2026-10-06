@@ -55,7 +55,8 @@ type reductionResult struct {
 }
 
 type reductionRequest struct {
-	active map[reductionKey]bool
+	active  map[reductionKey]bool
+	tainted map[reductionKey]bool
 }
 
 // NewAnalyzer constructs the only accepted semantic pipeline for source and
@@ -149,14 +150,40 @@ func (a *Analyzer) reduce(expression ast.Expression, context reductionContext, r
 	}
 	if request == nil {
 		request = &reductionRequest{active: map[reductionKey]bool{}}
+	} else if request.active == nil {
+		request.active = map[reductionKey]bool{}
 	}
 	if request.active[key] {
+		request.markCycle()
 		return unknownReduction("expression reduction cycle")
 	}
 	request.active[key] = true
 	result := a.reduceExpression(expression, context, request)
 	delete(request.active, key)
+	if request.tainted[key] {
+		// A child saw this request re-enter an active key. Its result may be
+		// locally usable (for example a lambda remains Callable while its
+		// ignored default cycles), but caching it would make a later query
+		// depend on which traversal won the first write.
+		return result
+	}
 	return a.publish(key, result)
+}
+
+// markCycle taints every active ancestor in this request. DFS state is request
+// local, so no concurrent query can observe either the active set or this
+// taint. Results below the re-entry may still be returned to their caller, but
+// only a traversal that did not observe the cycle may enter the shared cache.
+func (r *reductionRequest) markCycle() {
+	if r == nil {
+		return
+	}
+	if r.tainted == nil {
+		r.tainted = map[reductionKey]bool{}
+	}
+	for key := range r.active {
+		r.tainted[key] = true
+	}
 }
 
 func (a *Analyzer) cached(key reductionKey) (reductionResult, bool) {
@@ -445,11 +472,26 @@ func (a *Analyzer) reduceBinary(expression *ast.BinaryExpression, context reduct
 	if a.engine == nil {
 		return unknownReduction("engine schema is unavailable while resolving binary operator")
 	}
-	result, found := a.engine.Operator(leftID, expression.Operator, rightID)
+	operator := engineBinaryOperator(expression.Operator)
+	result, found := a.engine.Operator(leftID, operator, rightID)
 	if !found {
-		return unknownReduction(fmt.Sprintf("selected engine has no binary operator %s %q %s", leftID, expression.Operator, rightID))
+		return unknownReduction(fmt.Sprintf("selected engine has no binary operator %s %q %s", leftID, operator, rightID))
 	}
 	return knownReduction(result)
+}
+
+// engineBinaryOperator translates only gdparser's lexical aliases to the
+// extension-API operator names. The selected Engine remains the sole source of
+// the exact row and its result type.
+func engineBinaryOperator(operator string) string {
+	switch operator {
+	case "&&":
+		return "and"
+	case "||":
+		return "or"
+	default:
+		return operator
+	}
 }
 
 func (a *Analyzer) reduceTernary(expression *ast.TernaryExpression, context reductionContext, request *reductionRequest) reductionResult {
