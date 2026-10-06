@@ -31,9 +31,12 @@ type reductionContextToken struct {
 	overlay *reductionOverlay
 }
 
-// reductionOverlay is intentionally empty until #50 owns flow facts. Its
-// address is the immutable identity component used by this reducer's cache.
-type reductionOverlay struct{}
+// reductionOverlay carries no flow facts until #50 owns them, but it must stay
+// non-zero-sized: pointers to separate zero-sized allocations may compare
+// equal, which would collapse distinct overlay cache identities.
+type reductionOverlay struct {
+	_ byte
+}
 
 type reductionContext struct {
 	scope *Scope

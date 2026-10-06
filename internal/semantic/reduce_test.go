@@ -340,13 +340,28 @@ func TestAnalyzerIsSnapshotBoundCachesCompletedResultsAndTerminatesCycles(t *tes
 	if !covered.typeValue.Equal(Builtin("int")) {
 		t.Fatalf("overlay reduction = %s (%q), want int", covered.typeValue, covered.typeValue.Reason())
 	}
+	secondOverlay := reductionContextToken{overlay: &reductionOverlay{}}
+	if overlay == secondOverlay {
+		t.Fatal("distinct immutable overlays share a cache token identity")
+	}
+	secondCovered := analyzer.typeOfIn(expression, scope, secondOverlay)
+	if !secondCovered.typeValue.Equal(Builtin("int")) {
+		t.Fatalf("second overlay reduction = %s (%q), want int", secondCovered.typeValue, secondCovered.typeValue.Reason())
+	}
 	baseKey := reductionKey{expression: expression, scope: scope.ID(), token: reductionContextToken{}}
 	overlayKey := reductionKey{expression: expression, scope: scope.ID(), token: overlay}
+	secondOverlayKey := reductionKey{expression: expression, scope: scope.ID(), token: secondOverlay}
 	if _, found := analyzer.cache[baseKey]; !found {
 		t.Fatal("base result was not cached as a completed result")
 	}
 	if _, found := analyzer.cache[overlayKey]; !found {
 		t.Fatal("overlay result reused the base cache key")
+	}
+	if overlayKey == secondOverlayKey {
+		t.Fatal("distinct overlays reused one cache key")
+	}
+	if _, found := analyzer.cache[secondOverlayKey]; !found {
+		t.Fatal("second overlay result reused another overlay cache key")
 	}
 
 	secondScopes := BuildScopes(analyzer.interfaces)
