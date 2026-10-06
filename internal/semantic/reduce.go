@@ -393,7 +393,7 @@ func (a *Analyzer) reduceDeferredBinding(binding Binding, prior reductionResult,
 		if node == nil {
 			return prior
 		}
-		if node.Constant || node.Inferred {
+		if (node.Constant || node.Inferred) && node.Type == "" {
 			if isNilNode(node.Value) {
 				return prior
 			}
