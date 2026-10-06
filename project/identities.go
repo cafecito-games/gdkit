@@ -111,7 +111,9 @@ func (i *identities) sort() {
 
 // scanResource reads a .tscn or .tres file. It returns the identity the header
 // line declares, if any, and — when references is set — every [ext_resource]
-// line that names one.
+// line that names one. Its final result says whether the header declaration
+// was read completely; a later reference-scan failure cannot make that already
+// captured claimant incomplete.
 //
 // Only the first line can declare the file's own identity; the identifiers on
 // later lines belong to other files. The whole file is read only when the
@@ -125,9 +127,11 @@ func scanResource(name string, references bool) (header string, refs []Reference
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 4096), maxResourceLine)
+	headerRead := false
 	for number := 1; scanner.Scan(); number++ {
 		line := strings.TrimSpace(scanner.Text())
 		if number == 1 {
+			headerRead = true
 			if strings.HasPrefix(line, "[gd_scene") || strings.HasPrefix(line, "[gd_resource") {
 				header = quotedUID(line)
 			}
@@ -150,7 +154,10 @@ func scanResource(name string, references bool) (header string, refs []Reference
 			Kind:   ReferenceExternal,
 		})
 	}
-	return header, refs, scanner.Err() == nil
+	if scanner.Err() != nil && !headerRead {
+		return header, refs, false
+	}
+	return header, refs, true
 }
 
 // importClaim returns the identity a .import file declares for its asset and

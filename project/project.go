@@ -304,7 +304,11 @@ func Load(config Config) (*Snapshot, error) {
 				}
 				return nil
 			}
-			if !entry.Type().IsRegular() {
+			entryType := entry.Type()
+			if !entryType.IsRegular() {
+				if config.Identities && (entryType&fs.ModeSymlink != 0 || identityClaimSource(relative)) {
+					identityIncomplete = true
+				}
 				return nil
 			}
 			switch {
@@ -488,6 +492,13 @@ func identityCaptureIsNarrowed(config Config) bool {
 		}
 	}
 	return true
+}
+
+func identityClaimSource(resourcePath string) bool {
+	return strings.HasSuffix(resourcePath, ".tscn") ||
+		strings.HasSuffix(resourcePath, ".tres") ||
+		strings.HasSuffix(resourcePath, ".import") ||
+		strings.HasSuffix(resourcePath, ".uid")
 }
 
 func addResource(resources map[string]ResourceKind, resourcePath string, kind ResourceKind) {

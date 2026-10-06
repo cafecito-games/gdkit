@@ -252,6 +252,41 @@ func TestSnapshotFailsClosedForProducerNarrowedIdentityEvidence(t *testing.T) {
 	}
 }
 
+func TestSnapshotFailsClosedForProducerSymlinkedClaimEvidence(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	for name, contents := range map[string]string{
+		"loader.gd":     "class_name Loader\n",
+		"target.gd":     "class_name Target\n",
+		"target.gd.uid": "uid://b\n",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(outside, "other.gd.uid"), []byte("uid://b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Skipf("symlinks are unavailable in this test environment: %v", err)
+	}
+	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityIncomplete {
+		t.Fatal("fixture did not retain omitted symlinked claim evidence")
+	}
+	got := NewSnapshot(snapshot).ResolveResource("loader.gd", "uid://b")
+	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "incomplete") {
+		t.Fatalf("symlinked UID evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
+	}
+}
+
 func TestSnapshotRejectsUnknownResourceInventoryKinds(t *testing.T) {
 	source := NewSnapshot(&project.Snapshot{
 		Paths:     []string{"loader.gd"},

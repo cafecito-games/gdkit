@@ -174,6 +174,21 @@ func TestLoadMarksUnscannableIdentityClaimEvidenceIncomplete(t *testing.T) {
 	}
 }
 
+func TestLoadKeepsHeaderClaimEvidenceCompleteAfterReferenceScanFailure(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"loader.gd":  "class_name Loader\n",
+		"scene.tscn": "[gd_scene format=3 uid=\"uid://b\"]\n" + strings.Repeat("x", maxResourceLine+1) + "\n",
+	})
+	snapshot, err := Load(Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.IdentityIncomplete {
+		t.Fatal("a later reference scan failure must not make the already-read header claimant incomplete")
+	}
+}
+
 func TestResourceKindVocabularyIsClosed(t *testing.T) {
 	for _, kind := range []ResourceKind{ResourceScript, ResourceScene, ResourceText, ResourceImported} {
 		if kind.String() == "" {
