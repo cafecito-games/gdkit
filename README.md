@@ -199,7 +199,15 @@ Structure rules:
 - `class-definitions-order` checks the order of members against the configured
   slot order; and
 - `no-else-return` and `no-elif-return` flag an `else` or `elif` that follows
-  branches which return.
+  branches which return; and
+- `inconsistent-return-statements` reports a function that returns a value on
+  one path and falls off its end on another, where Godot answers with an
+  implicit `null`. A function whose returns are all bare, or which never
+  returns, is not reported: there is no value for the missing path to be
+  inconsistent with. An endless `while true` with no `break` counts as
+  terminating, since the statements after it are unreachable. The rule
+  [ships inert](#rules-that-ship-inert), and pairs with `require-return-type`,
+  which asks for the `-> int` that makes the missing `return 0` obvious.
 
 Static typing rules report a declaration that carries no static type
 annotation. All six [ship inert](#rules-that-ship-inert), and
@@ -541,7 +549,8 @@ Widening what an existing rule reports is the same event as adding a rule, from
 a project's point of view, so it arrives the same way: as a new inert rule name
 rather than as a quiet change to the rule already running.
 
-Seven rules ship inert today: `no-engine-logging`, and the six
+Eight rules ship inert today: `inconsistent-return-statements`,
+`no-engine-logging`, and the six
 [static typing rules](#static-typing-rules) — `require-return-type`,
 `require-argument-type`, `require-variable-type`, `require-typed-collection`,
 `require-signal-argument-type`, and `require-typed-loop-variable`.

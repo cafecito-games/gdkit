@@ -242,12 +242,21 @@ stricter" promise safe. `disable` wins over `enable`, and `enable` deliberately
 accepts any known rule name rather than only an inert one, so a config that
 opted in keeps working after the rule graduates to running by default.
 Pending-ness is an optional interface rather than a parallel registry map so a
-test can inject one through `newLinter`. Seven rules ship inert —
-`no-engine-logging` and the six `require-*` typing rules — and
-`TestPendingRulesAreExactlyTheInertOnes` pins that set so a rule cannot start or
-stop shipping inert unnoticed. `missing-docstring` predates the
+test can inject one through `newLinter`. Eight rules ship inert —
+`inconsistent-return-statements`, `no-engine-logging` and the six `require-*`
+typing rules — and `TestPendingRulesAreExactlyTheInertOnes` pins that set so a
+rule cannot start or stop shipping inert unnoticed. `missing-docstring` predates the
 mechanism and is inert through its own empty list, which only worked because
 that rule is configured by a list.
+
+`inconsistent-return-statements` widens `rules_if_return.go`'s `alwaysReturns`
+into its own `terminates` rather than changing it, because `no-else-return` and
+`no-elif-return` ask a narrower question — whether dropping an `else` is safe —
+and must keep reporting what they report today. The widening is the endless-loop
+case: a `while` whose condition is the literal `true` and whose body holds no
+`break` of its own cannot fall through. `breaks` deliberately does not descend
+into a nested loop, whose `break` leaves that loop instead, and `returnsAValue`
+deliberately does not descend into a lambda, whose returns are the lambda's.
 
 `tab-characters` is a configuration value used by `max-line-length`, not a rule.
 `source-parse` and `unknown-ignore` are reported by the driver rather than by a

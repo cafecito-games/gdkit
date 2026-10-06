@@ -287,6 +287,25 @@ func TestLoggingFixtureDiagnostics(t *testing.T) {
 	checkFixtures(t, lintFixtures(t, "logging", loggingFixtureConfig()), loggingFixtureExpectations)
 }
 
+// returnsFixtureExpectations is the complete set of diagnostics the files in
+// testdata/returns must produce once inconsistent-return-statements is
+// enabled. The rule ships inert, so it needs a fixture group of its own.
+var returnsFixtureExpectations = map[string][]fixtureFinding{
+	"complete_returns.gd": {},
+	"inconsistent_returns.gd": {
+		// Reported at the "func" keyword, not at the body's last line.
+		{5, "inconsistent-return-statements"},
+	},
+}
+
+// TestReturnsFixtureDiagnostics is TestFixtureDiagnostics for the fixtures that
+// only produce diagnostics once inconsistent-return-statements is enabled. It
+// shares inconsistentReturnConfig with the per-rule test, so the two cannot
+// drift into enabling different sets.
+func TestReturnsFixtureDiagnostics(t *testing.T) {
+	checkFixtures(t, lintFixtures(t, "returns", inconsistentReturnConfig()), returnsFixtureExpectations)
+}
+
 // TestTypingFixtureDiagnostics is TestFixtureDiagnostics for the fixtures that
 // only produce diagnostics once the typing rules are enabled. It shares
 // typingConfig with the per-rule tests, so the two cannot drift into enabling
@@ -337,6 +356,7 @@ func TestFixturesExerciseEveryRule(t *testing.T) {
 	for _, group := range []map[string][]fixtureFinding{
 		fixtureExpectations, docstringFixtureExpectations,
 		loggingFixtureExpectations, typingFixtureExpectations,
+		returnsFixtureExpectations,
 	} {
 		for _, findings := range group {
 			for _, finding := range findings {
