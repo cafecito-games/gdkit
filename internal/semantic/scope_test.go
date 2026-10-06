@@ -647,6 +647,53 @@ func TestScopesComposeLocalMemberProjectAndEngineNamespaces(t *testing.T) {
 	}
 }
 
+func TestScopesResolveSameNamedEngineSingletonAsInstance(t *testing.T) {
+	source := sources(t, map[string]string{
+		"player.gd": "class_name Player\nfunc run():\n\tInput\n",
+	})
+	file := source.File("player.gd")
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeNamespaceEngine(t)))
+
+	binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "Input", 3), BindingEngineSingleton)
+	if binding.Type().Kind() != KindClass || binding.Type().Name() != "Input" || binding.Type().Meta() {
+		t.Fatalf("Input singleton type = %v %q (meta %t), want Input instance", binding.Type().Kind(), binding.Type().Name(), binding.Type().Meta())
+	}
+}
+
+func TestScopesKeepSameNamedSingletonUtilityCollisionUnknown(t *testing.T) {
+	builder := NewEngineBuilder()
+	for _, builtin := range []string{"int"} {
+		if err := builder.AddBuiltin(builtin); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, class := range []struct{ name, parent string }{
+		{name: "Object"},
+		{name: "Input", parent: "Object"},
+	} {
+		if err := builder.AddClass(class.name, class.parent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := builder.AddSingleton("Input", "Input"); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddUtility("Input", "int", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := sources(t, map[string]string{
+		"player.gd": "class_name Player\nfunc run():\n\tInput\n",
+	})
+	file := source.File("player.gd")
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), engine))
+
+	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "Input", 3), "singleton/utility collision")
+}
+
 func TestScopesKeepBuiltinTypeObjectsFoundButUnknown(t *testing.T) {
 	source := sources(t, map[string]string{
 		"player.gd": "class_name Player\nfunc run():\n\tint\n\tString\n\tCallable\n",
@@ -1089,12 +1136,16 @@ func scopeNamespaceEngine(t *testing.T) *Engine {
 		{name: "RefCounted", parent: "Object"},
 		{name: "Native", parent: "Object"},
 		{name: "Global", parent: "Object"},
+		{name: "Input", parent: "Object"},
 	} {
 		if err := builder.AddClass(class.name, class.parent); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := builder.AddSingleton("Single", "Native"); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddSingleton("Input", "Input"); err != nil {
 		t.Fatal(err)
 	}
 	if err := builder.AddSingleton("Clash", "Object"); err != nil {

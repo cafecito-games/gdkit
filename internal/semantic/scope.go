@@ -1395,11 +1395,19 @@ func (i *ScopeIndex) resolveEngineGlobal(scope *Scope, name string) BindingResul
 	}
 	engine := i.interfaces.engine
 	candidates := []Binding{}
-	if resolved := engine.ResolveType(name); resolved.Kind() != KindUnknown {
-		candidates = append(candidates, i.namespaceBinding(scope, "engine-type:"+name, BindingEngineType, name, "", engineTypeObjectType(name, resolved), nil, nil, 0, 0))
+	engineType := engine.ResolveType(name)
+	singleton, hasSingleton := engine.Singleton(name)
+	// Godot exposes globals such as Input and OS as singletons whose names and
+	// instance types match engine classes. Those two schema records describe the
+	// same global value, so preserve the singleton binding rather than treating
+	// the class object and singleton as competing categories. Other collisions
+	// remain unknown below.
+	sameNamedSingleton := hasSingleton && sameNamedEngineSingletonClass(name, engineType, singleton)
+	if engineType.Kind() != KindUnknown && !sameNamedSingleton {
+		candidates = append(candidates, i.namespaceBinding(scope, "engine-type:"+name, BindingEngineType, name, "", engineTypeObjectType(name, engineType), nil, nil, 0, 0))
 	}
-	if resolved, ok := engine.Singleton(name); ok {
-		candidates = append(candidates, i.namespaceBinding(scope, "engine-singleton:"+name, BindingEngineSingleton, name, "", resolved, nil, nil, 0, 0))
+	if hasSingleton {
+		candidates = append(candidates, i.namespaceBinding(scope, "engine-singleton:"+name, BindingEngineSingleton, name, "", singleton, nil, nil, 0, 0))
 	}
 	if utility, ok := engine.Utility(name); ok {
 		member := engineMethodMember(utility)
@@ -1419,6 +1427,11 @@ func (i *ScopeIndex) resolveEngineGlobal(scope *Scope, name string) BindingResul
 	default:
 		return unknownBinding(fmt.Sprintf("retained engine global %q is claimed by multiple categories", name))
 	}
+}
+
+func sameNamedEngineSingletonClass(name string, engineType, singleton Type) bool {
+	return engineType.Kind() == KindClass && engineType.Name() == name && !engineType.Meta() &&
+		singleton.Kind() == KindClass && singleton.Name() == name && !singleton.Meta()
 }
 
 func classObjectType(resolved Type) Type {
