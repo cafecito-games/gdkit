@@ -189,6 +189,38 @@ func TestAnalyzerReducesIdentifiersDeferredHeadersAndSuper(t *testing.T) {
 	}
 }
 
+func TestAnalyzerReducesDeferredMemberHeaders(t *testing.T) {
+	source := sources(t, map[string]string{
+		"members.gd": "class_name Members\nconst LIMIT := 1 + 2\nvar inferred := 1 + 2\nvar dynamic = 1 + 2\nfunc values(other: Members):\n\tvar bare_inferred := inferred\n\tvar self_inferred := self.inferred\n\tvar other_inferred := other.inferred\n\tvar bare_limit := LIMIT\n\tvar self_limit := self.LIMIT\n\tvar other_limit := other.LIMIT\n\tvar bare_dynamic := dynamic\n\tvar self_dynamic := self.dynamic\n\tvar other_dynamic := other.dynamic\n",
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	analyzer := NewAnalyzer(source, reducerTestEngine(t))
+	file := source.File("members.gd")
+	for _, testCase := range []struct {
+		name string
+		want Type
+	}{
+		{name: "bare_inferred", want: Builtin("int")},
+		{name: "self_inferred", want: Builtin("int")},
+		{name: "other_inferred", want: Builtin("int")},
+		{name: "bare_limit", want: Builtin("int")},
+		{name: "self_limit", want: Builtin("int")},
+		{name: "other_limit", want: Builtin("int")},
+		{name: "bare_dynamic", want: Variant()},
+		{name: "self_dynamic", want: Variant()},
+		{name: "other_dynamic", want: Variant()},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
+			if !got.Equal(testCase.want) {
+				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
+			}
+		})
+	}
+}
+
 func TestAnalyzerReducesMembersCallsAndDeferredSpecials(t *testing.T) {
 	source := sources(t, map[string]string{
 		"calls.gd": "class_name Calls\nvar node: Node\nvar dynamic: Variant\nvar callable: Callable\nfunc user() -> float:\n\tpass\nfunc omitted():\n\tpass\nfunc run():\n\tvar member := node.engine_method\n\tvar engine_property := node.engine_property\n\tvar engine_call := node.engine_method()\n\tvar user_call := user()\n\tvar omitted_call := omitted()\n\tvar dynamic_member := dynamic.anything\n\tvar dynamic_call := dynamic()\n\tvar callable_call := callable()\n\tvar missing_member := node.missing\n\tvar unknown_receiver := missing.member\n\tvar meta_member := Node.missing\n\tvar unknown_argument := user(missing)\n\tvar special_call := preload(\"res://thing.gd\")\n\tvar load_call := load(\"res://thing.gd\")\n\tvar constructor_call := Node()\n",

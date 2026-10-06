@@ -390,19 +390,7 @@ func (a *Analyzer) reduceDeferredBinding(binding Binding, prior reductionResult,
 	declaration := binding.Declaration()
 	switch node := declaration.(type) {
 	case *ast.VariableDeclaration:
-		if node == nil {
-			return prior
-		}
-		if (node.Constant || node.Inferred) && node.Type == "" {
-			if isNilNode(node.Value) {
-				return prior
-			}
-			return knownReduction(a.reduceChild(node.Value, context, request).typeValue)
-		}
-		if node.Value != nil && node.Type == "" {
-			return knownReduction(Variant())
-		}
-		return prior
+		return a.reduceDeferredVariable(node, prior, context, request)
 	case *ast.FunctionDeclaration:
 		return a.reduceInferredParameter(node.Parameters, binding, prior, context, request)
 	case *ast.LambdaExpression:
@@ -410,6 +398,22 @@ func (a *Analyzer) reduceDeferredBinding(binding Binding, prior reductionResult,
 	default:
 		return prior
 	}
+}
+
+func (a *Analyzer) reduceDeferredVariable(node *ast.VariableDeclaration, prior reductionResult, context reductionContext, request *reductionRequest) reductionResult {
+	if node == nil {
+		return prior
+	}
+	if (node.Constant || node.Inferred) && node.Type == "" {
+		if isNilNode(node.Value) {
+			return prior
+		}
+		return knownReduction(a.reduceChild(node.Value, context, request).typeValue)
+	}
+	if node.Value != nil && node.Type == "" {
+		return knownReduction(Variant())
+	}
+	return prior
 }
 
 func (a *Analyzer) reduceInferredParameter(parameters []ast.Parameter, binding Binding, prior reductionResult, context reductionContext, request *reductionRequest) reductionResult {
@@ -608,7 +612,25 @@ func (a *Analyzer) reduceMember(expression *ast.MemberExpression, context reduct
 		return unknownReduction("interface set is unavailable while resolving member")
 	}
 	resolved := a.interfaces.LookupMember(receiver.typeValue, expression.Property)
-	return reduceMemberLookup(receiver.typeValue, expression.Property, resolved)
+	result := reduceMemberLookup(receiver.typeValue, expression.Property, resolved)
+	if result.typeValue.Kind() != KindUnknown || result.member == nil {
+		return result
+	}
+	if result.member.Kind() != MemberVariable && result.member.Kind() != MemberConstant {
+		return result
+	}
+	return a.reduceDeferredMember(*result.member, result, context, request)
+}
+
+func (a *Analyzer) reduceDeferredMember(member Member, prior reductionResult, context reductionContext, request *reductionRequest) reductionResult {
+	if a == nil || a.scopes == nil {
+		return prior
+	}
+	declaration, ok := a.scopes.memberDeclaration(member).(*ast.VariableDeclaration)
+	if !ok {
+		return prior
+	}
+	return a.reduceDeferredVariable(declaration, prior, context, request)
 }
 
 // reduceMemberLookup is the reducer's one tri-state boundary for ordinary
