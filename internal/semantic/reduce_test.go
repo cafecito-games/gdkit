@@ -274,6 +274,7 @@ func TestAnalyzerReducesMembersCallsAndDeferredSpecials(t *testing.T) {
 		{name: "engine_property", want: Builtin("int")},
 		{name: "engine_call", want: Builtin("int")},
 		{name: "user_call", want: Builtin("float")},
+		{name: "omitted_call", want: Void()},
 		{name: "dynamic_member", want: Variant()},
 		{name: "dynamic_call", want: Variant()},
 	} {
@@ -284,7 +285,7 @@ func TestAnalyzerReducesMembersCallsAndDeferredSpecials(t *testing.T) {
 			}
 		})
 	}
-	for _, name := range []string{"omitted_call", "callable_call", "missing_member", "unknown_receiver", "meta_member", "unknown_argument", "special_call", "load_call", "constructor_call"} {
+	for _, name := range []string{"callable_call", "missing_member", "unknown_receiver", "meta_member", "unknown_argument", "special_call", "load_call", "constructor_call"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
 			if got.Kind() != KindUnknown || got.Reason() == "" {
