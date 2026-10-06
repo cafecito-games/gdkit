@@ -717,6 +717,50 @@ func TestAnalyzerReducesDeferredHeadersUnderTheBaseOverlay(t *testing.T) {
 	}
 }
 
+func TestAnalyzerNarrowingKeepsDeferredInitializersAndDefaultsAtBase(t *testing.T) {
+	source := sources(t, map[string]string{
+		"deferred_narrow.gd": "class_name DeferredNarrow\nfunc run(value: Variant):\n\tif value is Node:\n\t\tvar inferred := value\n\t\tvar through_inferred := inferred\n\t\tvar closure := func(default := value): return default\n",
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	file := source.File("deferred_narrow.gd")
+	inferredValue := reducerVariableValue(t, file, "inferred")
+	lambda, ok := reducerVariableValue(t, file, "closure").(*ast.LambdaExpression)
+	if !ok || len(lambda.Parameters) != 1 || lambda.Parameters[0].Default == nil {
+		t.Fatalf("real parser fixture lambda = %#v, want one retained default", lambda)
+	}
+	defaultValue := lambda.Parameters[0].Default
+	analyzer := NewAnalyzer(source, reducerTestEngine(t))
+	if got := analyzer.TypeOf(reducerVariableValue(t, file, "through_inferred")); !got.Equal(Variant()) {
+		t.Fatalf("deferred initializer under guard = %s (%q), want base Variant", got, got.Reason())
+	}
+	if got := analyzer.TypeOf(lambda); !got.Equal(Callable()) {
+		t.Fatalf("lambda with deferred default = %s (%q), want Callable", got, got.Reason())
+	}
+	for _, expression := range []ast.Expression{inferredValue, defaultValue} {
+		scope, ok := analyzer.scopes.ScopeAt(expression)
+		if !ok {
+			t.Fatalf("deferred expression %T has no recorded scope", expression)
+		}
+		overlay := analyzer.narrow.tokenAt(expression)
+		if overlay.overlay == nil {
+			t.Fatalf("deferred expression %T was not written under the guarded source view", expression)
+		}
+		baseKey := reductionKey{expression: expression, scope: scope.ID(), token: reductionContextToken{}}
+		overlayKey := reductionKey{expression: expression, scope: scope.ID(), token: overlay}
+		if _, found := analyzer.cache[baseKey]; !found {
+			t.Fatalf("deferred expression %T was not reduced under base context", expression)
+		}
+		if _, found := analyzer.cache[overlayKey]; found {
+			t.Fatalf("deferred expression %T inherited a guarded overlay", expression)
+		}
+	}
+	if got := analyzer.TypeOf(inferredValue); !got.Equal(reducerTestEngine(t).Class("Node")) {
+		t.Fatalf("direct source query of guarded initializer = %s (%q), want Node", got, got.Reason())
+	}
+}
+
 func TestAnalyzerDoesNotPublishCycleTaintedLambdaDefaults(t *testing.T) {
 	source := sources(t, map[string]string{
 		"cycles.gd": "class_name Cycles\nfunc run():\n\tvar holder := missing\n\tvar closure := func(default := holder): return default\n\tvar observed := holder\n",
