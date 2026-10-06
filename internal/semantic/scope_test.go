@@ -353,6 +353,30 @@ func TestScopesFailClosedAfterUnmodelledStatementBoundary(t *testing.T) {
 	scopeRequireUnknown(t, scopes, use, "unmodelled statement continuation")
 }
 
+func TestScopesFailClosedAfterSharedUnmodelledStatementBoundary(t *testing.T) {
+	source := sources(t, map[string]string{
+		"player.gd": "class_name Player\nfunc first():\n\tpass\nfunc second():\n\tpass\n",
+	})
+	file := source.File("player.gd")
+	first := file.Statements[1].(*ast.FunctionDeclaration)
+	second := file.Statements[2].(*ast.FunctionDeclaration)
+	shared := &ast.Directive{Name: "unexpected"}
+	firstUse := &ast.Identifier{Name: "Node"}
+	secondUse := &ast.Identifier{Name: "Node"}
+	first.Body = []ast.Statement{
+		shared,
+		&ast.ExpressionStatement{Expression: firstUse},
+	}
+	second.Body = []ast.Statement{
+		shared,
+		&ast.ExpressionStatement{Expression: secondUse},
+	}
+
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
+	scopeRequireUnknown(t, scopes, firstUse, "first shared unmodelled statement continuation")
+	scopeRequireUnknown(t, scopes, secondUse, "second shared unmodelled statement continuation")
+}
+
 func TestScopesUseStaticContextForConstantInitializers(t *testing.T) {
 	source := sources(t, map[string]string{
 		"player.gd": "class_name Player\nvar field: int\nconst SELF_VALUE = self\nconst FIELD_VALUE = field\nfunc run():\n\tconst LOCAL_SELF = self\n\tconst LOCAL_FIELD = field\nfunc values(parameter):\n\tvar mutable = 1\n\tconst FROM_PARAMETER = parameter\n\tconst FROM_MUTABLE = mutable\n\tconst FIRST = 1\n\tconst FROM_CONST = FIRST\n",

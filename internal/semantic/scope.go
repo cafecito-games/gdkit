@@ -822,7 +822,14 @@ func (i *ScopeIndex) unsupportedStatementContinuation(scope *Scope, statement as
 
 func (i *ScopeIndex) ambiguousSharedStatement(scope *Scope, statement ast.Statement) *Scope {
 	names := []string{}
+	// Keep the modeled cases aligned with visitStatement. A shared unmodeled
+	// statement could introduce an unknown binding, so its continuation cannot
+	// safely retain the incoming scope.
 	switch node := statement.(type) {
+	case *ast.ExpressionStatement, *ast.Assignment, *ast.ReturnStatement,
+		*ast.IfStatement, *ast.WhileStatement, *ast.ForStatement, *ast.MatchStatement,
+		*ast.KeywordStatement, *ast.Comment, *ast.Annotation:
+		return scope
 	case *ast.VariableDeclaration:
 		names = append(names, node.Name)
 	case *ast.FunctionDeclaration:
@@ -839,6 +846,8 @@ func (i *ScopeIndex) ambiguousSharedStatement(scope *Scope, statement ast.Statem
 				names = append(names, member.Name)
 			}
 		}
+	default:
+		return i.unsupportedStatementContinuation(scope, statement)
 	}
 	current := scope
 	seen := map[string]bool{}
