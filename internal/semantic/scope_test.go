@@ -793,7 +793,8 @@ func TestScopesFailClosedForInvalidSuperContexts(t *testing.T) {
 
 func TestScopesAreDeterministicImmutableConcurrentAndSnapshotBound(t *testing.T) {
 	files := map[string]string{
-		"player.gd": "class_name Player\nfunc run(value: int):\n\tvar local = value\n\tlocal\n",
+		"global.gd": "class_name Global\n",
+		"player.gd": "class_name Player\nvar field: int\nfunc run(value: int):\n\tvar local = value\n\tlocal\n\tfield\n\tGlobal\n\tNode\n\tself\n",
 	}
 	firstSource := sources(t, files)
 	firstIndex := BuildIndex(firstSource)
@@ -811,7 +812,12 @@ func TestScopesAreDeterministicImmutableConcurrentAndSnapshotBound(t *testing.T)
 		t.Fatal("building scopes mutated the parsed AST")
 	}
 	secondScopes := BuildScopes(interfaces)
-	firstUse := scopeIdentifierAt(t, firstSource.File("player.gd"), "local", 4)
+	firstFile := firstSource.File("player.gd")
+	firstUse := scopeIdentifierAt(t, firstFile, "local", 5)
+	memberUse := scopeIdentifierAt(t, firstFile, "field", 6)
+	projectUse := scopeIdentifierAt(t, firstFile, "Global", 7)
+	engineUse := scopeIdentifierAt(t, firstFile, "Node", 8)
+	selfUse := scopeIdentifierAt(t, firstFile, "self", 9)
 	firstBinding := scopeRequireBinding(t, firstScopes, firstUse, BindingLocal)
 	secondBinding := scopeRequireBinding(t, secondScopes, firstUse, BindingLocal)
 	if firstBinding.ID() == secondBinding.ID() {
@@ -821,15 +827,22 @@ func TestScopesAreDeterministicImmutableConcurrentAndSnapshotBound(t *testing.T)
 		t.Fatalf("repeated scope build changed binding topology: %#v / %#v", firstBinding, secondBinding)
 	}
 
-	firstIndex.Classes["player.gd"].Declarations[0].Name = "mutated"
+	firstIndex.Classes["player.gd"].Declarations[0].Name = "mutated-member"
+	firstIndex.byClassName["Global"] = firstIndex.Classes["player.gd"]
 	if again := scopeRequireBinding(t, firstScopes, firstUse, BindingLocal); again.Name() != "local" {
 		t.Fatalf("caller-owned index mutation changed published local binding to %q", again.Name())
+	}
+	if again := scopeRequireBinding(t, firstScopes, memberUse, BindingMember); again.Name() != "field" || again.ClassID() != "player.gd" {
+		t.Fatalf("caller-owned index mutation changed published member binding to %#v", again)
+	}
+	if again := scopeRequireBinding(t, firstScopes, projectUse, BindingProjectClass); again.ClassID() != "global.gd" {
+		t.Fatalf("caller-owned index mutation changed published project global binding to %#v", again)
 	}
 
 	secondSource := sources(t, files)
 	secondInterfaces := BuildInterfaces(BuildIndex(secondSource), richInterfaceTestEngine(t))
 	secondSnapshot := BuildScopes(secondInterfaces)
-	secondUse := scopeIdentifierAt(t, secondSource.File("player.gd"), "local", 4)
+	secondUse := scopeIdentifierAt(t, secondSource.File("player.gd"), "local", 5)
 	if _, found := firstScopes.ScopeAt(secondUse); found {
 		t.Fatal("first scope index accepted a node from a separately parsed snapshot")
 	}
@@ -840,17 +853,31 @@ func TestScopesAreDeterministicImmutableConcurrentAndSnapshotBound(t *testing.T)
 	const readers = 24
 	const readsPerReader = 100
 	problems := make(chan string, readers)
+	lookups := []struct {
+		name       string
+		identifier *ast.Identifier
+		kind       BindingKind
+		classID    string
+	}{
+		{name: "local", identifier: firstUse, kind: BindingLocal, classID: "player.gd"},
+		{name: "member", identifier: memberUse, kind: BindingMember, classID: "player.gd"},
+		{name: "project", identifier: projectUse, kind: BindingProjectClass, classID: "global.gd"},
+		{name: "engine", identifier: engineUse, kind: BindingEngineType},
+		{name: "self", identifier: selfUse, kind: BindingSelf, classID: "player.gd"},
+	}
 	var readersDone sync.WaitGroup
 	readersDone.Add(readers)
 	for reader := 0; reader < readers; reader++ {
 		go func() {
 			defer readersDone.Done()
 			for attempt := 0; attempt < readsPerReader; attempt++ {
-				result := firstScopes.Resolve(firstUse)
-				binding, found := result.Binding()
-				if result.State() != LookupFound || !found || binding.Kind() != BindingLocal || binding.Name() != "local" {
-					problems <- "concurrent read observed an incomplete lexical binding"
-					return
+				for _, lookup := range lookups {
+					result := firstScopes.Resolve(lookup.identifier)
+					binding, found := result.Binding()
+					if result.State() != LookupFound || !found || binding.Kind() != lookup.kind || binding.Name() != lookup.identifier.Name || (lookup.classID != "" && binding.ClassID() != lookup.classID) {
+						problems <- fmt.Sprintf("concurrent %s lookup observed an incomplete binding", lookup.name)
+						return
+					}
 				}
 			}
 		}()

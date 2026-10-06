@@ -99,11 +99,11 @@ type ScopeID struct {
 func (id ScopeID) String() string { return fmt.Sprintf("scope:%d", id.ordinal) }
 
 // Binding records one resolved identifier without mutating the parsed AST.
-// Declaration is retained for lexical bindings and user members when the
-// snapshot owns their AST header; namespace origins with no retained header
-// leave it nil. Slot distinguishes AST-owned records such as parameters, loop
-// variables, setter parameters, and match cases that do not each have a
-// declaration statement.
+// ID is its only identity. Declaration is retained for lexical bindings and
+// user members when the snapshot owns their AST header; namespace origins with
+// no retained header leave it nil. Slot is positional metadata for AST-owned
+// lexical records such as parameters, loop variables, setter parameters, and
+// match cases that do not each have a declaration statement.
 type Binding struct {
 	id          BindingID
 	kind        BindingKind
@@ -143,7 +143,8 @@ func (b Binding) ScopeID() ScopeID { return b.scopeID }
 // manifest-backed autoloads, and global class-name declarations.
 func (b Binding) Declaration() ast.Node { return b.declaration }
 
-// Slot distinguishes bindings held by one AST record.
+// Slot is positional metadata for an AST-owned lexical binding. It is neither
+// globally unique nor part of binding identity; use ID to distinguish bindings.
 func (b Binding) Slot() int { return b.slot }
 
 // Line and Column locate the declaration or retained producer when available.
