@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cafecito-games/gdkit/internal/semantic"
 	"github.com/cafecito-games/gdkit/project"
 )
 
@@ -114,6 +115,142 @@ func TestDriverStampsRulePathAndSeverity(t *testing.T) {
 	if got.Rule != "max-line-length" || got.Path != "a.gd" || got.Severity != SeverityError {
 		t.Errorf("not stamped: %+v", got)
 	}
+}
+
+func TestSemanticAnalyzerConstructionFollowsEnabledCollectionCapability(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        Config
+		rules         []Rule
+		wantConstruct int
+		wantSchema    bool
+	}{
+		{
+			name:   "inert collection rule",
+			config: DefaultConfig(),
+			rules:  []Rule{typingRule{rule: ruleRequireTypedCollection}},
+		},
+		{
+			name: "disabled collection rule",
+			config: func() Config {
+				config := DefaultConfig()
+				config.Enable = []string{ruleRequireTypedCollection}
+				config.Disable = []string{ruleRequireTypedCollection}
+				return config
+			}(),
+			rules: []Rule{typingRule{rule: ruleRequireTypedCollection}},
+		},
+		{
+			name: "only another typing rule enabled",
+			config: func() Config {
+				config := DefaultConfig()
+				config.Enable = []string{ruleRequireReturnType}
+				return config
+			}(),
+			rules: []Rule{
+				typingRule{rule: ruleRequireReturnType},
+				typingRule{rule: ruleRequireTypedCollection},
+			},
+		},
+		{
+			name: "enabled collection rule",
+			config: func() Config {
+				config := DefaultConfig()
+				config.Enable = []string{ruleRequireTypedCollection}
+				return config
+			}(),
+			rules:         []Rule{typingRule{rule: ruleRequireTypedCollection}},
+			wantConstruct: 1,
+			wantSchema:    true,
+		},
+		{
+			name: "collection through enable new rules",
+			config: func() Config {
+				config := DefaultConfig()
+				config.EnableNewRules = true
+				return config
+			}(),
+			rules:         []Rule{typingRule{rule: ruleRequireTypedCollection}},
+			wantConstruct: 1,
+			wantSchema:    true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			linter, err := newLinter(test.config, test.rules)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := linter.newSemanticAnalyzer
+			constructed := 0
+			linter.newSemanticAnalyzer = func(snapshot *project.Snapshot, engine *semantic.Engine) *semantic.Analyzer {
+				constructed++
+				return original(snapshot, engine)
+			}
+			snapshot := semanticSnapshotFiles(t, map[string]string{
+				"first.gd":  "var first := [1]\n",
+				"second.gd": "var second := [2]\n",
+			})
+			report := linter.Lint(snapshot)
+			if constructed != test.wantConstruct {
+				t.Fatalf("analyzer constructions = %d, want %d", constructed, test.wantConstruct)
+			}
+			if (report.EngineSchema != nil) != test.wantSchema {
+				t.Fatalf("engine_schema = %+v, want present=%t", report.EngineSchema, test.wantSchema)
+			}
+		})
+	}
+}
+
+func TestSemanticAnalyzerIsRunLocalAcrossSnapshots(t *testing.T) {
+	config := DefaultConfig()
+	config.Enable = []string{ruleRequireTypedCollection}
+	linter, err := newLinter(config, []Rule{typingRule{rule: ruleRequireTypedCollection}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := semanticSnapshot(t, "var values := [1]\n")
+	second := semanticSnapshot(t, "var values := [\"text\"]\n")
+	original := linter.newSemanticAnalyzer
+	var seen []*project.Snapshot
+	linter.newSemanticAnalyzer = func(snapshot *project.Snapshot, engine *semantic.Engine) *semantic.Analyzer {
+		seen = append(seen, snapshot)
+		return original(snapshot, engine)
+	}
+
+	firstReport := linter.Lint(first)
+	secondReport := linter.Lint(second)
+	if len(seen) != 2 || seen[0] != first || seen[1] != second {
+		t.Fatalf("analyzer snapshots = %p, want first %p then second %p", seen, first, second)
+	}
+	if linter.context.analyzer != nil {
+		t.Fatal("linter retained a snapshot-specific analyzer after Lint")
+	}
+	if got := firstReport.Diagnostics; len(got) != 1 || got[0].Message != "Array has no element type; write Array[int]" {
+		t.Fatalf("first report = %+v", got)
+	}
+	if got := secondReport.Diagnostics; len(got) != 1 || got[0].Message != "Array has no element type; write Array[String]" {
+		t.Fatalf("second report = %+v", got)
+	}
+}
+
+func semanticSnapshot(t *testing.T, source string) *project.Snapshot {
+	return semanticSnapshotFiles(t, map[string]string{"a.gd": source})
+}
+
+func semanticSnapshotFiles(t *testing.T, files map[string]string) *project.Snapshot {
+	t.Helper()
+	root := t.TempDir()
+	for path, source := range files {
+		if err := os.WriteFile(filepath.Join(root, path), []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: []string{"."}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }
 
 func TestDriverAppliesSeverityOverride(t *testing.T) {

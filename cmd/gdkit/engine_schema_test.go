@@ -45,6 +45,39 @@ func TestRunLintJSONReportsExplicitEngineSchemaProvenance(t *testing.T) {
 	}
 }
 
+func TestRunLintJSONReportsEnabledCollectionInferenceAndEmbeddedProvenance(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", "var lookup := {\"a\": 1}\n")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d, want 1: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %s", stderr.String())
+	}
+	var report lint.Report
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v (%s)", err, stdout.String())
+	}
+	if report.EngineSchema == nil || report.EngineSchema.Source != engineschema.SourceEmbedded ||
+		report.EngineSchema.Version != (engineschema.Version{Major: 4, Minor: 7, Patch: 2}) {
+		t.Fatalf("engine_schema = %+v", report.EngineSchema)
+	}
+	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Message != "Dictionary has no element type; write Dictionary[String, int]" {
+		t.Fatalf("diagnostics = %+v", report.Diagnostics)
+	}
+}
+
+func TestRunLintEnabledCollectionRejectsUnsupportedMinorAsJSON(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, "player.gd", "var items := [1]\n")
+	writeCLIFile(t, root, ".gdkit/lint.json", `{"godot_version":"4.6"}`)
+	body := runFailure(t, "lint", "check", "--format", "json", "--enable", "require-typed-collection", root)
+	if body.Kind != "config.invalid" || !strings.Contains(body.Message, "4.6") || !strings.Contains(body.Message, "extension_api") {
+		t.Fatalf("failure = %+v", body)
+	}
+}
+
 func TestRunLintExtensionAPIFailuresUseJSONKindsPathsAndEmptyStdout(t *testing.T) {
 	fixture := readCLIEngineFixture(t)
 	var mismatched map[string]any

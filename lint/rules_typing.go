@@ -6,6 +6,7 @@ import (
 	"github.com/cafecito-games/gdparser/ast"
 	"github.com/cafecito-games/gdparser/token"
 
+	"github.com/cafecito-games/gdkit/internal/semantic"
 	"github.com/cafecito-games/gdkit/internal/versiongate"
 	"github.com/cafecito-games/gdkit/project"
 )
@@ -73,6 +74,11 @@ func (r typingRule) Name() string { return r.rule }
 
 func (r typingRule) PendingSince() string { return "0.5.0" }
 
+// NeedsSemanticAnalysis is true only for the value-sensitive collection rule.
+// The other values of this shared type remain syntactic and must not make a
+// project select an engine schema or build an analyzer.
+func (r typingRule) NeedsSemanticAnalysis() bool { return r.rule == ruleRequireTypedCollection }
+
 func (r typingRule) Check(context *Context, script *project.Script) []Diagnostic {
 	var found []Diagnostic
 	for _, site := range collectTypingSites(script) {
@@ -88,9 +94,17 @@ func (r typingRule) Check(context *Context, script *project.Script) []Diagnostic
 		if context.exempt(r.rule, site.enclosing) {
 			continue
 		}
+		message := site.message
+		if site.literal != nil {
+			var reported bool
+			message, reported = populatedCollectionMessage(context, site.literal)
+			if !reported {
+				continue
+			}
+		}
 		start, end := site.span.Start, site.span.End
 		found = append(found, Diagnostic{
-			Message:   site.message,
+			Message:   message,
 			Line:      start.Line,
 			Column:    runeColumn(script, start),
 			EndLine:   end.Line,
@@ -117,6 +131,10 @@ type typingSite struct {
 	floor versiongate.Version
 	// span is what to underline.
 	span token.Span
+	// literal is a direct populated collection initializer. Empty literals and
+	// written annotations stay entirely syntactic; this field asks the one
+	// value-sensitive consumer to query the run's analyzer exactly once.
+	literal ast.Expression
 }
 
 // annotated reports whether a declaration carries a static type. ":=" inference
@@ -267,59 +285,57 @@ func (c *typingCollector) variable(declaration *ast.VariableDeclaration, enclosi
 	// A written annotation is the whole story when there is one: "var x: Array =
 	// []" is one bare collection, reported from the annotation, not two.
 	if declaration.Type == "" {
-		c.emptyCollectionLiteral(declaration.Value, enclosing)
+		c.collectionLiteral(declaration.Value, enclosing)
 	}
 }
 
-// emptyCollectionLiteral records a declaration whose collection type comes from
-// an empty literal. "var items := []" and "var lookup := {}" are the same defect
-// as a written bare "Array" or "Dictionary" — the declaration is an untyped
-// container either way — and they are the commoner spelling, so a rule that said
-// nothing about them would not mean a project's collections are typed.
-//
-// Only a syntactically empty literal is in scope. "[1, 2, 3]" is an untyped
-// Array too, but naming its element type means typing every element and deciding
-// what their common type is, which is the expression inference this package does
-// not have and should not grow. An empty literal needs none of it: there is
-// nothing to infer from, so the element type can only come from the author, and
-// the collection it declares is known from the literal's own shape.
-//
-// Nothing else is examined. "var x := build()" and "var x := other" may well be
-// collections, but deciding that is the same inference problem.
-func (c *typingCollector) emptyCollectionLiteral(value ast.Expression, enclosing string) {
+// collectionLiteral records a declaration whose collection type comes directly
+// from a literal. Empty literals retain the existing syntactic diagnostic.
+// Populated literals carry their own span to the rule, which can ask the
+// run-local analyzer for exactly the outer literal and stay silent when it is
+// not conclusive. Calls, references, and all other initializers stay out of
+// scope: their result is not a literal the author can annotate directly.
+func (c *typingCollector) collectionLiteral(value ast.Expression, enclosing string) {
 	switch literal := value.(type) {
 	case *ast.ArrayLiteral:
 		if len(literal.Elements) == 0 {
 			c.collection("Array", literal.Span(), enclosing)
+			return
 		}
+		c.populatedCollection("Array", literal, literal.Span(), enclosing)
 	case *ast.DictionaryLiteral:
 		if len(literal.Entries) == 0 {
 			c.collection("Dictionary", literal.Span(), enclosing)
+			return
 		}
+		c.populatedCollection("Dictionary", literal, literal.Span(), enclosing)
 	}
+}
+
+func (c *typingCollector) populatedCollection(typeName string, literal ast.Expression, span token.Span, enclosing string) {
+	floor, _, ok := collectionSuggestion(typeName)
+	if !ok {
+		return
+	}
+	c.add(typingSite{
+		rule:      ruleRequireTypedCollection,
+		enclosing: enclosing,
+		floor:     floor,
+		span:      span,
+		literal:   literal,
+	})
 }
 
 // collection records a bare Array or Dictionary, whether it was written as an
 // annotation — on a variable, a parameter, a return type, or a loop variable —
-// or inferred from an empty literal by emptyCollectionLiteral.
+// or inferred from an empty literal by collectionLiteral.
 //
 // The span is the caller's, so a finding underlines whichever of the two the
 // reader has to change: the annotation when one is written, the literal when the
 // type came from it.
 func (c *typingCollector) collection(typeName string, span token.Span, enclosing string) {
-	// The floor and the typed form travel together: they differ per collection,
-	// and splitting them across a switch and a lookup table invites one to gain
-	// an entry the other lacks.
-	var (
-		floor versiongate.Version
-		form  string
-	)
-	switch typeName {
-	case "Array":
-		floor, form = godot40, "Array[T]"
-	case "Dictionary":
-		floor, form = godot44, "Dictionary[K, V]"
-	default:
+	floor, form, ok := collectionSuggestion(typeName)
+	if !ok {
 		return
 	}
 	c.add(typingSite{
@@ -329,6 +345,139 @@ func (c *typingCollector) collection(typeName string, span token.Span, enclosing
 		floor:     floor,
 		span:      span,
 	})
+}
+
+// collectionSuggestion keeps each collection's syntax floor coupled to its
+// generic fallback spelling. A populated literal and a written bare
+// annotation therefore cannot drift onto different version policies.
+func collectionSuggestion(typeName string) (versiongate.Version, string, bool) {
+	switch typeName {
+	case "Array":
+		return godot40, "Array[T]", true
+	case "Dictionary":
+		return godot44, "Dictionary[K, V]", true
+	default:
+		return versiongate.Version{}, "", false
+	}
+}
+
+// populatedCollectionMessage classifies only a direct literal's one reduced
+// result. Unknown is deliberately silent: a generic suggestion would conceal
+// an unavailable semantic fact as though the container were confidently known.
+func populatedCollectionMessage(context *Context, literal ast.Expression) (string, bool) {
+	if context == nil || context.analyzer == nil {
+		return "", false
+	}
+	return collectionTypeMessage(context.Engine(), context.analyzer.TypeOf(literal))
+}
+
+func collectionTypeMessage(engine *semantic.Engine, typeValue semantic.Type) (string, bool) {
+	switch typeValue.Kind() {
+	case semantic.KindUnknown:
+		return "", false
+	case semantic.KindArray:
+		element, typed := typeValue.Element()
+		if !typed {
+			return "Array has no element type; write Array[T]", true
+		}
+		spelling, status := sourceWritableType(engine, element)
+		switch status {
+		case sourceTypeWritable:
+			return fmt.Sprintf("Array has no element type; write Array[%s]", spelling), true
+		case sourceTypeUnknown:
+			return "", false
+		default:
+			return "Array has no element type; write Array[T]", true
+		}
+	case semantic.KindDictionary:
+		key, typedKey := typeValue.Key()
+		value, typedValue := typeValue.Value()
+		if !typedKey || !typedValue {
+			return "Dictionary has no element type; write Dictionary[K, V]", true
+		}
+		keySpelling, keyStatus := sourceWritableType(engine, key)
+		valueSpelling, valueStatus := sourceWritableType(engine, value)
+		if keyStatus == sourceTypeUnknown || valueStatus == sourceTypeUnknown {
+			return "", false
+		}
+		if keyStatus != sourceTypeWritable || valueStatus != sourceTypeWritable {
+			return "Dictionary has no element type; write Dictionary[K, V]", true
+		}
+		return fmt.Sprintf("Dictionary has no element type; write Dictionary[%s, %s]", keySpelling, valueSpelling), true
+	default:
+		return "", false
+	}
+}
+
+type sourceTypeStatus uint8
+
+const (
+	sourceTypeUnwritable sourceTypeStatus = iota
+	sourceTypeWritable
+	sourceTypeUnknown
+)
+
+// sourceWritableType accepts only grammar spellings independently proven by
+// the selected engine vocabulary. Nested typed collections are deliberately
+// excluded because GDScript cannot parse their spelling. Type.String cannot be
+// used: it also renders user classes, enums, meta types, and diagnostic
+// Unknowns.
+func sourceWritableType(engine *semantic.Engine, typeValue semantic.Type) (string, sourceTypeStatus) {
+	switch typeValue.Kind() {
+	case semantic.KindUnknown:
+		return "", sourceTypeUnknown
+	case semantic.KindVariant:
+		return "Variant", sourceTypeWritable
+	case semantic.KindCallable:
+		return "Callable", sourceTypeWritable
+	case semantic.KindSignal:
+		return "Signal", sourceTypeWritable
+	case semantic.KindBuiltin:
+		resolved := engine.ResolveType(typeValue.Name())
+		if resolved.Kind() == semantic.KindBuiltin && resolved.Equal(typeValue) {
+			return typeValue.Name(), sourceTypeWritable
+		}
+		return "", sourceTypeUnwritable
+	case semantic.KindClass:
+		if typeValue.Meta() {
+			return "", sourceTypeUnwritable
+		}
+		resolved := engine.Class(typeValue.Name())
+		if resolved.Kind() == semantic.KindClass && !resolved.Meta() && resolved.Equal(typeValue) {
+			return typeValue.Name(), sourceTypeWritable
+		}
+		return "", sourceTypeUnwritable
+	case semantic.KindArray, semantic.KindDictionary:
+		// GDScript does not accept a nested typed collection spelling. Keep a
+		// known outer collection actionable with its established generic form
+		// rather than suggesting Array[Array[T]] or Dictionary[K, Array[V]].
+		if nestedUnknownType(typeValue) {
+			return "", sourceTypeUnknown
+		}
+		return "", sourceTypeUnwritable
+	default:
+		return "", sourceTypeUnwritable
+	}
+}
+
+// nestedUnknownType preserves the rule's silence contract even when the
+// unknown component lives below an unspellable nested collection. It only
+// classifies Type's immutable container vocabulary; it does not invent a
+// nested spelling.
+func nestedUnknownType(typeValue semantic.Type) bool {
+	switch typeValue.Kind() {
+	case semantic.KindUnknown:
+		return true
+	case semantic.KindArray:
+		element, typed := typeValue.Element()
+		return typed && nestedUnknownType(element)
+	case semantic.KindDictionary:
+		key, typedKey := typeValue.Key()
+		value, typedValue := typeValue.Value()
+		return typedKey && typedValue && (nestedUnknownType(key) || nestedUnknownType(value))
+	default:
+		return false
+	}
 }
 
 func (c *typingCollector) functionScope(enclosing string, statements []ast.Statement) {
