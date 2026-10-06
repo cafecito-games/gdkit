@@ -118,6 +118,10 @@ func (r *reductionRequest) markFunctionCycle() {
 	if r == nil {
 		return
 	}
+	// Function re-entry occurs while return expressions are reducing. Mark
+	// those active expression keys too, so a locally usable result (such as a
+	// Callable lambda whose default recursed) never enters the shared cache.
+	r.markCycle()
 	if r.functionTainted == nil {
 		r.functionTainted = map[*ast.FunctionDeclaration]bool{}
 	}

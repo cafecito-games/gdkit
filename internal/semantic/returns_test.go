@@ -426,6 +426,62 @@ func TestAnalyzerFunctionReturnCacheIsSnapshotBoundAndRecursionSafe(t *testing.T
 	}
 }
 
+func TestAnalyzerFunctionReturnCyclesStayRequestLocal(t *testing.T) {
+	source := sources(t, map[string]string{
+		"function_cycles.gd": "class_name FunctionCycles\nfunc first():\n\treturn func(default_value := second()): pass\nfunc second():\n\treturn first()\nfunc run():\n\tvar first_result := first()\n\tvar second_result := second()\n",
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	file := source.File("function_cycles.gd")
+	first := returnTestFunction(t, file, "first")
+	second := returnTestFunction(t, file, "second")
+	if len(first.Body) != 1 || len(second.Body) != 1 {
+		t.Fatalf("real parser fixture function bodies = first:%#v second:%#v", first.Body, second.Body)
+	}
+	firstReturn, ok := first.Body[0].(*ast.ReturnStatement)
+	if !ok {
+		t.Fatalf("real parser fixture first statement = %T, want ReturnStatement", first.Body[0])
+	}
+	lambda, ok := firstReturn.Value.(*ast.LambdaExpression)
+	if !ok || len(lambda.Parameters) != 1 || lambda.Parameters[0].Default == nil {
+		t.Fatalf("real parser fixture first return = %#v, want lambda with one default", firstReturn.Value)
+	}
+	secondReturn, ok := second.Body[0].(*ast.ReturnStatement)
+	if !ok || secondReturn.Value == nil {
+		t.Fatalf("real parser fixture second statement = %#v, want value return", second.Body[0])
+	}
+	firstResult := reducerVariableValue(t, file, "first_result")
+	secondResult := reducerVariableValue(t, file, "second_result")
+
+	for _, testCase := range []struct {
+		name  string
+		order []ast.Expression
+	}{
+		{name: "first then second", order: []ast.Expression{firstResult, secondResult}},
+		{name: "second then first", order: []ast.Expression{secondResult, firstResult}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			analyzer := NewAnalyzer(source, reducerTestEngine(t))
+			for _, expression := range testCase.order {
+				if got := analyzer.TypeOf(expression); !got.Equal(Callable()) {
+					t.Fatalf("function cycle result = %s (%q), want Callable", got, got.Reason())
+				}
+			}
+			for _, expression := range []ast.Expression{lambda.Parameters[0].Default, secondReturn.Value} {
+				scope, ok := analyzer.scopes.ScopeAt(expression)
+				if !ok {
+					t.Fatalf("cycle expression has no recorded scope: %T", expression)
+				}
+				key := reductionKey{expression: expression, scope: scope.ID(), token: analyzer.narrow.tokenAt(expression)}
+				if _, ok := analyzer.cached(key); ok {
+					t.Fatalf("function-cycle expression %T was published to the completed cache", expression)
+				}
+			}
+		})
+	}
+}
+
 func TestAnalyzerUsesEachReturnExpressionsSourceBoundNarrowingToken(t *testing.T) {
 	source := sources(t, map[string]string{
 		"tokens.gd": "class_name Tokens\nfunc refined(value: Variant):\n\tif value is Sprite2D:\n\t\treturn value.sprite_only\n\telse:\n\t\treturn 1\nfunc deferred(value: Variant):\n\tif value is Sprite2D:\n\t\tvar captured := value.sprite_only\n\t\treturn captured\n\telse:\n\t\treturn 1\nfunc run():\n\tvar refined_result := refined(null)\n\tvar deferred_result := deferred(null)\n",
