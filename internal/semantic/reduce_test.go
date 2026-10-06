@@ -59,18 +59,33 @@ func TestAnalyzerReducesScalarAndCollectionLiterals(t *testing.T) {
 
 func TestAnalyzerFailsClosedForNonRepresentableCollectionComponents(t *testing.T) {
 	source := sources(t, map[string]string{
-		"collections.gd": "class_name Collections\nfunc returns_void() -> void:\n\tpass\nfunc run():\n\tvar void_array := [returns_void(), returns_void()]\n\tvar meta_array := [Node, Node]\n\tvar void_dictionary := {returns_void(): returns_void()}\n\tvar meta_dictionary := {Node: Node}\n",
+		"collections.gd": "class_name Collections\nenum Choice { READY }\nfunc returns_void() -> void:\n\tpass\nfunc run(choice: Choice):\n\tvar void_array := [returns_void(), returns_void()]\n\tvar meta_array := [Node, Node]\n\tvar void_dictionary := {returns_void(): returns_void()}\n\tvar meta_dictionary := {Node: Node}\n\tvar enum_array := [Choice, Choice]\n\tvar enum_dictionary := {Choice: Choice}\n\tvar enum_value_array := [choice, choice]\n\tvar enum_value_dictionary := {choice: choice}\n",
 	})
 	if failures := source.ParseFailures(); len(failures) != 0 {
 		t.Fatalf("real parser fixture failed: %v", failures)
 	}
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	file := source.File("collections.gd")
-	for _, name := range []string{"void_array", "meta_array", "void_dictionary", "meta_dictionary"} {
+	for _, name := range []string{"void_array", "meta_array", "void_dictionary", "meta_dictionary", "enum_array", "enum_dictionary"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
 			if got.Kind() != KindUnknown || got.Reason() == "" {
 				t.Fatalf("TypeOf(%s) = %s (%q), want reasoned Unknown", name, got, got.Reason())
+			}
+		})
+	}
+	enumValue := Enum("collections.gd.Choice")
+	for _, testCase := range []struct {
+		name string
+		want Type
+	}{
+		{name: "enum_value_array", want: reducerArray(enumValue)},
+		{name: "enum_value_dictionary", want: reducerDictionary(enumValue, enumValue)},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
+			if !got.Equal(testCase.want) {
+				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
 			}
 		})
 	}

@@ -260,6 +260,9 @@ func knownReduction(typeValue Type) reductionResult {
 }
 
 func memberReduction(member Member) reductionResult {
+	if member.Kind() == MemberEnum {
+		return unknownReduction(fmt.Sprintf("enum type value %q is deferred to #49", member.Name()))
+	}
 	copy := cloneMember(member)
 	return reductionResult{typeValue: copy.Type(), member: &copy}
 }
