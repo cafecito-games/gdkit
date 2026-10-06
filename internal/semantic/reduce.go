@@ -16,6 +16,7 @@ import (
 type Analyzer struct {
 	interfaces *InterfaceSet
 	scopes     *ScopeIndex
+	narrow     *narrowIndex
 	engine     *Engine
 	resources  ResourceResolver
 
@@ -31,13 +32,6 @@ type Analyzer struct {
 // ordinary cache answer merely because it wraps the same Scope.
 type reductionContextToken struct {
 	overlay *reductionOverlay
-}
-
-// reductionOverlay carries no flow facts until #50 owns them, but it must stay
-// non-zero-sized: pointers to separate zero-sized allocations may compare
-// equal, which would collapse distinct overlay cache identities.
-type reductionOverlay struct {
-	_ byte
 }
 
 type reductionContext struct {
@@ -87,6 +81,7 @@ func NewAnalyzer(source SourceSet, engine *Engine) *Analyzer {
 	index := BuildIndex(source)
 	analyzer.interfaces = BuildInterfaces(index, engine)
 	analyzer.scopes = BuildScopes(analyzer.interfaces)
+	analyzer.narrow = newNarrowIndex(analyzer.interfaces, analyzer.scopes)
 	return analyzer
 }
 
@@ -110,7 +105,11 @@ func (a *Analyzer) TypeOf(expression ast.Expression) Type {
 	if !ok {
 		return Unknown("expression is not indexed by this source snapshot")
 	}
-	return a.typeOfIn(expression, scope, reductionContextToken{}).typeValue
+	token := reductionContextToken{}
+	if a.narrow != nil {
+		token = a.narrow.tokenAt(expression)
+	}
+	return a.typeOfIn(expression, scope, token).typeValue
 }
 
 // typeOfIn is the internal context-aware reducer seam for #50. The supplied
@@ -303,14 +302,28 @@ func (a *Analyzer) reduceChild(expression ast.Expression, parent reductionContex
 	if !ok {
 		return unknownReduction("expression is not indexed by this source snapshot")
 	}
-	return a.reduce(expression, reductionContext{scope: scope, token: parent.token}, request)
+	token := parent.token
+	if a.narrow != nil {
+		token = a.narrow.childToken(expression, parent.token)
+	}
+	return a.reduce(expression, reductionContext{scope: scope, token: token}, request)
 }
 
 // reduceDeferredChild evaluates a retained declaration/default under its own
 // recorded lexical scope and the immutable base view. A future flow overlay is
 // attached to a use, never to a declaration written elsewhere.
 func (a *Analyzer) reduceDeferredChild(expression ast.Expression, request *reductionRequest) reductionResult {
-	return a.reduceChild(expression, reductionContext{}, request)
+	if isNilNode(expression) {
+		return unknownReduction(unavailableExpressionReason(expression))
+	}
+	if a == nil || a.scopes == nil {
+		return unknownReduction("scope index is unavailable")
+	}
+	scope, ok := a.scopes.ScopeAt(expression)
+	if !ok {
+		return unknownReduction("expression is not indexed by this source snapshot")
+	}
+	return a.reduce(expression, reductionContext{scope: scope}, request)
 }
 
 func (a *Analyzer) reduceExpression(expression ast.Expression, context reductionContext, request *reductionRequest) reductionResult {
@@ -409,9 +422,21 @@ func (a *Analyzer) reduceIdentifier(identifier *ast.Identifier, context reductio
 			if binding.Kind() == BindingLanguageSpecial {
 				result.special = binding.Name()
 			}
-			return result
+		} else {
+			result = a.reduceDeferredBinding(binding, result, request)
 		}
-		return a.reduceDeferredBinding(binding, result, request)
+		if a.narrow != nil && narrowableBinding(binding) {
+			if typeValue, state, found := a.narrow.lookup(context.token.overlay, binding.ID()); found && state == narrowPositive {
+				// A known base type may already be more specific than a wider
+				// runtime guard. Preserve its precision, but retain only Type so a
+				// flow fact cannot carry #49 resource/meta callable provenance.
+				if narrowableType(result.typeValue) && result.typeValue.AssignableTo(typeValue) == AssignabilityYes {
+					return knownReduction(result.typeValue)
+				}
+				return knownReduction(typeValue)
+			}
+		}
+		return result
 	default:
 		return unknownReduction(fmt.Sprintf("identifier %q resolution returned invalid state", identifier.Name))
 	}
