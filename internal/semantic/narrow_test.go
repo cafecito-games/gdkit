@@ -601,6 +601,75 @@ func TestNarrowingFactsNeverCrossEquivalentSnapshotIdentities(t *testing.T) {
 	}
 }
 
+func TestNarrowingNestedControlAssignmentsTombstoneOuterFacts(t *testing.T) {
+	source := sources(t, map[string]string{
+		"nested_assignment.gd": "class_name NestedAssignment\nfunc nested_if(value: Variant, condition: bool):\n\tif value is Sprite2D:\n\t\tif condition:\n\t\t\tvalue = null\n\t\tvar after_nested_if := value.sprite_only\nfunc nested_else(value: Variant, condition: bool):\n\tif value is Sprite2D:\n\t\tif condition:\n\t\t\tpass\n\t\telse:\n\t\t\tvalue = null\n\t\tvar after_nested_else := value.sprite_only\nfunc nested_lambda(value: Variant, condition: bool):\n\tif value is Sprite2D:\n\t\tif condition:\n\t\t\tvar deferred_assignment := func():\n\t\t\t\tvalue = null\n\t\tvar after_nested_lambda := value.sprite_only\nfunc while_body(value: Variant, condition: bool):\n\tif value is Sprite2D:\n\t\twhile value.sprite_only:\n\t\t\tvar before_while_assignment := value.sprite_only\n\t\t\tvalue = null\n\t\t\tvar after_while_assignment := value.sprite_only\nfunc for_body(value: Variant, values: Array):\n\tif value is Sprite2D:\n\t\tfor item in value.sprite_only:\n\t\t\tvar before_for_assignment := value.sprite_only\n\t\t\tvalue = null\n\t\t\tvar after_for_assignment := value.sprite_only\nfunc match_case(value: Variant, condition: bool):\n\tif value is Sprite2D:\n\t\tmatch condition:\n\t\t\t_:\n\t\t\t\tvalue = null\n\t\tvar after_match_assignment := value.sprite_only\n",
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	file := source.File("nested_assignment.gd")
+	counts := map[string]int{}
+	var whileStatement *ast.WhileStatement
+	var forStatement *ast.ForStatement
+	var deferredAssignment *ast.LambdaExpression
+	ast.Inspect(file, func(node ast.Node) bool {
+		if declaration, ok := node.(*ast.VariableDeclaration); ok && declaration.Name == "deferred_assignment" {
+			deferredAssignment, _ = declaration.Value.(*ast.LambdaExpression)
+		}
+		switch parsed := node.(type) {
+		case *ast.IfStatement:
+			counts["if"]++
+		case *ast.WhileStatement:
+			counts["while"]++
+			whileStatement = parsed
+		case *ast.ForStatement:
+			counts["for"]++
+			forStatement = parsed
+		case *ast.MatchStatement:
+			counts["match"]++
+		case *ast.Assignment:
+			counts["assignment"]++
+		}
+		return true
+	})
+	for _, kind := range []string{"if", "while", "for", "match", "assignment"} {
+		if counts[kind] == 0 {
+			t.Fatalf("real parser fixture did not retain %s: %v", kind, counts)
+		}
+	}
+	if deferredAssignment == nil || len(deferredAssignment.Body) != 1 {
+		t.Fatalf("real parser fixture deferred lambda = %#v, want one-body lambda", deferredAssignment)
+	}
+	if _, ok := deferredAssignment.Body[0].(*ast.Assignment); !ok {
+		t.Fatalf("real parser fixture deferred lambda body = %T, want assignment", deferredAssignment.Body[0])
+	}
+
+	analyzer := NewAnalyzer(source, narrowTestEngine(t))
+	for _, name := range []string{
+		"after_nested_if", "after_nested_else", "before_while_assignment", "after_while_assignment",
+		"before_for_assignment", "after_for_assignment", "after_match_assignment",
+	} {
+		if got := analyzer.TypeOf(reducerVariableValue(t, file, name)); !got.Equal(Variant()) {
+			t.Fatalf("%s = %s (%q), want tombstoned base Variant", name, got, got.Reason())
+		}
+	}
+	if got := analyzer.TypeOf(reducerVariableValue(t, file, "after_nested_lambda")); !got.Equal(Builtin("int")) {
+		t.Fatalf("after_nested_lambda = %s (%q), want live Sprite2D fact", got, got.Reason())
+	}
+	if whileStatement == nil || forStatement == nil {
+		t.Fatalf("real parser fixture loop statements = while:%#v for:%#v", whileStatement, forStatement)
+	}
+	for name, expression := range map[string]ast.Expression{
+		"while condition": whileStatement.Condition,
+		"for iterable":    forStatement.Iterable,
+	} {
+		if got := analyzer.TypeOf(expression); !got.Equal(Variant()) {
+			t.Fatalf("%s = %s (%q), want pre-tombstoned Variant", name, got, got.Reason())
+		}
+	}
+}
+
 // TestNarrowingGodot47Oracle keeps the producer receipt opt-in: CI does not
 // ship Godot, while the issue's verified 4.7.2 binary can check the exact
 // local/parameter, lambda capture, and match-binding forms before release.

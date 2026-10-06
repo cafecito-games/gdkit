@@ -127,16 +127,30 @@ func (n *narrowIndex) visitStatement(statement ast.Statement, overlay *reduction
 			n.visitStatements(branch.Body, n.applyCondition(overlay, branch.Condition))
 		}
 		n.visitStatements(node.Else, overlay)
+		// A branch runs at most once, so its own source order may retain a
+		// fact until its assignment. Once control rejoins, though, any direct
+		// write in any arm can have happened and must invalidate the outer view.
+		return n.invalidateBindings(overlay, n.compoundAssignments(node))
 	case *ast.WhileStatement:
-		// Loop conditions do not add facts, but a surrounding supported region
-		// remains in force for their expressions and bodies.
-		n.visitExpression(node.Condition, overlay)
-		n.visitStatements(node.Body, overlay)
+		// A body write can precede a later condition or body evaluation. Clear
+		// the active facts before visiting either so a later iteration cannot
+		// reuse first-iteration evidence.
+		loop := n.invalidateBindings(overlay, n.compoundAssignments(node))
+		n.visitExpression(node.Condition, loop)
+		n.visitStatements(node.Body, loop)
+		return loop
 	case *ast.ForStatement:
-		n.visitExpression(node.Iterable, overlay)
-		n.visitStatements(node.Body, overlay)
+		// Keep the iterable and body on the same conservative loop view: a
+		// direct body assignment is enough to make a reused fact unsound.
+		loop := n.invalidateBindings(overlay, n.compoundAssignments(node))
+		n.visitExpression(node.Iterable, loop)
+		n.visitStatements(node.Body, loop)
+		return loop
 	case *ast.MatchStatement:
 		n.visitMatch(node, overlay)
+		// Just one case runs, but a write in any selected case invalidates the
+		// incoming fact once match control joins.
+		return n.invalidateBindings(overlay, n.compoundAssignments(node))
 	case *ast.KeywordStatement, *ast.Comment, *ast.Annotation:
 		n.visitChildren(statement, overlay)
 	case *ast.FunctionDeclaration, *ast.ClassDeclaration, *ast.SignalDeclaration, *ast.EnumDeclaration:
@@ -346,23 +360,105 @@ func (n *narrowIndex) applyFact(parent *reductionOverlay, fact narrowFact) *redu
 }
 
 func (n *narrowIndex) invalidateAssignment(parent *reductionOverlay, target ast.Expression) *reductionOverlay {
+	binding, ok := n.assignmentBinding(target)
+	if !ok {
+		return parent
+	}
+	return n.invalidateBindings(parent, []BindingID{binding})
+}
+
+// compoundAssignments returns the lexical identities directly assigned by a
+// compound statement's executable bodies. It follows only statement blocks,
+// rather than the generic AST walker, so a lambda, nested declaration, or any
+// future expression-owned body cannot make its deferred assignment look like
+// an immediate write in the surrounding flow.
+func (n *narrowIndex) compoundAssignments(statement ast.Statement) []BindingID {
+	if n == nil || n.scopes == nil || isNilNode(statement) {
+		return nil
+	}
+	seen := map[BindingID]bool{}
+	var result []BindingID
+	add := func(target ast.Expression) {
+		binding, ok := n.assignmentBinding(target)
+		if !ok || seen[binding] {
+			return
+		}
+		seen[binding] = true
+		result = append(result, binding)
+	}
+	var visitStatements func([]ast.Statement)
+	var visitStatement func(ast.Statement)
+	visitStatements = func(statements []ast.Statement) {
+		for _, nested := range statements {
+			visitStatement(nested)
+		}
+	}
+	visitStatement = func(nested ast.Statement) {
+		if isNilNode(nested) {
+			return
+		}
+		switch node := nested.(type) {
+		case *ast.Assignment:
+			add(node.Target)
+		case *ast.IfStatement:
+			for _, branch := range node.Branches {
+				visitStatements(branch.Body)
+			}
+			visitStatements(node.Else)
+		case *ast.WhileStatement:
+			visitStatements(node.Body)
+		case *ast.ForStatement:
+			visitStatements(node.Body)
+		case *ast.MatchStatement:
+			for _, matchCase := range node.Cases {
+				visitStatements(matchCase.Body)
+			}
+		}
+	}
+	switch node := statement.(type) {
+	case *ast.IfStatement:
+		for _, branch := range node.Branches {
+			visitStatements(branch.Body)
+		}
+		visitStatements(node.Else)
+	case *ast.WhileStatement:
+		visitStatements(node.Body)
+	case *ast.ForStatement:
+		visitStatements(node.Body)
+	case *ast.MatchStatement:
+		for _, matchCase := range node.Cases {
+			visitStatements(matchCase.Body)
+		}
+	}
+	return result
+}
+
+func (n *narrowIndex) assignmentBinding(target ast.Expression) (BindingID, bool) {
 	identifier, ok := target.(*ast.Identifier)
 	if !ok || identifier == nil || n == nil || n.scopes == nil {
-		return parent
+		return BindingID{}, false
 	}
 	resolved := n.scopes.Resolve(identifier)
 	if resolved.State() != LookupFound {
-		return parent
+		return BindingID{}, false
 	}
 	binding, found := resolved.Binding()
 	if !found || !narrowableBinding(binding) {
-		return parent
+		return BindingID{}, false
 	}
-	_, state, active := n.lookup(parent, binding.ID())
-	if !active || state != narrowPositive {
-		return parent
+	return binding.ID(), true
+}
+
+func (n *narrowIndex) invalidateBindings(parent *reductionOverlay, bindings []BindingID) *reductionOverlay {
+	result := parent
+	for _, binding := range bindings {
+		_, state, active := n.lookup(result, binding)
+		if !active || state != narrowPositive {
+			continue
+		}
+		result = n.extend(result, binding, Type{}, narrowTombstone)
 	}
-	return n.extend(parent, binding.ID(), Type{}, narrowTombstone)
+	return result
 }
 
 func (n *narrowIndex) extend(parent *reductionOverlay, binding BindingID, typeValue Type, state narrowState) *reductionOverlay {
