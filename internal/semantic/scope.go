@@ -981,23 +981,14 @@ func (i *ScopeIndex) resolveSuper(scope *Scope) BindingResult {
 }
 
 func (i *ScopeIndex) resolveEnclosing(scope *Scope, name string) (BindingResult, bool) {
-	if i.interfaces == nil || i.interfaces.index == nil {
-		return unknownBinding("class index is unavailable while resolving enclosing class scope"), true
+	outers, reason := i.enclosingClassIDs(scope.context.classID)
+	if reason != "" {
+		return unknownBinding(reason), true
 	}
-	for current := scope.context.classID; ; {
-		class := i.interfaces.index.Classes[current]
-		if class == nil || !class.Inner {
-			break
-		}
-		cut := strings.LastIndexByte(class.ID, '#')
-		if cut < 0 {
-			return unknownBinding(fmt.Sprintf("inner class %q has no enclosing class identity", class.ID)), true
-		}
-		outer := class.ID[:cut]
+	for _, outer := range outers {
 		result := i.interfaces.Lookup(outer, name)
 		switch result.State() {
 		case LookupAbsent:
-			current = outer
 			continue
 		case LookupUnknown:
 			return unknownBinding(result.Reason()), true
@@ -1019,6 +1010,58 @@ func (i *ScopeIndex) resolveEnclosing(scope *Scope, name string) (BindingResult,
 		}
 	}
 	return BindingResult{}, false
+}
+
+// enclosingClassIDs follows lexical class scopes without reconstructing #46
+// member lookup. A class's project bases contribute their lexical enclosures
+// before its own enclosure, matching Godot's class-scope order. Each returned
+// ID is still resolved exclusively through InterfaceSet.Lookup.
+func (i *ScopeIndex) enclosingClassIDs(classID string) ([]string, string) {
+	if i.interfaces == nil || i.interfaces.index == nil {
+		return nil, "class index is unavailable while resolving enclosing class scope"
+	}
+	index := i.interfaces.index
+	outers := []string{}
+	emitted := map[string]bool{}
+	visited := map[string]bool{}
+	visiting := map[string]bool{}
+	var problem string
+	var walk func(string)
+	walk = func(current string) {
+		if problem != "" || current == "" || visited[current] {
+			return
+		}
+		if visiting[current] {
+			problem = fmt.Sprintf("class scope topology cycles at %q", current)
+			return
+		}
+		class := index.Classes[current]
+		if class == nil {
+			problem = fmt.Sprintf("class %q is absent from the declaration index while resolving enclosing class scope", current)
+			return
+		}
+		visiting[current] = true
+		if class.ParentID != "" {
+			walk(class.ParentID)
+		}
+		if problem == "" && class.Inner {
+			cut := strings.LastIndexByte(class.ID, '#')
+			if cut < 0 {
+				problem = fmt.Sprintf("inner class %q has no enclosing class identity", class.ID)
+			} else {
+				outer := class.ID[:cut]
+				if !emitted[outer] {
+					emitted[outer] = true
+					outers = append(outers, outer)
+				}
+				walk(outer)
+			}
+		}
+		delete(visiting, current)
+		visited[current] = true
+	}
+	walk(classID)
+	return outers, problem
 }
 
 func (i *ScopeIndex) resolveProjectGlobal(scope *Scope, name string) (BindingResult, bool) {

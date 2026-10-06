@@ -618,6 +618,18 @@ func TestScopesRestrictInnerClassesToEnclosingConstantsAndTypes(t *testing.T) {
 	}
 }
 
+func TestScopesSearchBaseInnerClassEnclosuresBeforeOwnEnclosure(t *testing.T) {
+	source := sources(t, map[string]string{
+		"other.gd":  "class_name Other\nconst SPEED = 3\nclass Inner:\n\tpass\n",
+		"player.gd": "class_name Player\nconst SPEED = \"wrong\"\nclass Child extends Other.Inner:\n\tfunc run():\n\t\tSPEED\n",
+	})
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
+	binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, source.File("player.gd"), "SPEED", 5), BindingEnclosingConstant)
+	if binding.ClassID() != "other.gd" {
+		t.Fatalf("base-inner enclosure binding class = %q, want other.gd", binding.ClassID())
+	}
+}
+
 func TestScopesDoNotFallThroughInaccessibleEnclosingMembers(t *testing.T) {
 	source := sources(t, map[string]string{
 		"outer.gd": "class_name Outer\nvar instance_field: int\nfunc instance_method():\n\tpass\nclass Child:\n\tfunc run():\n\t\tinstance_field\n\t\tinstance_method()\n",
