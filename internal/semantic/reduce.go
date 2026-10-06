@@ -24,6 +24,9 @@ type Analyzer struct {
 
 	cacheMu sync.RWMutex
 	cache   map[reductionKey]reductionResult
+
+	functionMu      sync.RWMutex
+	functionReturns map[*ast.FunctionDeclaration]Type
 }
 
 // reductionContextToken distinguishes the base source view from a future
@@ -60,6 +63,9 @@ type reductionRequest struct {
 	active  map[reductionKey]bool
 	tainted map[reductionKey]bool
 	local   map[reductionKey]reductionResult
+
+	functionActive  map[*ast.FunctionDeclaration]bool
+	functionTainted map[*ast.FunctionDeclaration]bool
 }
 
 // NewAnalyzer constructs the only accepted semantic pipeline for source and
@@ -68,8 +74,9 @@ type reductionRequest struct {
 // and interface boundaries can report their reasoned Unknowns.
 func NewAnalyzer(source SourceSet, engine *Engine) *Analyzer {
 	analyzer := &Analyzer{
-		engine: engine,
-		cache:  map[reductionKey]reductionResult{},
+		engine:          engine,
+		cache:           map[reductionKey]reductionResult{},
+		functionReturns: map[*ast.FunctionDeclaration]Type{},
 	}
 	if sourceUnavailable(source) {
 		analyzer.unavailable = "source set is unavailable"
@@ -640,6 +647,9 @@ func (a *Analyzer) reduceCall(expression *ast.CallExpression, context reductionC
 		return unknownReduction("direct meta-class call is not a supported constructor")
 	}
 	if callee.member != nil {
+		if inferred, ok := a.inferredFunctionReturn(*callee.member, request); ok {
+			return knownReduction(inferred)
+		}
 		returned, ok := callee.member.ReturnType()
 		if !ok {
 			return unknownReduction(fmt.Sprintf("callable member %q has no declared return type", callee.member.Name()))
