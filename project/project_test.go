@@ -13,6 +13,8 @@ import (
 	"testing"
 )
 
+const godotThemeBinaryFixture = "UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAABgAAAFRoZW1lAAAAAAAAAAAAAwAAAPzo8aEmmiAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lABMAAABkZWZhdWx0X2Jhc2Vfc2NhbGUADQAAAGRlZmF1bHRfZm9udAASAAAAZGVmYXVsdF9mb250X3NpemUABwAAAHNjcmlwdAAAAAAAAQAAABQAAABsb2NhbDovL1RoZW1lX2I3NGl2AAUBAAAAAAAABgAAAFRoZW1lAAEAAAAFAAAAAQAAAFJTUkM="
+
 func writeFiles(t *testing.T, root string, files map[string]string) {
 	t.Helper()
 	for name, contents := range files {
@@ -197,7 +199,7 @@ func TestLoadMarksRealGodotBinaryResourceClaimEvidenceIncomplete(t *testing.T) {
 		},
 		{
 			path: "duplicate.theme",
-			data: "UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAABgAAAFRoZW1lAAAAAAAAAAAAAwAAAPzo8aEmmiAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lABMAAABkZWZhdWx0X2Jhc2Vfc2NhbGUADQAAAGRlZmF1bHRfZm9udAASAAAAZGVmYXVsdF9mb250X3NpemUABwAAAHNjcmlwdAAAAAAAAQAAABQAAABsb2NhbDovL1RoZW1lX2I3NGl2AAUBAAAAAAAABgAAAFRoZW1lAAEAAAAFAAAAAQAAAFJTUkM=",
+			data: godotThemeBinaryFixture,
 		},
 		{
 			path: "compressed.theme",
@@ -237,6 +239,55 @@ func TestLoadMarksRealGodotBinaryResourceClaimEvidenceIncomplete(t *testing.T) {
 			}
 			if !bytes.Equal(after, before) {
 				t.Fatalf("Load changed real producer bytes for %s", fixture.path)
+			}
+		})
+	}
+}
+
+func TestLoadExcludesGeneratedMetadataFromIdentityEvidence(t *testing.T) {
+	// This is the exact non-.res Theme producer fixture above. A .godot cache
+	// may contain it, but its UID is not part of the project's claimant
+	// universe and must not poison a complete project identity capture.
+	binary, err := base64.StdEncoding.DecodeString(godotThemeBinaryFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, testCase := range []struct {
+		name    string
+		exclude []string
+	}{
+		{name: "no explicit metadata exclusion"},
+		{name: "metadata-only exclusion", exclude: []string{".git/**", ".godot/**"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFiles(t, root, map[string]string{
+				"loader.gd":              "class_name Loader\n",
+				"target.gd":              "class_name Target\n",
+				"target.gd.uid":          "uid://b\n",
+				".godot/cache.gd.uid":    "uid://b\n",
+				".git/objects/claim.uid": "uid://b\n",
+			})
+			cachePath := filepath.Join(root, ".godot", "imported", "opaque.theme")
+			if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cachePath, binary, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			snapshot, err := Load(Config{Root: root, Exclude: testCase.exclude, Identities: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.IdentityIncomplete {
+				t.Fatal("generated metadata made project identity evidence incomplete")
+			}
+			if len(snapshot.Claims) != 1 || snapshot.Claims[0].Owner != "target.gd" || snapshot.Claims[0].UID != "uid://b" {
+				t.Fatalf("Claims = %#v, want only the project claimant", snapshot.Claims)
+			}
+			if snapshot.UIDs["uid://b"] != "target.gd" {
+				t.Fatalf("UIDs = %#v, want project claimant only", snapshot.UIDs)
 			}
 		})
 	}

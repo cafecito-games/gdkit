@@ -12,6 +12,8 @@ import (
 	"github.com/cafecito-games/gdkit/project"
 )
 
+const godotThemeBinaryFixture = "UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAABgAAAFRoZW1lAAAAAAAAAAAAAwAAAPzo8aEmmiAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lABMAAABkZWZhdWx0X2Jhc2Vfc2NhbGUADQAAAGRlZmF1bHRfZm9udAASAAAAZGVmYXVsdF9mb250X3NpemUABwAAAHNjcmlwdAAAAAAAAQAAABQAAABsb2NhbDovL1RoZW1lX2I3NGl2AAUBAAAAAAAABgAAAFRoZW1lAAEAAAAFAAAAAQAAAFJTUkM="
+
 func TestSnapshotUsesFullUniverseAndResolvesStaticScriptPaths(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{
@@ -322,7 +324,7 @@ func TestSnapshotFailsClosedForProducerBinaryResourceClaimEvidence(t *testing.T)
 	// Exact Godot v4.7.2 ResourceSaver output for a Theme saved as .theme
 	// after ResourceSaver.set_uid. Its non-.res extension proves this fixture
 	// reaches the opaque binary-header path rather than the suffix fallback.
-	data, err := base64.StdEncoding.DecodeString("UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAABgAAAFRoZW1lAAAAAAAAAAAAAwAAAPzo8aEmmiAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lABMAAABkZWZhdWx0X2Jhc2Vfc2NhbGUADQAAAGRlZmF1bHRfZm9udAASAAAAZGVmYXVsdF9mb250X3NpemUABwAAAHNjcmlwdAAAAAAAAQAAABQAAABsb2NhbDovL1RoZW1lX2I3NGl2AAUBAAAAAAAABgAAAFRoZW1lAAEAAAAFAAAAAQAAAFJTUkM=")
+	data, err := base64.StdEncoding.DecodeString(godotThemeBinaryFixture)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,6 +355,45 @@ func TestSnapshotFailsClosedForProducerBinaryResourceClaimEvidence(t *testing.T)
 	got := NewSnapshot(snapshot).ResolveLoadResource("loader.gd", "uid://knq6ium74go7")
 	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "incomplete") {
 		t.Fatalf("binary-resource UID evidence = state=%s provenance=%s reason=%q, want fail-closed incomplete result", got.State(), got.Provenance(), got.Reason())
+	}
+}
+
+func TestSnapshotResolvesUIDPastGeneratedMetadata(t *testing.T) {
+	data, err := base64.StdEncoding.DecodeString(godotThemeBinaryFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	for name, contents := range map[string]string{
+		"loader.gd":     "class_name Loader\n",
+		"target.gd":     "class_name Target\n",
+		"target.gd.uid": "uid://b\n",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cachePath := filepath.Join(root, ".godot", "imported", "opaque.theme")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.IdentityIncomplete {
+		t.Fatal("generated metadata made project identity evidence incomplete")
+	}
+	got := NewSnapshot(snapshot).ResolveLoadResource("loader.gd", "uid://b")
+	if got.State() != semantic.ResourceFound || got.Kind() != semantic.ResourceScript || got.Path() != "target.gd" {
+		t.Fatalf("UID past generated metadata = state=%s kind=%s path=%q reason=%q", got.State(), got.Kind(), got.Path(), got.Reason())
 	}
 }
 

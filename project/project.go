@@ -72,9 +72,10 @@ type Config struct {
 	//
 	// A claim is recorded even inside a path HonorIgnoreFile hides, carrying
 	// Claim.Ignored: an ignored file still owns its identity, and dropping it
-	// from the table would make every reference to it look dangling. A
-	// reference inside an ignored path is not recorded at all, because
-	// nothing reports or rewrites one.
+	// from the table would make every reference to it look dangling. Root
+	// .git and .godot metadata are the exception: neither belongs to the
+	// project claimant universe. A reference inside an ignored path is not
+	// recorded at all, because nothing reports or rewrites one.
 	Identities bool
 }
 
@@ -289,6 +290,13 @@ func Load(config Config) (*Snapshot, error) {
 			if relative == "." {
 				return nil
 			}
+			// Godot's cache and Git's administrative directory do not belong
+			// to the project identity universe. In particular, .godot/imported
+			// contains binary resource cache entries with internal UIDs that must
+			// not make project claimant evidence ambiguous or incomplete.
+			if config.Identities && entry.IsDir() && identityMetadataPath(relative) {
+				return filepath.SkipDir
+			}
 			if glob.MatchAny(config.Exclude, relative) || entry.IsDir() && glob.MatchAny(config.Exclude, relative+"/") {
 				if entry.IsDir() {
 					return filepath.SkipDir
@@ -298,9 +306,9 @@ func Load(config Config) (*Snapshot, error) {
 			if entry.IsDir() {
 				// A negated pattern can re-include something below an ignored
 				// directory, so the directory is only pruned when there is none.
-				// Identities prunes nothing either: a hidden file still owns
-				// its uid:// identity, and the walk has to reach it to record
-				// the claim.
+				// Apart from generated metadata above, Identities prunes no
+				// ignored directory: a hidden file still owns its uid://
+				// identity, and the walk has to reach it to record the claim.
 				if !config.Identities && !ignored.HasNegation() && ignored.Ignored(relative, true) {
 					return filepath.SkipDir
 				}
@@ -495,14 +503,18 @@ func Load(config Config) (*Snapshot, error) {
 
 // identityCaptureIsNarrowed reports a capture that cannot establish every
 // project UID claimant. HonorIgnoreFile is deliberately not narrowing here:
-// Identities walks ignored paths and records their claims. Exclude and a
-// source-root set without the project root omit declaration sources entirely.
+// Identities walks ignored paths and records their claims. Excluding only
+// generated metadata is also complete, because those directories do not carry
+// project claimants. Any other exclusion or a source-root set without the
+// project root omits declaration sources entirely.
 func identityCaptureIsNarrowed(config Config) bool {
 	if !config.Identities {
 		return false
 	}
-	if len(config.Exclude) != 0 {
-		return true
+	for _, pattern := range config.Exclude {
+		if !identityMetadataExclude(pattern) {
+			return true
+		}
 	}
 	if len(config.SourceRoots) == 0 {
 		return false
@@ -513,6 +525,20 @@ func identityCaptureIsNarrowed(config Config) bool {
 		}
 	}
 	return true
+}
+
+func identityMetadataPath(resourcePath string) bool {
+	return resourcePath == ".git" || strings.HasPrefix(resourcePath, ".git/") ||
+		resourcePath == ".godot" || strings.HasPrefix(resourcePath, ".godot/")
+}
+
+func identityMetadataExclude(pattern string) bool {
+	switch pattern {
+	case ".git", ".git/", ".git/**", ".godot", ".godot/", ".godot/**":
+		return true
+	default:
+		return false
+	}
 }
 
 func identityClaimSource(resourcePath string) bool {
