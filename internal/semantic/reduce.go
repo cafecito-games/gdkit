@@ -155,6 +155,9 @@ func (a *Analyzer) reduce(expression ast.Expression, context reductionContext, r
 		request.active = map[reductionKey]bool{}
 	}
 	if result, ok := request.cached(key); ok {
+		// This completed value was derived by a path that observed a cycle.
+		// Any active parent that consumes it must stay request-local too.
+		request.markCycle()
 		return result
 	}
 	if result, ok := a.cached(key); ok {

@@ -555,6 +555,20 @@ func TestAnalyzerMemoizesCycleTaintedFanoutWithinOneRequest(t *testing.T) {
 	if got := analyzer.TypeOf(top); !got.Equal(want) {
 		t.Fatalf("fanout TypeOf = %s (%q), want %s", got, got.Reason(), want)
 	}
+	firstFanout, ok := reducerVariableValue(t, file, "a0").(*ast.ArrayLiteral)
+	if !ok || len(firstFanout.Elements) != 2 {
+		t.Fatalf("real parser fixture did not produce two fanout consumers: %#v", firstFanout)
+	}
+	for _, consumer := range firstFanout.Elements {
+		consumerScope, found := analyzer.scopes.ScopeAt(consumer)
+		if !found {
+			t.Fatal("fanout consumer has no recorded scope")
+		}
+		consumerKey := reductionKey{expression: consumer, scope: consumerScope.ID()}
+		if _, found := analyzer.cache[consumerKey]; found {
+			t.Fatal("consumer of a cycle-tainted local result escaped into the shared cache")
+		}
+	}
 	scope, found := analyzer.scopes.ScopeAt(top)
 	if !found {
 		t.Fatal("fanout expression has no recorded scope")
