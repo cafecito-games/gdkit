@@ -275,10 +275,15 @@ func memberReduction(member Member) reductionResult {
 	return reductionResult{typeValue: copy.Type(), member: &copy}
 }
 
-// metaMemberReduction retains enum type values after LookupMetaMember has
-// established that the enum was selected through a class object. Ordinary
-// instance lookup keeps its conservative historical treatment of that name.
+// metaMemberReduction preserves only values that are usable through a class
+// object. A named enum declaration is itself a Dictionary object; its Enum
+// type describes an enum member value, so publishing it here would make
+// Actor.Mode look like an int-compatible enum value rather than its runtime
+// Dictionary and contaminate collection inference.
 func metaMemberReduction(member Member) reductionResult {
+	if member.Kind() == MemberEnum {
+		return knownReduction(Dictionary(nil, nil))
+	}
 	copy := cloneMember(member)
 	return reductionResult{typeValue: copy.Type(), member: &copy}
 }
@@ -841,9 +846,8 @@ func reduceMemberLookup(receiver Type, name string, resolved LookupResult) reduc
 }
 
 // reduceMetaMemberLookup is the corresponding tri-state boundary for static
-// meta-class selection. It keeps a named enum's type value now that #49 has
-// proven the selection is static, while ordinary receiver lookup remains
-// conservative.
+// meta-class selection. A selected named enum is reduced as its Dictionary
+// object while ordinary receiver lookup remains conservative.
 func reduceMetaMemberLookup(receiver Type, name string, resolved LookupResult) reductionResult {
 	switch resolved.State() {
 	case LookupFound:

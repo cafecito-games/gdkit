@@ -295,10 +295,13 @@ func TestAnalyzerReducesMembersCallsAndDeferredSpecials(t *testing.T) {
 }
 
 func TestAnalyzerResolvesLanguageSpecialResourcesAndMetaMembers(t *testing.T) {
+	// Godot v4.7.2 reports typeof(Actor.Mode) as Dictionary. In particular,
+	// Array[Actor.Mode] rejects [Actor.Mode] because that annotation denotes
+	// the enum's int value type rather than the Dictionary enum object.
 	base := sources(t, map[string]string{
 		"actors/enemy.gd": "class_name Actor\nstatic var static_value: int\nvar instance_value: int\nstatic func static_method() -> int:\n\tpass\nfunc instance_method() -> int:\n\tpass\nenum Mode { IDLE }\nenum { READY }\nclass Inner:\n\tpass\n",
 		"broken.gd":       "class_name Broken extends Missing\n",
-		"loader.gd":       "class_name Loader\nvar actor_instance: Actor\nfunc shadow(load):\n\tvar shadowed := load(\"res://shadowed.gd\")\nfunc run():\n\tvar script := preload(\"res://actors/enemy.gd\")\n\tvar raw_script := load(r\"res://actors/enemy.gd\")\n\tvar triple_script := load(\"\"\"res://actors/enemy.gd\"\"\")\n\tvar created := preload(\"res://actors/enemy.gd\").new()\n\tvar scene := load(\"res://levels/arena.tscn\")\n\tvar scene_instance := load(\"res://levels/arena.tscn\").instantiate()\n\tvar text := preload(\"res://data/settings.tres\")\n\tvar static_method := Actor.static_method()\n\tvar static_value := Actor.static_value\n\tvar enum_type := Actor.Mode\n\tvar enum_value := Actor.READY\n\tvar inner := Actor.Inner\n\tvar actor := Actor.new()\n\tvar incomplete := Broken.new()\n\tvar node := Node.new()\n\tvar engine_static := Node.engine_static()\n\tvar resource_loader := ResourceLoader.load(\"res://resource-loader.gd\")\n\tvar missing := preload(\"res://gone.gd\")\n\tvar parse_failed := load(\"res://actors/broken.gd\")\n\tvar string_name := load(&\"res://string-name.gd\")\n\tvar wrong_arity := load(\"res://wrong-arity.gd\", \"res://wrong-arity.gd\")\n\tvar named := \"res://dynamic.gd\"\n\tvar dynamic_load := load(named)\n\tvar interpolated_load := load(\"res://%s.gd\" % \"dynamic\")\n\tvar unknown_argument := load(missing_argument)\n\tvar load_alias := load\n\tvar alias_load := load_alias(\"res://alias.gd\")\n\tvar instance := Actor.instance_value\n\tvar instance_method := Actor.instance_method()\n\tvar invalid_new := actor_instance.new()\n\tvar direct := Actor()\n",
+		"loader.gd":       "class_name Loader\nvar actor_instance: Actor\nfunc shadow(load):\n\tvar shadowed := load(\"res://shadowed.gd\")\nfunc run():\n\tvar script := preload(\"res://actors/enemy.gd\")\n\tvar raw_script := load(r\"res://actors/enemy.gd\")\n\tvar triple_script := load(\"\"\"res://actors/enemy.gd\"\"\")\n\tvar created := preload(\"res://actors/enemy.gd\").new()\n\tvar scene := load(\"res://levels/arena.tscn\")\n\tvar scene_instance := load(\"res://levels/arena.tscn\").instantiate()\n\tvar text := preload(\"res://data/settings.tres\")\n\tvar static_method := Actor.static_method()\n\tvar static_value := Actor.static_value\n\tvar enum_type := Actor.Mode\n\tvar enum_type_array := [Actor.Mode]\n\tvar enum_type_dictionary := {Actor.Mode: 1}\n\tvar resource_enum_type := preload(\"res://actors/enemy.gd\").Mode\n\tvar resource_enum_type_array := [preload(\"res://actors/enemy.gd\").Mode]\n\tvar enum_value := Actor.READY\n\tvar inner := Actor.Inner\n\tvar actor := Actor.new()\n\tvar incomplete := Broken.new()\n\tvar node := Node.new()\n\tvar engine_static := Node.engine_static()\n\tvar resource_loader := ResourceLoader.load(\"res://resource-loader.gd\")\n\tvar missing := preload(\"res://gone.gd\")\n\tvar parse_failed := load(\"res://actors/broken.gd\")\n\tvar string_name := load(&\"res://string-name.gd\")\n\tvar wrong_arity := load(\"res://wrong-arity.gd\", \"res://wrong-arity.gd\")\n\tvar named := \"res://dynamic.gd\"\n\tvar dynamic_load := load(named)\n\tvar interpolated_load := load(\"res://%s.gd\" % \"dynamic\")\n\tvar unknown_argument := load(missing_argument)\n\tvar load_alias := load\n\tvar alias_load := load_alias(\"res://alias.gd\")\n\tvar instance := Actor.instance_value\n\tvar instance_method := Actor.instance_method()\n\tvar invalid_new := actor_instance.new()\n\tvar direct := Actor()\n",
 	})
 	if failures := base.ParseFailures(); len(failures) != 0 {
 		t.Fatalf("real parser fixture failed: %v", failures)
@@ -336,7 +339,11 @@ func TestAnalyzerResolvesLanguageSpecialResourcesAndMetaMembers(t *testing.T) {
 		{name: "text", want: reducerTestEngine(t).Class("Resource")},
 		{name: "static_method", want: Builtin("int")},
 		{name: "static_value", want: Builtin("int")},
-		{name: "enum_type", want: Enum("actors/enemy.gd.Mode")},
+		{name: "enum_type", want: Dictionary(nil, nil)},
+		{name: "enum_type_array", want: reducerArray(Dictionary(nil, nil))},
+		{name: "enum_type_dictionary", want: reducerDictionary(Dictionary(nil, nil), Builtin("int"))},
+		{name: "resource_enum_type", want: Dictionary(nil, nil)},
+		{name: "resource_enum_type_array", want: reducerArray(Dictionary(nil, nil))},
 		{name: "enum_value", want: Builtin("int")},
 		{name: "inner", want: Class("actors/enemy.gd#Inner", nil, true)},
 		{name: "actor", want: actor.Type()},
