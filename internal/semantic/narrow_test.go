@@ -123,6 +123,47 @@ func TestNarrowingDirectAssignmentInstallsTombstoneAfterTargetAndValue(t *testin
 	}
 }
 
+func TestNarrowingPreservesMoreSpecificBaseBindings(t *testing.T) {
+	source := sources(t, map[string]string{
+		"specific.gd": "class_name Specific\nfunc parameter(sprite: Sprite2D):\n\tif sprite is Node:\n\t\tvar parameter_member := sprite.sprite_only\nfunc array_local():\n\tvar nodes: Array[Node] = []\n\tif nodes is Array:\n\t\tvar array_inside := nodes\nfunc inferred_local():\n\tvar inferred := Sprite2D.new()\n\tif inferred is Node:\n\t\tvar inferred_member := inferred.sprite_only\n",
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	file := source.File("specific.gd")
+	var guards []*ast.BinaryExpression
+	ast.Inspect(file, func(node ast.Node) bool {
+		if binary, ok := node.(*ast.BinaryExpression); ok && binary.Operator == "is" {
+			guards = append(guards, binary)
+		}
+		return true
+	})
+	if len(guards) != 3 {
+		t.Fatalf("real parser fixture is guards = %d, want 3", len(guards))
+	}
+	for _, guard := range guards {
+		if _, ok := guard.Left.(*ast.Identifier); !ok {
+			t.Fatalf("real parser fixture guard left = %T, want identifier", guard.Left)
+		}
+		if _, ok := guard.Right.(*ast.TypeExpression); !ok {
+			t.Fatalf("real parser fixture guard right = %T, want type expression", guard.Right)
+		}
+	}
+
+	analyzer := NewAnalyzer(source, narrowTestEngine(t))
+	if got := analyzer.TypeOf(reducerVariableValue(t, file, "parameter_member")); !got.Equal(Builtin("int")) {
+		t.Fatalf("wider parameter guard lost Sprite2D member = %s (%q), want int", got, got.Reason())
+	}
+	if got := analyzer.TypeOf(reducerVariableValue(t, file, "inferred_member")); !got.Equal(Builtin("int")) {
+		t.Fatalf("wider inferred guard lost Sprite2D member = %s (%q), want int", got, got.Reason())
+	}
+	node := narrowTestEngine(t).Class("Node")
+	wantArray := Array(&node)
+	if got := analyzer.TypeOf(reducerVariableValue(t, file, "array_inside")); !got.Equal(wantArray) {
+		t.Fatalf("wider Array guard lost element type = %s (%q), want %s", got, got.Reason(), wantArray)
+	}
+}
+
 func TestNarrowingConditionsArePositiveAndScoped(t *testing.T) {
 	source := sources(t, map[string]string{
 		"conditions.gd": "class_name Conditions\nfunc check() -> bool:\n\treturn true\nfunc run(value: Variant, other: Variant):\n\tif value is Sprite2D && value is Node:\n\t\tvar positive := value.sprite_only\n\telif other is Node:\n\t\tvar elif_own := other.node_only\n\t\tvar elif_original := value.sprite_only\n\telse:\n\t\tvar otherwise := value.sprite_only\n\tif value is Sprite2D or other is Node:\n\t\tvar disjunction := value.sprite_only\n\tif !(value is Sprite2D):\n\t\tvar negated := value.sprite_only\n\tif value is not Sprite2D:\n\t\tvar negative := value.sprite_only\n\tif value == null:\n\t\tvar nil_checked := value.sprite_only\n\tif value:\n\t\tvar truthy := value.sprite_only\n\tif check() and value is Sprite2D:\n\t\tvar call_guard := value.sprite_only\n\tvar after := value.sprite_only\n",
@@ -671,8 +712,10 @@ func TestNarrowingNestedControlAssignmentsTombstoneOuterFacts(t *testing.T) {
 }
 
 // TestNarrowingGodot47Oracle keeps the producer receipt opt-in: CI does not
-// ship Godot, while the issue's verified 4.7.2 binary can check the exact
-// local/parameter, lambda capture, and match-binding forms before release.
+// ship Godot, while the issue's verified 4.7.2 binary accepts the exact
+// local/parameter, lambda capture, and match-binding source forms before
+// release. --check-only is parser-only, so the parser-backed semantic tests
+// above, rather than this producer receipt, assert narrowing precision.
 func TestNarrowingGodot47Oracle(t *testing.T) {
 	godot := strings.TrimSpace(os.Getenv("GODOT_BIN"))
 	if godot == "" {
@@ -685,15 +728,19 @@ func TestNarrowingGodot47Oracle(t *testing.T) {
 	if !strings.HasPrefix(strings.TrimSpace(string(version)), "4.7.2") {
 		t.Fatalf("Godot producer is %q, want verified 4.7.2", strings.TrimSpace(string(version)))
 	}
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "project.godot"), []byte("[application]\nconfig/name=\"Narrowing Oracle\"\n"), 0o644); err != nil {
-		t.Fatal(err)
+	writeProject := func(name, source string) string {
+		t.Helper()
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "project.godot"), []byte("[application]\nconfig/name=\"Narrowing Oracle\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return root
 	}
-	source := "extends Node\n\nfunc verify(value: Variant) -> void:\n\tif value is Sprite2D:\n\t\tvar local_position: Vector2 = value.position\n\t\tvar capture := func() -> void:\n\t\t\tvar captured_position: Vector2 = value.position\n\tmatch value:\n\t\tvar matched when matched is Sprite2D:\n\t\t\tvar matched_position: Vector2 = matched.position\n"
-	if err := os.WriteFile(filepath.Join(root, "oracle.gd"), []byte(source), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	output, err := exec.Command(godot, "--headless", "--path", root, "--script", "res://oracle.gd", "--check-only").CombinedOutput()
+	positive := writeProject("oracle.gd", "extends Node\n\nfunc require_sprite(sprite: Sprite2D) -> void:\n\tpass\n\nfunc verify(value: Node) -> void:\n\tif value is Sprite2D:\n\t\trequire_sprite(value)\n\t\tvar capture := func() -> void:\n\t\t\trequire_sprite(value)\n\tmatch value:\n\t\tvar matched when matched is Sprite2D:\n\t\t\trequire_sprite(matched)\n")
+	output, err := exec.Command(godot, "--headless", "--path", positive, "--script", "res://oracle.gd", "--check-only").CombinedOutput()
 	if err != nil {
 		t.Fatalf("Godot 4.7.2 --check-only rejected local/parameter, lambda-capture, or match guard fixture: %v\n%s", err, output)
 	}

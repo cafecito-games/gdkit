@@ -407,14 +407,6 @@ func (a *Analyzer) reduceIdentifier(identifier *ast.Identifier, context reductio
 		if !ok {
 			return unknownReduction(fmt.Sprintf("identifier %q resolved without a binding", identifier.Name))
 		}
-		if a.narrow != nil && narrowableBinding(binding) {
-			if typeValue, state, found := a.narrow.lookup(context.token.overlay, binding.ID()); found && state == narrowPositive {
-				// A flow fact deliberately carries only Type. It cannot forge the
-				// member/language-special/constructor provenance #49 needs for a
-				// callable or resource expression.
-				return knownReduction(typeValue)
-			}
-		}
 		result := knownReduction(binding.Type())
 		if binding.Kind() == BindingSuper {
 			if member, found := binding.SuperMember(); found {
@@ -430,9 +422,21 @@ func (a *Analyzer) reduceIdentifier(identifier *ast.Identifier, context reductio
 			if binding.Kind() == BindingLanguageSpecial {
 				result.special = binding.Name()
 			}
-			return result
+		} else {
+			result = a.reduceDeferredBinding(binding, result, request)
 		}
-		return a.reduceDeferredBinding(binding, result, request)
+		if a.narrow != nil && narrowableBinding(binding) {
+			if typeValue, state, found := a.narrow.lookup(context.token.overlay, binding.ID()); found && state == narrowPositive {
+				// A known base type may already be more specific than a wider
+				// runtime guard. Preserve its precision, but retain only Type so a
+				// flow fact cannot carry #49 resource/meta callable provenance.
+				if narrowableType(result.typeValue) && result.typeValue.AssignableTo(typeValue) == AssignabilityYes {
+					return knownReduction(result.typeValue)
+				}
+				return knownReduction(typeValue)
+			}
+		}
+		return result
 	default:
 		return unknownReduction(fmt.Sprintf("identifier %q resolution returned invalid state", identifier.Name))
 	}
