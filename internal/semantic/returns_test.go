@@ -2,6 +2,10 @@ package semantic
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -549,5 +553,47 @@ func TestAnalyzerInfersOnlyExactOmittedUserMethodCalls(t *testing.T) {
 	}
 	if got := analyzer.TypeOf(reducerVariableValue(t, file, "callback_result")); got.Kind() != KindUnknown || got.Reason() == "" {
 		t.Fatalf("Callable result = %s (%q), want existing reasoned Unknown", got, got.Reason())
+	}
+}
+
+// TestFunctionReturnsGodot47Oracle is an opt-in Godot 4.7.2 producer receipt.
+// --check-only establishes parser/type-check acceptance only; the parser-backed
+// tests above remain the authority for semantic return inference.
+func TestFunctionReturnsGodot47Oracle(t *testing.T) {
+	godot := strings.TrimSpace(os.Getenv("GODOT_BIN"))
+	if godot == "" {
+		t.Skip("GODOT_BIN is required for the Godot 4.7.2 producer oracle")
+	}
+	version, err := exec.Command(godot, "--version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("Godot version probe failed: %v\n%s", err, version)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(string(version)), "4.7.2") {
+		t.Fatalf("Godot producer is %q, want verified 4.7.2", strings.TrimSpace(string(version)))
+	}
+	writeProject := func(name, source string) string {
+		t.Helper()
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "project.godot"), []byte("[application]\nconfig/name=\"Function Returns Oracle\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+	checkOnly := func(root string) ([]byte, error) {
+		t.Helper()
+		return exec.Command(godot, "--headless", "--path", root, "--script", "res://oracle.gd", "--check-only").CombinedOutput()
+	}
+
+	accepted := writeProject("oracle.gd", "extends Node\n\nfunc partial(flag: bool):\n\tif flag:\n\t\treturn 1\n\nfunc lambda_owner():\n\tvar callback = func(): return 1\n\nfunc loop_owner(flag: bool):\n\twhile flag:\n\t\treturn 1\n\nfunc consume() -> void:\n\tvar partial_value = partial(false)\n\tvar loop_value = loop_owner(false)\n")
+	if output, err := checkOnly(accepted); err != nil {
+		t.Fatalf("Godot 4.7.2 --check-only rejected the unannotated partial-return, lambda-owner, or loop-fallthrough fixture: %v\n%s", err, output)
+	}
+
+	annotated := writeProject("oracle.gd", "extends Node\n\nfunc partial(flag: bool) -> int:\n\tif flag:\n\t\treturn 1\n")
+	if output, err := checkOnly(annotated); err == nil {
+		t.Fatalf("Godot 4.7.2 --check-only accepted an annotated partial return unexpectedly:\n%s", output)
 	}
 }
