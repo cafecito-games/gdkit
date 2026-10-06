@@ -285,11 +285,12 @@ Three limits are worth knowing before a project reads a clean run as proof:
   `var x := [1, 2, 3]` suggests `Array[int]`, and
   `var labels := {"a": 1}` suggests `Dictionary[String, int]`. This is a
   suggestion, not an autofix. An inconclusive (`Unknown`) result is silent;
-  a known heterogeneous, untyped, or unsafe-to-spell result keeps the generic
-  `Array[T]` or `Dictionary[K, V]` wording rather than inventing a type. Calls,
-  references, and every other non-literal initializer remain out of scope. A
-  declaration that carries a written annotation is reported from the
-  annotation alone, so `var x: Array = []` is one finding and not two.
+  a known heterogeneous, untyped, unsafe-to-spell, or nested-collection result
+  keeps the generic `Array[T]` or `Dictionary[K, V]` wording rather than
+  suggesting syntax Godot cannot parse. Calls, references, and every other
+  non-literal initializer remain out of scope. A declaration that carries a
+  written annotation is reported from the annotation alone, so
+  `var x: Array = []` is one finding and not two.
 - **A finding whose fix the configured engine cannot parse is dropped, with no
   output at all.** There is no "your engine is too old" diagnostic, because
   telling a project to write a type it cannot parse is worse than saying

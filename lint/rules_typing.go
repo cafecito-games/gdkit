@@ -368,18 +368,10 @@ func populatedCollectionMessage(context *Context, literal ast.Expression) (strin
 	if context == nil || context.analyzer == nil {
 		return "", false
 	}
-	return collectionTypeMessageForVersion(context.Engine(), context.analyzer.TypeOf(literal), context.supports)
+	return collectionTypeMessage(context.Engine(), context.analyzer.TypeOf(literal))
 }
 
 func collectionTypeMessage(engine *semantic.Engine, typeValue semantic.Type) (string, bool) {
-	return collectionTypeMessageForVersion(engine, typeValue, func(versiongate.Version) bool { return true })
-}
-
-// collectionTypeMessageForVersion retains the outer collection's existing
-// syntax floor and applies the same floor check recursively to a suggested
-// nested container. A matching 4.0 extension-api override, for example, may
-// prove an Array but must not be told to write Dictionary[K, V].
-func collectionTypeMessageForVersion(engine *semantic.Engine, typeValue semantic.Type, supports func(versiongate.Version) bool) (string, bool) {
 	switch typeValue.Kind() {
 	case semantic.KindUnknown:
 		return "", false
@@ -388,7 +380,7 @@ func collectionTypeMessageForVersion(engine *semantic.Engine, typeValue semantic
 		if !typed {
 			return "Array has no element type; write Array[T]", true
 		}
-		spelling, status := sourceWritableTypeForVersion(engine, element, supports)
+		spelling, status := sourceWritableType(engine, element)
 		switch status {
 		case sourceTypeWritable:
 			return fmt.Sprintf("Array has no element type; write Array[%s]", spelling), true
@@ -403,8 +395,8 @@ func collectionTypeMessageForVersion(engine *semantic.Engine, typeValue semantic
 		if !typedKey || !typedValue {
 			return "Dictionary has no element type; write Dictionary[K, V]", true
 		}
-		keySpelling, keyStatus := sourceWritableTypeForVersion(engine, key, supports)
-		valueSpelling, valueStatus := sourceWritableTypeForVersion(engine, value, supports)
+		keySpelling, keyStatus := sourceWritableType(engine, key)
+		valueSpelling, valueStatus := sourceWritableType(engine, value)
 		if keyStatus == sourceTypeUnknown || valueStatus == sourceTypeUnknown {
 			return "", false
 		}
@@ -426,13 +418,11 @@ const (
 )
 
 // sourceWritableType accepts only grammar spellings independently proven by
-// the selected engine vocabulary. Type.String deliberately cannot be used:
-// it also renders user classes, enums, meta types, and diagnostic Unknowns.
+// the selected engine vocabulary. Nested typed collections are deliberately
+// excluded because GDScript cannot parse their spelling. Type.String cannot be
+// used: it also renders user classes, enums, meta types, and diagnostic
+// Unknowns.
 func sourceWritableType(engine *semantic.Engine, typeValue semantic.Type) (string, sourceTypeStatus) {
-	return sourceWritableTypeForVersion(engine, typeValue, func(versiongate.Version) bool { return true })
-}
-
-func sourceWritableTypeForVersion(engine *semantic.Engine, typeValue semantic.Type, supports func(versiongate.Version) bool) (string, sourceTypeStatus) {
 	switch typeValue.Kind() {
 	case semantic.KindUnknown:
 		return "", sourceTypeUnknown
@@ -457,33 +447,36 @@ func sourceWritableTypeForVersion(engine *semantic.Engine, typeValue semantic.Ty
 			return typeValue.Name(), sourceTypeWritable
 		}
 		return "", sourceTypeUnwritable
+	case semantic.KindArray, semantic.KindDictionary:
+		// GDScript does not accept a nested typed collection spelling. Keep a
+		// known outer collection actionable with its established generic form
+		// rather than suggesting Array[Array[T]] or Dictionary[K, Array[V]].
+		if nestedUnknownType(typeValue) {
+			return "", sourceTypeUnknown
+		}
+		return "", sourceTypeUnwritable
+	default:
+		return "", sourceTypeUnwritable
+	}
+}
+
+// nestedUnknownType preserves the rule's silence contract even when the
+// unknown component lives below an unspellable nested collection. It only
+// classifies Type's immutable container vocabulary; it does not invent a
+// nested spelling.
+func nestedUnknownType(typeValue semantic.Type) bool {
+	switch typeValue.Kind() {
+	case semantic.KindUnknown:
+		return true
 	case semantic.KindArray:
 		element, typed := typeValue.Element()
-		if !typed || supports == nil || !supports(godot40) {
-			return "", sourceTypeUnwritable
-		}
-		spelling, status := sourceWritableTypeForVersion(engine, element, supports)
-		if status != sourceTypeWritable {
-			return "", status
-		}
-		return "Array[" + spelling + "]", sourceTypeWritable
+		return typed && nestedUnknownType(element)
 	case semantic.KindDictionary:
 		key, typedKey := typeValue.Key()
 		value, typedValue := typeValue.Value()
-		if !typedKey || !typedValue || supports == nil || !supports(godot44) {
-			return "", sourceTypeUnwritable
-		}
-		keySpelling, keyStatus := sourceWritableTypeForVersion(engine, key, supports)
-		valueSpelling, valueStatus := sourceWritableTypeForVersion(engine, value, supports)
-		if keyStatus == sourceTypeUnknown || valueStatus == sourceTypeUnknown {
-			return "", sourceTypeUnknown
-		}
-		if keyStatus != sourceTypeWritable || valueStatus != sourceTypeWritable {
-			return "", sourceTypeUnwritable
-		}
-		return "Dictionary[" + keySpelling + ", " + valueSpelling + "]", sourceTypeWritable
+		return typedKey && typedValue && (nestedUnknownType(key) || nestedUnknownType(value))
 	default:
-		return "", sourceTypeUnwritable
+		return false
 	}
 }
 

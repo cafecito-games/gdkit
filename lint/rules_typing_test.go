@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdkit/internal/semantic"
-	"github.com/cafecito-games/gdkit/internal/versiongate"
 	"github.com/cafecito-games/gdkit/project"
 )
 
@@ -428,6 +427,7 @@ func TestRequireTypedCollectionUsesGenericFallbackForKnownIncompleteLiterals(t *
 var mixed := [1, "two"]
 var lookup := {"one": 1, "two": "two"}
 var rows := [[]]
+var matrix := [[1], [2]]
 `)
 	want := []struct {
 		line    int
@@ -436,6 +436,7 @@ var rows := [[]]
 		{line: 2, message: "Array has no element type; write Array[T]"},
 		{line: 3, message: "Dictionary has no element type; write Dictionary[K, V]"},
 		{line: 4, message: "Array has no element type; write Array[T]"},
+		{line: 5, message: "Array has no element type; write Array[T]"},
 	}
 	if len(found) != len(want) {
 		t.Fatalf("got %v, want %d diagnostics", found, len(want))
@@ -454,6 +455,7 @@ func TestRequireTypedCollectionStaysSilentForUnknownLiteralComponents(t *testing
 	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
 var items := [not_declared]
 var lookup := {"key": also_not_declared}
+var nested := [[still_not_declared]]
 `)
 	if len(found) != 0 {
 		t.Fatalf("got %v, want no collection diagnostics for Unknown components", found)
@@ -489,9 +491,9 @@ func TestCollectionTypeMessageFailsClosedAndNeverLeaksUnsafeNames(t *testing.T) 
 		reported  bool
 	}{
 		{
-			name:      "precise nested array",
+			name:      "nested array is not source writable",
 			typeValue: semantic.Array(typePointer(semantic.Array(&intType))),
-			message:   "Array has no element type; write Array[Array[int]]",
+			message:   "Array has no element type; write Array[T]",
 			reported:  true,
 		},
 		{
@@ -503,6 +505,11 @@ func TestCollectionTypeMessageFailsClosedAndNeverLeaksUnsafeNames(t *testing.T) 
 		{
 			name:      "unknown component",
 			typeValue: semantic.Array(&unknown),
+			reported:  false,
+		},
+		{
+			name:      "unknown nested component",
+			typeValue: semantic.Array(typePointer(semantic.Array(&unknown))),
 			reported:  false,
 		},
 		{
@@ -551,7 +558,7 @@ func TestSourceWritableTypeAcceptsOnlySelectedVocabulary(t *testing.T) {
 		{name: "Callable", typeValue: semantic.Callable(), spelling: "Callable", status: sourceTypeWritable},
 		{name: "Signal", typeValue: semantic.Signal(), spelling: "Signal", status: sourceTypeWritable},
 		{name: "selected engine class", typeValue: node, spelling: "Node", status: sourceTypeWritable},
-		{name: "nested writable dictionary", typeValue: semantic.Dictionary(&intType, typePointer(semantic.Array(&node))), spelling: "Dictionary[int, Array[Node]]", status: sourceTypeWritable},
+		{name: "nested typed collection", typeValue: semantic.Dictionary(&intType, typePointer(semantic.Array(&node))), status: sourceTypeUnwritable},
 		{name: "unknown", typeValue: unknown, status: sourceTypeUnknown},
 		{name: "unknown nested component", typeValue: semantic.Array(&unknown), status: sourceTypeUnknown},
 		{name: "untyped nested container", typeValue: semantic.Array(typePointer(semantic.Array(nil))), status: sourceTypeUnwritable},
@@ -570,16 +577,14 @@ func TestSourceWritableTypeAcceptsOnlySelectedVocabulary(t *testing.T) {
 	}
 }
 
-func TestCollectionTypeMessageDoesNotSuggestNestedDictionaryBeforeGodot44(t *testing.T) {
+func TestCollectionTypeMessageDoesNotSuggestNestedDictionary(t *testing.T) {
 	engine := selectedCollectionEngine(t)
 	key, value := semantic.Builtin("String"), semantic.Builtin("int")
 	dictionary := semantic.Dictionary(&key, &value)
 	collection := semantic.Array(&dictionary)
-	message, reported := collectionTypeMessageForVersion(engine, collection, func(floor versiongate.Version) bool {
-		return floor == godot40
-	})
+	message, reported := collectionTypeMessage(engine, collection)
 	if !reported || message != "Array has no element type; write Array[T]" {
-		t.Fatalf("collectionTypeMessageForVersion() = %q, %t; want generic Array fallback", message, reported)
+		t.Fatalf("collectionTypeMessage() = %q, %t; want generic Array fallback", message, reported)
 	}
 }
 
