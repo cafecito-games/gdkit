@@ -475,6 +475,108 @@ func (s *InterfaceSet) LookupBase(classID, name string) LookupResult {
 	return class.lookupFrom(1, name)
 }
 
+// LookupMember resolves an ordinary instance member from a resolved receiver
+// type. It preserves the existing found/absent/unknown vocabulary: callers
+// may only treat an absent result as a complete miss. Meta-class policy is
+// deliberately excluded because construction and static access belong to the
+// later meta receiver pass.
+func (s *InterfaceSet) LookupMember(receiver Type, name string) LookupResult {
+	if s == nil || s.index == nil {
+		return unknownLookup("class index is unavailable")
+	}
+	if strings.TrimSpace(name) == "" {
+		return unknownLookup("member name is empty")
+	}
+	if problem := validate(receiver); problem != "" {
+		return unknownLookup(fmt.Sprintf("receiver type is malformed: %s", problem))
+	}
+	switch receiver.Kind() {
+	case KindClass:
+		if receiver.Meta() {
+			return unknownLookup(fmt.Sprintf("meta-class receiver %q has no instance-member lookup", receiver.Name()))
+		}
+		if _, userClass := s.index.Classes[receiver.Name()]; userClass {
+			return s.Lookup(receiver.Name(), name)
+		}
+		return s.lookupEngineClassMember(receiver.Name(), name)
+	case KindBuiltin:
+		return s.lookupBuiltinMember(receiver.Name(), KindBuiltin, name)
+	case KindArray:
+		return s.lookupBuiltinMember("Array", KindArray, name)
+	case KindDictionary:
+		return s.lookupBuiltinMember("Dictionary", KindDictionary, name)
+	case KindCallable:
+		return s.lookupBuiltinMember("Callable", KindCallable, name)
+	case KindSignal:
+		return s.lookupBuiltinMember("Signal", KindSignal, name)
+	case KindUnknown:
+		return unknownLookup(fmt.Sprintf("receiver type is unknown: %s", receiver.Reason()))
+	case KindVariant:
+		return unknownLookup("Variant receiver has no selected member owner")
+	case KindVoid:
+		return unknownLookup("void receiver has no selected member owner")
+	case KindEnum:
+		return unknownLookup(fmt.Sprintf("enum receiver %q has no selected member owner", receiver.Name()))
+	default:
+		return unknownLookup(fmt.Sprintf("receiver type kind %d is unsupported", receiver.Kind()))
+	}
+}
+
+func (s *InterfaceSet) lookupEngineClassMember(owner, name string) LookupResult {
+	owners, complete, cause := s.engineOwners(owner)
+	return s.lookupEngineOwners(owners, complete, cause, name)
+}
+
+func (s *InterfaceSet) lookupBuiltinMember(owner string, want Kind, name string) LookupResult {
+	if s == nil || s.engine == nil {
+		return unknownLookup(fmt.Sprintf("engine schema is unavailable while resolving builtin receiver %q", owner))
+	}
+	canonical := s.engine.ResolveType(owner)
+	if canonical.Kind() == KindUnknown {
+		return unknownLookup(canonical.Reason())
+	}
+	if canonical.Kind() != want {
+		return unknownLookup(fmt.Sprintf("engine owner %q is not the expected receiver kind %d", owner, want))
+	}
+	return s.lookupDirectEngineMember(owner, name)
+}
+
+func (s *InterfaceSet) lookupEngineOwners(owners []InterfaceOwner, complete bool, cause, name string) LookupResult {
+	if s == nil || s.engine == nil {
+		return unknownLookup("engine schema is unavailable while resolving receiver member")
+	}
+	for _, owner := range owners {
+		if owner.engineOwner == "" {
+			continue
+		}
+		result := s.lookupDirectEngineMember(owner.engineOwner, name)
+		if result.State() != LookupAbsent {
+			return result
+		}
+	}
+	if complete {
+		return LookupResult{state: LookupAbsent}
+	}
+	return unknownLookup(cause)
+}
+
+func (s *InterfaceSet) lookupDirectEngineMember(owner, name string) LookupResult {
+	method, hasMethod := s.engine.Method(owner, name)
+	property, hasProperty := s.engine.Property(owner, name)
+	if hasMethod && hasProperty {
+		return unknownLookup(fmt.Sprintf("engine member %s.%s has conflicting direct method and property declarations", owner, name))
+	}
+	if hasMethod {
+		member := engineMethodMember(method)
+		return LookupResult{state: LookupFound, member: &member}
+	}
+	if hasProperty {
+		member := enginePropertyMember(property)
+		return LookupResult{state: LookupFound, member: &member}
+	}
+	return LookupResult{state: LookupAbsent}
+}
+
 // ResolveType resolves one user-written annotation in classID's declaration
 // context. A malformed, unsupported, ambiguous, or unavailable spelling is a
 // reasoned Unknown that retains the original spelling.

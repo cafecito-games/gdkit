@@ -784,6 +784,100 @@ func TestInterfacesAreDeterministicImmutableAndSafeForConcurrentReads(t *testing
 	}
 }
 
+func TestInterfacesLookupMemberBridgesReceiverKindsAndTriState(t *testing.T) {
+	builder := NewEngineBuilder()
+	for _, builtin := range []string{"int", "Array", "Dictionary", "Callable", "Signal"} {
+		if err := builder.AddBuiltin(builtin); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, class := range []struct{ name, parent string }{
+		{name: "Object"},
+		{name: "RefCounted", parent: "Object"},
+		{name: "Node", parent: "Object"},
+		{name: "Broken", parent: "MissingParent"},
+	} {
+		if err := builder.AddClass(class.name, class.parent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, method := range []struct {
+		owner, name string
+	}{
+		{owner: "Object", name: "inherited"},
+		{owner: "Broken", name: "direct"},
+		{owner: "int", name: "to_string"},
+		{owner: "Array", name: "append"},
+		{owner: "Dictionary", name: "get"},
+		{owner: "Callable", name: "call"},
+		{owner: "Signal", name: "connect"},
+		{owner: "Object", name: "conflict"},
+	} {
+		if err := builder.AddMethod(method.owner, method.name, "int", nil, false, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := builder.AddProperty("Object", "conflict", "int"); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	interfaces := BuildInterfaces(BuildIndex(sources(t, map[string]string{
+		"player.gd": "class_name Player\nvar field: int\n",
+	})), engine)
+	player := requireInterface(t, interfaces, "player.gd")
+	malformedArrayNode := &typeNode{kind: KindArray, hasElement: true}
+	malformedArray := Type{node: malformedArrayNode}
+	malformedArrayNode.element = malformedArray
+
+	for _, testCase := range []struct {
+		name     string
+		receiver Type
+		member   string
+		state    LookupState
+		kind     MemberKind
+	}{
+		{name: "user", receiver: player.Type(), member: "field", state: LookupFound, kind: MemberVariable},
+		{name: "engine inherited", receiver: engine.Class("Node"), member: "inherited", state: LookupFound, kind: MemberEngineMethod},
+		{name: "builtin scalar", receiver: Builtin("int"), member: "to_string", state: LookupFound, kind: MemberEngineMethod},
+		{name: "array", receiver: Array(nil), member: "append", state: LookupFound, kind: MemberEngineMethod},
+		{name: "dictionary", receiver: Dictionary(nil, nil), member: "get", state: LookupFound, kind: MemberEngineMethod},
+		{name: "callable", receiver: Callable(), member: "call", state: LookupFound, kind: MemberEngineMethod},
+		{name: "signal", receiver: Signal(), member: "connect", state: LookupFound, kind: MemberEngineMethod},
+		{name: "engine absent", receiver: engine.Class("Node"), member: "missing", state: LookupAbsent},
+		{name: "builtin absent", receiver: Dictionary(nil, nil), member: "missing", state: LookupAbsent},
+		{name: "incomplete chain keeps direct", receiver: engine.Class("Broken"), member: "direct", state: LookupFound, kind: MemberEngineMethod},
+		{name: "incomplete chain blocks absence", receiver: engine.Class("Broken"), member: "missing", state: LookupUnknown},
+		{name: "engine direct collision", receiver: engine.Class("Node"), member: "conflict", state: LookupUnknown},
+		{name: "meta", receiver: Class("Node", nil, true), member: "inherited", state: LookupUnknown},
+		{name: "enum", receiver: Enum("Node.Mode"), member: "missing", state: LookupUnknown},
+		{name: "variant", receiver: Variant(), member: "missing", state: LookupUnknown},
+		{name: "malformed container", receiver: malformedArray, member: "append", state: LookupUnknown},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			result := interfaces.LookupMember(testCase.receiver, testCase.member)
+			if result.State() != testCase.state {
+				t.Fatalf("LookupMember(%s, %q) = %s (%q), want %s", testCase.receiver, testCase.member, result.State(), result.Reason(), testCase.state)
+			}
+			if testCase.state == LookupFound {
+				member, ok := result.Member()
+				if !ok || member.Kind() != testCase.kind {
+					t.Fatalf("LookupMember(%s, %q) member = %#v, %t; want %s", testCase.receiver, testCase.member, member, ok, testCase.kind)
+				}
+			}
+		})
+	}
+
+	withoutEngine := BuildInterfaces(BuildIndex(sources(t, map[string]string{
+		"plain.gd": "class_name Plain\n",
+	})), nil)
+	if result := withoutEngine.LookupMember(Array(nil), "append"); result.State() != LookupUnknown || !strings.Contains(result.Reason(), "unavailable") {
+		t.Fatalf("unavailable builtin engine = %s (%q), want reasoned unknown", result.State(), result.Reason())
+	}
+}
+
 type interfaceEngineClass struct {
 	name   string
 	parent string
