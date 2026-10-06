@@ -276,10 +276,10 @@ func (s *Scope) Lookup(name string) BindingResult {
 	if strings.TrimSpace(name) == "" {
 		return unknownBinding("identifier name is empty")
 	}
-	if s.blocked != "" {
-		return unknownBinding(s.blocked)
-	}
 	for current := s; current != nil; current = current.parent {
+		if current.blocked != "" {
+			return unknownBinding(current.blocked)
+		}
 		entry, ok := current.bindings[name]
 		if !ok {
 			continue

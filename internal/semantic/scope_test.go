@@ -545,6 +545,38 @@ func TestScopesFailClosedForSharedAndCyclicExpressionGraphs(t *testing.T) {
 	})
 }
 
+func TestScopesInheritSharedPatternBlocksIntoNestedFrames(t *testing.T) {
+	source := sources(t, map[string]string{
+		"base.gd":   "class_name Base\nfunc run(input):\n\tpass\n",
+		"player.gd": "class_name Player extends Base\nfunc run(input):\n\tmatch input:\n\t\t_:\n\t\t\tif true:\n\t\t\t\tNode\n\t\t\tvar callback = func():\n\t\t\t\tNode\n\t\t\tsuper()\n",
+	})
+	file := source.File("player.gd")
+	function := file.Statements[1].(*ast.FunctionDeclaration)
+	match := function.Body[0].(*ast.MatchStatement)
+	binding := &ast.BindingPattern{Name: "Node"}
+	match.Cases[0].Patterns = []ast.Expression{&ast.ArrayLiteral{Elements: []ast.Expression{binding, binding}}}
+
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
+	for _, testCase := range []struct {
+		name string
+		line int
+	}{
+		{name: "Node", line: 6},
+		{name: "Node", line: 8},
+		{name: "super", line: 9},
+	} {
+		identifier := scopeIdentifierAt(t, file, testCase.name, testCase.line)
+		scope, ok := scopes.ScopeAt(identifier)
+		if !ok {
+			t.Fatalf("%s at line %d was not indexed", testCase.name, testCase.line)
+		}
+		result := scope.Lookup(testCase.name)
+		if result.State() != LookupUnknown || result.Reason() != sharedASTNodeReason {
+			t.Fatalf("%s at line %d = %s (%q), want shared-node unknown", testCase.name, testCase.line, result.State(), result.Reason())
+		}
+	}
+}
+
 func TestScopesComposeLocalMemberProjectAndEngineNamespaces(t *testing.T) {
 	source := sources(t, map[string]string{
 		"global.gd":   "class_name Global\n",
