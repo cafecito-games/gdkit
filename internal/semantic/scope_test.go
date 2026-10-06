@@ -334,6 +334,25 @@ func TestScopesFailClosedForUnsupportedStatementBoundaries(t *testing.T) {
 	}
 }
 
+func TestScopesFailClosedAfterUnmodelledStatementBoundary(t *testing.T) {
+	source := sources(t, map[string]string{
+		"player.gd": "class_name Player\nfunc run():\n\tpass\n",
+	})
+	function := source.File("player.gd").Statements[1].(*ast.FunctionDeclaration)
+	use := &ast.Identifier{Name: "Node"}
+	// A directive cannot occur in a function in parsed GDScript, but it is a
+	// concrete ast.Statement that ScopeIndex has no lexical model for. It pins
+	// the generic unsupported-statement continuation used for future parser
+	// statement kinds with unknown declaration behavior.
+	function.Body = []ast.Statement{
+		&ast.Directive{Name: "unexpected"},
+		&ast.ExpressionStatement{Expression: use},
+	}
+
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
+	scopeRequireUnknown(t, scopes, use, "unmodelled statement continuation")
+}
+
 func TestScopesUseStaticContextForConstantInitializers(t *testing.T) {
 	source := sources(t, map[string]string{
 		"player.gd": "class_name Player\nvar field: int\nconst SELF_VALUE = self\nconst FIELD_VALUE = field\nfunc run():\n\tconst LOCAL_SELF = self\n\tconst LOCAL_FIELD = field\nfunc values(parameter):\n\tvar mutable = 1\n\tconst FROM_PARAMETER = parameter\n\tconst FROM_MUTABLE = mutable\n\tconst FIRST = 1\n\tconst FROM_CONST = FIRST\n",

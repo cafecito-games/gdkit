@@ -804,12 +804,20 @@ func (i *ScopeIndex) visitStatement(statement ast.Statement, scope *Scope) *Scop
 			}
 		}
 		return i.ambiguousUnsupported(scope, node, fmt.Sprintf("unsupported nested %T has no established lexical scope boundary", statement), names...)
-	case *ast.Directive:
-		i.visitUnsupported(statement, scope, fmt.Sprintf("unsupported nested %T has no established lexical scope boundary", statement))
-	default:
+	case *ast.KeywordStatement, *ast.Comment, *ast.Annotation:
 		i.visitChildren(statement, scope)
+	default:
+		return i.unsupportedStatementContinuation(scope, statement)
 	}
 	return scope
+}
+
+func (i *ScopeIndex) unsupportedStatementContinuation(scope *Scope, statement ast.Statement) *Scope {
+	reason := fmt.Sprintf("unsupported %T has no established lexical scope boundary", statement)
+	i.visitUnsupported(statement, scope, reason)
+	continuation := i.newScope(scope, scope.context)
+	continuation.blocked = reason
+	return continuation
 }
 
 func (i *ScopeIndex) ambiguousSharedStatement(scope *Scope, statement ast.Statement) *Scope {
