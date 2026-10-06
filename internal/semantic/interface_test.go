@@ -958,7 +958,7 @@ func TestInterfacesLookupMetaMemberFiltersStaticFactsAndPreservesOwnerChains(t *
 			assertResult(t, base, name, LookupUnknown, MemberVariable)
 		})
 	}
-	assertResult(t, base, "missing", LookupAbsent, MemberVariable)
+	assertResult(t, base, "missing", LookupUnknown, MemberVariable)
 	assertResult(t, Class("child.gd", nil, true), "ANSWER", LookupFound, MemberConstant)
 	assertResult(t, Class("child.gd", nil, true), "static_field", LookupUnknown, MemberVariable)
 
@@ -967,7 +967,7 @@ func TestInterfacesLookupMetaMemberFiltersStaticFactsAndPreservesOwnerChains(t *
 	assertResult(t, node, "inherited_static", LookupFound, MemberEngineMethod)
 	assertResult(t, node, "instance_engine", LookupUnknown, MemberEngineMethod)
 	assertResult(t, node, "engine_property", LookupUnknown, MemberEngineProperty)
-	assertResult(t, node, "missing", LookupAbsent, MemberEngineMethod)
+	assertResult(t, node, "missing", LookupUnknown, MemberEngineMethod)
 	assertResult(t, Class("Broken", nil, true), "direct_static", LookupFound, MemberEngineMethod)
 	assertResult(t, Class("Broken", nil, true), "missing", LookupUnknown, MemberEngineMethod)
 	assertResult(t, Class("Node", nil, false), "static_engine", LookupUnknown, MemberEngineMethod)

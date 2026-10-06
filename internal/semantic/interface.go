@@ -551,6 +551,12 @@ func (s *InterfaceSet) lookupMetaOwners(owners []InterfaceOwner, complete bool, 
 	if s == nil {
 		return unknownLookup("class interface is unavailable")
 	}
+	// The selected engine model retains engine methods and properties, but not
+	// every fact that GDScript exposes through a class object (notably
+	// constants, enums, and signals). Keep looking through every owner for a
+	// retained static method, then fail closed if a complete miss crossed an
+	// engine owner whose static vocabulary is necessarily partial.
+	unretainedEngineStaticFacts := false
 	for _, owner := range owners {
 		if owner.classID != "" {
 			class := s.classes[owner.classID]
@@ -575,6 +581,7 @@ func (s *InterfaceSet) lookupMetaOwners(owners []InterfaceOwner, complete bool, 
 		result := s.lookupDirectEngineMember(owner.engineOwner, name)
 		switch result.State() {
 		case LookupAbsent:
+			unretainedEngineStaticFacts = true
 			continue
 		case LookupUnknown:
 			return result
@@ -588,6 +595,9 @@ func (s *InterfaceSet) lookupMetaOwners(owners []InterfaceOwner, complete bool, 
 			}
 			return unknownLookup(fmt.Sprintf("engine member %s.%s is not a static method", owner.engineOwner, name))
 		}
+	}
+	if unretainedEngineStaticFacts {
+		return unknownLookup(fmt.Sprintf("selected engine schema does not retain all static/meta facts while resolving member %q", name))
 	}
 	if complete {
 		return LookupResult{state: LookupAbsent}

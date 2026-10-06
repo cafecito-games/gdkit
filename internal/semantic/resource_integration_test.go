@@ -136,6 +136,58 @@ func TestResourceReductionDistinguishesRelativePreloadAndLoad(t *testing.T) {
 	assertResourceClass(t, analyzer.TypeOf(resourceVariableValue(t, file, "loaded")), "target.gd", true)
 }
 
+func TestResourceMetaLookupFailsClosedForUnretainedStaticFacts(t *testing.T) {
+	root := t.TempDir()
+	writeResourceFixture(t, root, map[string]string{
+		"project.godot":   "[application]\nconfig/name=\"meta lookup fixture\"\n",
+		"actors/enemy.gd": "class_name Enemy\n",
+		"loader.gd":       "class_name Loader\nfunc run():\n\tvar inherited_constant := preload(\"res://actors/enemy.gd\").NOTIFICATION_POSTINITIALIZE\n",
+	})
+
+	snapshot, err := project.Load(project.Config{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := engineschema.LoadEmbedded(4, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := semanticsource.NewSnapshot(snapshot)
+	interfaces := semantic.BuildInterfaces(semantic.BuildIndex(source), loaded.Engine)
+
+	// Godot 4.7.2 evaluates Node.NOTIFICATION_READY to 13 and
+	// preload("res://actors/enemy.gd").NOTIFICATION_POSTINITIALIZE to 0. The
+	// selected engine model deliberately retains methods and properties, but no
+	// engine constants, enums, or signals, so a static/meta lookup must not
+	// claim a complete absence for either real producer fact.
+	for _, testCase := range []struct {
+		name     string
+		receiver semantic.Type
+		member   string
+	}{
+		{name: "engine constant", receiver: semantic.Class("Node", nil, true), member: "NOTIFICATION_READY"},
+		{name: "script resource inherited constant", receiver: semantic.Class("actors/enemy.gd", nil, true), member: "NOTIFICATION_POSTINITIALIZE"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := interfaces.LookupMetaMember(testCase.receiver, testCase.member)
+			if got.State() != semantic.LookupUnknown || !strings.Contains(got.Reason(), "does not retain") {
+				t.Fatalf("LookupMetaMember(%s, %q) = %s (%q), want retained-gap Unknown", testCase.receiver, testCase.member, got.State(), got.Reason())
+			}
+		})
+	}
+	file := source.File("loader.gd")
+	got := semantic.NewAnalyzer(source, loaded.Engine).TypeOf(resourceVariableValue(t, file, "inherited_constant"))
+	if got.Kind() != semantic.KindUnknown || !strings.Contains(got.Reason(), "does not retain") {
+		t.Fatalf("resource static constant = %s (%q), want retained-gap Unknown", got, got.Reason())
+	}
+
+	// #46/#48 ordinary instance lookup intentionally remains exact against the
+	// retained method/property model. The #49 fail-closed boundary is meta-only.
+	if got := interfaces.LookupMember(loaded.Engine.Class("Node"), "NOTIFICATION_READY"); got.State() != semantic.LookupAbsent {
+		t.Fatalf("LookupMember(Node, NOTIFICATION_READY) = %s (%q), want existing instance LookupAbsent contract", got.State(), got.Reason())
+	}
+}
+
 func TestResourceReductionFailsClosedForRealParseFailedScriptTarget(t *testing.T) {
 	root := t.TempDir()
 	writeResourceFixture(t, root, map[string]string{
