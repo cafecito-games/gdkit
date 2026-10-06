@@ -314,6 +314,7 @@ func (s *Scope) lexicalEntry(name string) (scopeEntry, bool) {
 type ScopeIndex struct {
 	interfaces  *InterfaceSet
 	scopes      map[ast.Node]*Scope
+	shared      map[ast.Node]bool
 	nextScope   uint64
 	nextBinding uint64
 }
@@ -325,10 +326,12 @@ func BuildScopes(interfaces *InterfaceSet) *ScopeIndex {
 	index := &ScopeIndex{
 		interfaces: interfaces,
 		scopes:     map[ast.Node]*Scope{},
+		shared:     map[ast.Node]bool{},
 	}
 	if interfaces == nil || interfaces.index == nil {
 		return index
 	}
+	index.findSharedNodes()
 	for _, id := range interfaces.ClassIDs() {
 		class := interfaces.index.Classes[id]
 		if class != nil {
@@ -336,6 +339,62 @@ func BuildScopes(interfaces *InterfaceSet) *ScopeIndex {
 		}
 	}
 	return index
+}
+
+// findSharedNodes walks exactly the declaration subtrees ScopeIndex builds.
+// It runs before bindings are published so a malformed shared declaration
+// cannot leave the first traversal with a found binding before the second
+// traversal discovers the ambiguity. Direct inner-class declarations are
+// omitted because their body belongs to the separately indexed inner class.
+func (i *ScopeIndex) findSharedNodes() {
+	if i == nil || i.interfaces == nil || i.interfaces.index == nil {
+		return
+	}
+	if i.shared == nil {
+		i.shared = map[ast.Node]bool{}
+	}
+	seen := map[ast.Node]bool{}
+	var markTree func(ast.Node)
+	markTree = func(node ast.Node) {
+		if isNilNode(node) || i.shared[node] {
+			return
+		}
+		i.shared[node] = true
+		for _, child := range ast.Children(node) {
+			markTree(child)
+		}
+	}
+	var visit func(ast.Node)
+	visit = func(node ast.Node) {
+		if isNilNode(node) {
+			return
+		}
+		if seen[node] {
+			markTree(node)
+			return
+		}
+		seen[node] = true
+		for _, child := range ast.Children(node) {
+			visit(child)
+		}
+	}
+	for _, id := range i.interfaces.ClassIDs() {
+		class := i.interfaces.index.Classes[id]
+		if class == nil {
+			continue
+		}
+		roots := map[ast.Node]bool{}
+		for _, declaration := range class.Declarations {
+			if isNilNode(declaration.Node) || roots[declaration.Node] {
+				continue
+			}
+			switch declaration.Node.(type) {
+			case *ast.FunctionDeclaration, *ast.VariableDeclaration, *ast.EnumDeclaration:
+				roots[declaration.Node] = true
+				visit(declaration.Node)
+			}
+		}
+	}
 }
 
 // ScopeAt returns the effective lexical view recorded for node. A node from a
@@ -523,6 +582,12 @@ func (i *ScopeIndex) namespaceBinding(scope *Scope, key string, kind BindingKind
 // local-over-visible-name redeclarations; malformed hand-built ASTs are marked
 // ambiguous rather than being assigned an invented shadowing rule.
 func (i *ScopeIndex) install(scope *Scope, binding Binding, allowCapturedShadow bool) *Scope {
+	// Every lexical producer retains its owning AST node as Declaration, so the
+	// preflight applies uniformly to locals, loop and match bindings,
+	// parameters, and setter parameters before any one traversal publishes it.
+	if i.nodeShared(binding.declaration) {
+		return i.ambiguous(scope, binding.name, sharedASTNodeReason)
+	}
 	next := i.copyScope(scope)
 	binding.scopeID = next.id
 	name := binding.name
@@ -559,13 +624,31 @@ func (i *ScopeIndex) record(node ast.Node, scope *Scope) {
 	if isNilNode(node) || scope == nil {
 		return
 	}
+	if i.nodeShared(node) {
+		i.blockSharedNode(node, scope)
+		return
+	}
 	if prior, recorded := i.scopes[node]; recorded && prior != scope {
-		blocked := i.newScope(nil, scope.context)
-		blocked.blocked = "AST node is shared between lexical positions"
-		i.scopes[node] = blocked
+		i.blockSharedNode(node, scope)
 		return
 	}
 	i.scopes[node] = scope
+}
+
+const sharedASTNodeReason = "AST node is shared between lexical positions"
+
+func (i *ScopeIndex) nodeShared(node ast.Node) bool {
+	return i != nil && !isNilNode(node) && i.shared != nil && i.shared[node]
+}
+
+func (i *ScopeIndex) blockSharedNode(node ast.Node, scope *Scope) {
+	if i.shared == nil {
+		i.shared = map[ast.Node]bool{}
+	}
+	i.shared[node] = true
+	blocked := i.newScope(nil, scope.context)
+	blocked.blocked = sharedASTNodeReason
+	i.scopes[node] = blocked
 }
 
 func isNilNode(node ast.Node) bool {
@@ -865,7 +948,9 @@ func (i *ScopeIndex) visitUnsupported(node ast.Node, scope *Scope, reason string
 	// would mistake the two legitimate lexical views for a shared AST node. A
 	// pre-existing different view still goes through record, preserving the
 	// fail-closed shared-node behavior.
-	if prior, recorded := i.scopes[node]; !recorded || prior == scope {
+	if i.nodeShared(node) {
+		i.record(node, scope)
+	} else if prior, recorded := i.scopes[node]; !recorded || prior == scope {
 		i.scopes[node] = blocked
 	} else {
 		i.record(node, blocked)

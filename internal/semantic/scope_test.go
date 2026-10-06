@@ -470,6 +470,31 @@ func TestScopesFailClosedForSharedAndTypedNilASTNodes(t *testing.T) {
 	}
 }
 
+func TestScopesFailClosedForSharedDeclarationNodes(t *testing.T) {
+	source := sources(t, map[string]string{
+		"player.gd": "class_name Player\nfunc first():\n\tpass\nfunc second():\n\tpass\n",
+	})
+	file := source.File("player.gd")
+	first := file.Statements[1].(*ast.FunctionDeclaration)
+	second := file.Statements[2].(*ast.FunctionDeclaration)
+	shared := &ast.VariableDeclaration{Name: "value", Value: &ast.Literal{Kind: ast.IntegerLiteral, Raw: "1"}}
+	firstUse := &ast.Identifier{Name: "value"}
+	secondUse := &ast.Identifier{Name: "value"}
+	first.Body = []ast.Statement{shared, &ast.ExpressionStatement{Expression: firstUse}}
+	second.Body = []ast.Statement{shared, &ast.ExpressionStatement{Expression: secondUse}}
+
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
+	scopeRequireUnknown(t, scopes, firstUse, "first shared declaration")
+	scopeRequireUnknown(t, scopes, secondUse, "second shared declaration")
+	sharedScope, ok := scopes.ScopeAt(shared)
+	if !ok {
+		t.Fatal("shared declaration was not indexed")
+	}
+	if result := sharedScope.Lookup("value"); result.State() != LookupUnknown || result.Reason() != "AST node is shared between lexical positions" {
+		t.Fatalf("shared declaration lookup = %s (%q), want shared-node unknown", result.State(), result.Reason())
+	}
+}
+
 func TestScopesComposeLocalMemberProjectAndEngineNamespaces(t *testing.T) {
 	source := sources(t, map[string]string{
 		"global.gd":   "class_name Global\n",
