@@ -121,6 +121,29 @@ func TestLoadKeepsIgnoredResourceOwnersOutOfInventoryInEveryIdentityMode(t *test
 	}
 }
 
+func TestLoadKeepsGeneratedMetadataOutOfInventoryInEveryIdentityMode(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"loader.gd":          "class_name Loader\n",
+		".godot/cache.gd":    "class_name Cache\n",
+		".godot/scene.tscn":  "[gd_scene format=3]\n",
+		".git/hooks/tool.gd": "class_name Hook\n",
+		".git/theme.tres":    "[gd_resource type=\"Theme\" format=3]\n",
+	})
+	want := []Resource{{Path: "loader.gd", Kind: ResourceScript}}
+	for _, identities := range []bool{false, true} {
+		t.Run(fmt.Sprintf("identities=%t", identities), func(t *testing.T) {
+			snapshot, err := Load(Config{Root: root, Identities: identities})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(snapshot.Resources, want) {
+				t.Fatalf("Resources = %#v, want generated metadata excluded regardless of Identities", snapshot.Resources)
+			}
+		})
+	}
+}
+
 func TestLoadMarksIdentityEvidenceIncompleteWhenCoverageIsNarrowed(t *testing.T) {
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{
@@ -175,6 +198,21 @@ func TestLoadMarksUnscannableIdentityClaimEvidenceIncomplete(t *testing.T) {
 	}
 	if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
 		t.Fatalf("identity capture = requested:%t incomplete:%t, want oversized claim source to be incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
+	}
+}
+
+func TestLoadMarksLeadingCommentUnscannableIdentityClaimEvidenceIncomplete(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"loader.gd":     "class_name Loader\n",
+		"oversize.tscn": "; Godot permits leading comments\n" + strings.Repeat("x", maxResourceLine+1) + "\n",
+	})
+	snapshot, err := Load(Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
+		t.Fatalf("identity capture = requested:%t incomplete:%t, want an unreadable post-comment header to remain incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
 	}
 }
 

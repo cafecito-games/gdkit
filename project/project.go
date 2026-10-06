@@ -74,8 +74,9 @@ type Config struct {
 	// Claim.Ignored: an ignored file still owns its identity, and dropping it
 	// from the table would make every reference to it look dangling. Root
 	// .git and .godot metadata are the exception: neither belongs to the
-	// project claimant universe. A reference inside an ignored path is not
-	// recorded at all, because nothing reports or rewrites one.
+	// project claimant universe and are omitted from the resource inventory in
+	// every mode. A reference inside an ignored path is not recorded at all,
+	// because nothing reports or rewrites one.
 	Identities bool
 }
 
@@ -294,7 +295,7 @@ func Load(config Config) (*Snapshot, error) {
 			// to the project identity universe. In particular, .godot/imported
 			// contains binary resource cache entries with internal UIDs that must
 			// not make project claimant evidence ambiguous or incomplete.
-			if config.Identities && entry.IsDir() && identityMetadataPath(relative) {
+			if entry.IsDir() && identityMetadataPath(relative) {
 				return filepath.SkipDir
 			}
 			if glob.MatchAny(config.Exclude, relative) || entry.IsDir() && glob.MatchAny(config.Exclude, relative+"/") {
@@ -336,7 +337,7 @@ func Load(config Config) (*Snapshot, error) {
 				if hidden && !config.Identities {
 					return nil
 				}
-				header, refs, complete := scanResource(name, config.Identities && !hidden)
+				header, headerLine, refs, complete := scanResource(name, config.Identities && !hidden)
 				if config.Identities && !complete {
 					identityIncomplete = true
 				}
@@ -347,7 +348,7 @@ func Load(config Config) (*Snapshot, error) {
 					if config.Identities {
 						table.claims = append(table.claims, Claim{
 							UID: header, Owner: relative, Path: relative,
-							Line: 1, Kind: ClaimHeader, Ignored: hidden,
+							Line: headerLine, Kind: ClaimHeader, Ignored: hidden,
 						})
 					}
 				}
@@ -428,7 +429,7 @@ func Load(config Config) (*Snapshot, error) {
 				// extension, not only .scn and .res. Its RSRC/RSCC magic is the
 				// evidence that an otherwise unmodelled regular file can carry
 				// an internal UID. A read failure is equally inconclusive.
-				if config.Identities {
+				if config.Identities && !identityIncomplete {
 					binary, complete := binaryResourceClaimSource(name)
 					if binary || !complete {
 						identityIncomplete = true

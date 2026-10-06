@@ -115,14 +115,14 @@ func (i *identities) sort() {
 // was read completely; a later reference-scan failure cannot make that already
 // captured claimant incomplete.
 //
-// Only the first line can declare the file's own identity; the identifiers on
-// later lines belong to other files. The whole file is read only when the
-// caller wants those, because the other tools that load a project need nothing
-// past the header.
-func scanResource(name string, references bool) (header string, refs []Reference, complete bool) {
+// The first nonblank, non-semicolon-comment line can declare the file's own
+// identity; the identifiers on later lines belong to other files. The whole
+// file is read only when the caller wants those, because the other tools that
+// load a project need nothing past the header.
+func scanResource(name string, references bool) (header string, headerLine int, refs []Reference, complete bool) {
 	file, err := os.Open(name)
 	if err != nil {
-		return "", nil, false
+		return "", 0, nil, false
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
@@ -130,13 +130,17 @@ func scanResource(name string, references bool) (header string, refs []Reference
 	headerRead := false
 	for number := 1; scanner.Scan(); number++ {
 		line := strings.TrimSpace(scanner.Text())
-		if number == 1 {
+		if !headerRead {
+			if line == "" || strings.HasPrefix(line, ";") {
+				continue
+			}
 			headerRead = true
 			if strings.HasPrefix(line, "[gd_scene") || strings.HasPrefix(line, "[gd_resource") {
 				header = quotedUID(line)
+				headerLine = number
 			}
 			if !references {
-				return header, nil, true
+				return header, headerLine, nil, true
 			}
 			continue
 		}
@@ -155,9 +159,9 @@ func scanResource(name string, references bool) (header string, refs []Reference
 		})
 	}
 	if scanner.Err() != nil && !headerRead {
-		return header, refs, false
+		return header, headerLine, refs, false
 	}
-	return header, refs, true
+	return header, headerLine, refs, true
 }
 
 // importClaim returns the identity a .import file declares for its asset and

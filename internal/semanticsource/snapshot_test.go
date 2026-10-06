@@ -152,6 +152,36 @@ func TestSnapshotResolvesImmutableResourceInventoryAndUIDClaims(t *testing.T) {
 	}
 }
 
+func TestSnapshotFailsClosedForLeadingCommentHeaderUIDCollision(t *testing.T) {
+	root := t.TempDir()
+	for name, contents := range map[string]string{
+		"loader.gd":     "class_name Loader\n",
+		"target.gd":     "class_name Target\n",
+		"target.gd.uid": "uid://b\n",
+		// Godot v4.7.2 loads this exact leading-comment text-resource form.
+		"scene.tscn": "; retained by Godot\n\n[gd_scene format=3 uid=\"uid://b\"]\n",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.IdentityIncomplete {
+		t.Fatal("leading-comment text resource unexpectedly made claim evidence incomplete")
+	}
+	got := NewSnapshot(snapshot).ResolveLoadResource("loader.gd", "uid://b")
+	if got.State() != semantic.ResourceAmbiguousUID || got.Provenance() != semantic.ResourceUIDClaim || got.Reason() != "resource UID has multiple captured claimants: scene.tscn, target.gd" {
+		t.Fatalf("leading-comment UID collision = state=%s provenance=%s reason=%q, want fail-closed ambiguity", got.State(), got.Provenance(), got.Reason())
+	}
+}
+
 func TestSnapshotDistinguishesRelativePreloadAndLoad(t *testing.T) {
 	root := t.TempDir()
 	for name, contents := range map[string]string{
