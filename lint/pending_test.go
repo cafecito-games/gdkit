@@ -114,7 +114,8 @@ func TestEnableRejectsAnUnknownRule(t *testing.T) {
 // own empty configuration value rather than through PendingRule.
 func TestPendingRulesAreExactlyTheInertOnes(t *testing.T) {
 	want := []string{
-		"no-engine-logging", "require-argument-type", "require-return-type",
+		"inconsistent-return-statements", "no-engine-logging",
+		"require-argument-type", "require-return-type",
 		"require-signal-argument-type", "require-typed-collection",
 		"require-typed-loop-variable", "require-variable-type",
 	}
