@@ -12,3 +12,11 @@ type SourceSet interface {
 	Autoloads() map[string]string
 	ParseFailures() []string
 }
+
+// ResourceResolver is an optional immutable capability a SourceSet may expose
+// for literal preload/load evidence. It deliberately sits beside SourceSet so
+// #45's script-only ResolvePath contract remains source-compatible and cannot
+// be mistaken for resource existence or UID uniqueness.
+type ResourceResolver interface {
+	ResolveResource(from, target string) ResourceResolution
+}

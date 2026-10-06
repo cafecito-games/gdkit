@@ -56,6 +56,45 @@ func TestLoadDiscoversParsesAndExcludes(t *testing.T) {
 	}
 }
 
+func TestLoadPublishesSortedResourceInventory(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"scripts/loader.gd":   "extends Node\n",
+		"scripts/broken.gd":   "func (((\n",
+		"world/main.tscn":     "[gd_scene format=3]\n",
+		"theme.tres":          "[gd_resource type=\"Theme\" format=3]\n",
+		"art/icon.png":        "binary",
+		"art/icon.png.import": "[remap]\nimporter=\"texture\"\n",
+		"notes.txt":           "not a Godot resource owner",
+	})
+
+	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"."}, Identities: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.IdentityEvidence {
+		t.Fatal("identity evidence request was not retained")
+	}
+	want := []Resource{
+		{Path: "art/icon.png", Kind: ResourceImported},
+		{Path: "scripts/broken.gd", Kind: ResourceScript},
+		{Path: "scripts/loader.gd", Kind: ResourceScript},
+		{Path: "theme.tres", Kind: ResourceText},
+		{Path: "world/main.tscn", Kind: ResourceScene},
+	}
+	if !slices.Equal(snapshot.Resources, want) {
+		t.Fatalf("Resources = %#v, want %#v", snapshot.Resources, want)
+	}
+}
+
+func TestResourceKindVocabularyIsClosed(t *testing.T) {
+	for _, kind := range []ResourceKind{ResourceScript, ResourceScene, ResourceText, ResourceImported} {
+		if kind.String() == "" {
+			t.Fatalf("resource kind %d is not closed", kind)
+		}
+	}
+}
+
 func TestLoadReportsParseFailureOnTheScript(t *testing.T) {
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{

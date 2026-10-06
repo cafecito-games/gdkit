@@ -146,6 +146,40 @@ type Sidecar struct {
 	Text string
 }
 
+// ResourceKind identifies the on-disk producer evidence a Snapshot retained.
+// It is intentionally an inventory category, not a semantic type: adapters
+// decide what a selected engine can soundly infer from each kind.
+type ResourceKind uint8
+
+const (
+	ResourceScript ResourceKind = iota + 1
+	ResourceScene
+	ResourceText
+	ResourceImported
+)
+
+func (k ResourceKind) String() string {
+	switch k {
+	case ResourceScript:
+		return "script"
+	case ResourceScene:
+		return "scene"
+	case ResourceText:
+		return "text"
+	case ResourceImported:
+		return "imported"
+	default:
+		return fmt.Sprintf("ResourceKind(%d)", k)
+	}
+}
+
+// Resource is one discovered project-relative resource owner. Path is always
+// slash-separated; Resources is sorted by Path in Snapshot.
+type Resource struct {
+	Path string
+	Kind ResourceKind
+}
+
 // Snapshot is an immutable view of one project.
 type Snapshot struct {
 	Root string
@@ -161,11 +195,18 @@ type Snapshot struct {
 	// Sidecars is every discovered .uid file, sorted by path. It covers
 	// sidecars beside files this package does not parse, such as shaders.
 	Sidecars []Sidecar
+	// Resources inventories every discovered script, scene, text resource, and
+	// importer-backed owner. It is sorted by project-relative Path and is the
+	// only existence evidence exported for resource-aware consumers.
+	Resources []Resource
 	// Claims is every declaration of a uid:// identity, sorted by path and
 	// line, and References is every use of one. Both are empty unless
 	// Config.Identities was set.
 	Claims     []Claim
 	References []Reference
+	// IdentityEvidence reports whether Claims was requested while loading this
+	// snapshot. An empty claim list is meaningful only when this is true.
+	IdentityEvidence bool
 	// Selected is the subset of Paths that Config.Selection admits, sorted. It
 	// is Paths itself when Selection is nil.
 	Selected []string
@@ -203,6 +244,7 @@ func Load(config Config) (*Snapshot, error) {
 	}
 
 	seen := make(map[string]struct{})
+	resources := make(map[string]ResourceKind)
 	uids := make(map[string]string)
 	// Identifiers declared inside a resource are merged after the walk so a
 	// .uid sidecar always wins a collision; the sidecars are what gdkit uid
@@ -261,6 +303,7 @@ func Load(config Config) (*Snapshot, error) {
 					return nil
 				}
 				seen[relative] = struct{}{}
+				addResource(resources, relative, ResourceScript)
 			case strings.HasSuffix(relative, ".tscn"), strings.HasSuffix(relative, ".tres"):
 				// A scene or text resource carries its own identifier in its
 				// header line rather than in a sidecar, so the header is the
@@ -268,6 +311,11 @@ func Load(config Config) (*Snapshot, error) {
 				hidden := ignored.Ignored(relative, false)
 				if hidden && !config.Identities {
 					return nil
+				}
+				if strings.HasSuffix(relative, ".tscn") {
+					addResource(resources, relative, ResourceScene)
+				} else {
+					addResource(resources, relative, ResourceText)
 				}
 				header, refs := scanResource(name, config.Identities && !hidden)
 				if header != "" {
@@ -293,6 +341,7 @@ func Load(config Config) (*Snapshot, error) {
 				if hidden && !config.Identities {
 					return nil
 				}
+				addResource(resources, owner, ResourceImported)
 				if uid, line := importClaim(name); uid != "" {
 					if !hidden {
 						declared[uid] = owner
@@ -380,16 +429,53 @@ func Load(config Config) (*Snapshot, error) {
 		return nil, err
 	}
 	return &Snapshot{
-		Root:       root,
-		Paths:      paths,
-		Scripts:    scripts,
-		UIDs:       uids,
-		Sidecars:   sidecars,
-		Claims:     table.claims,
-		References: table.references,
-		Selected:   selected,
-		Autoloads:  autoloads,
+		Root:             root,
+		Paths:            paths,
+		Scripts:          scripts,
+		UIDs:             uids,
+		Sidecars:         sidecars,
+		Resources:        sortedResources(resources),
+		Claims:           table.claims,
+		References:       table.references,
+		IdentityEvidence: config.Identities,
+		Selected:         selected,
+		Autoloads:        autoloads,
 	}, nil
+}
+
+func addResource(resources map[string]ResourceKind, resourcePath string, kind ResourceKind) {
+	if existing, found := resources[resourcePath]; found && resourceRank(existing) <= resourceRank(kind) {
+		return
+	}
+	resources[resourcePath] = kind
+}
+
+func resourceRank(kind ResourceKind) int {
+	switch kind {
+	case ResourceScript:
+		return 0
+	case ResourceScene:
+		return 1
+	case ResourceText:
+		return 2
+	case ResourceImported:
+		return 3
+	default:
+		return 4
+	}
+}
+
+func sortedResources(resources map[string]ResourceKind) []Resource {
+	paths := make([]string, 0, len(resources))
+	for resourcePath := range resources {
+		paths = append(paths, resourcePath)
+	}
+	sort.Strings(paths)
+	result := make([]Resource, len(paths))
+	for index, resourcePath := range paths {
+		result[index] = Resource{Path: resourcePath, Kind: resources[resourcePath]}
+	}
+	return result
 }
 
 // loadAutoloads reads the [autoload] section of project.godot. A project

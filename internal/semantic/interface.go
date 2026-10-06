@@ -469,8 +469,8 @@ func (s *InterfaceSet) LookupBase(classID, name string) LookupResult {
 // LookupMember resolves an ordinary instance member from a resolved receiver
 // type. It preserves the existing found/absent/unknown vocabulary: callers
 // may only treat an absent result as a complete miss. Meta-class policy is
-// deliberately excluded because construction and static access belong to the
-// later meta receiver pass.
+// deliberately excluded because construction and static access belong to
+// LookupMetaMember's separate static receiver policy.
 func (s *InterfaceSet) LookupMember(receiver Type, name string) LookupResult {
 	if s == nil || s.index == nil {
 		return unknownLookup("class index is unavailable")
@@ -510,6 +510,99 @@ func (s *InterfaceSet) LookupMember(receiver Type, name string) LookupResult {
 		return unknownLookup(fmt.Sprintf("enum receiver %q has no selected member owner", receiver.Name()))
 	default:
 		return unknownLookup(fmt.Sprintf("receiver type kind %d is unsupported", receiver.Kind()))
+	}
+}
+
+// LookupMetaMember resolves a member selected through a class object. It uses
+// the same nearest-first owner chains as ordinary lookup, but admits only the
+// declarations GDScript exposes statically. A nearer instance declaration is
+// deliberately an Unknown rather than a miss: runtime lookup stops there, so
+// continuing to an ancestor would invent a member that cannot be selected.
+func (s *InterfaceSet) LookupMetaMember(receiver Type, name string) LookupResult {
+	if s == nil || s.index == nil {
+		return unknownLookup("class index is unavailable")
+	}
+	if strings.TrimSpace(name) == "" {
+		return unknownLookup("member name is empty")
+	}
+	if problem := validate(receiver); problem != "" {
+		return unknownLookup(fmt.Sprintf("receiver type is malformed: %s", problem))
+	}
+	if receiver.Kind() != KindClass || !receiver.Meta() {
+		return unknownLookup(fmt.Sprintf("receiver %q is not a meta class", receiver.String()))
+	}
+
+	if _, userClass := s.index.Classes[receiver.Name()]; userClass {
+		class, ok := s.Class(receiver.Name())
+		if !ok {
+			return unknownLookup(fmt.Sprintf("class %q is absent from the declaration index", receiver.Name()))
+		}
+		return s.lookupMetaOwners(class.owners, class.complete, class.cause, name)
+	}
+	owners, complete, cause := s.engineOwners(receiver.Name())
+	return s.lookupMetaOwners(owners, complete, cause, name)
+}
+
+// lookupMetaOwners applies static-access policy after finding a direct name in
+// the established owner chain. It intentionally does not reuse lookupFrom or
+// lookupEngineOwners: those implement ordinary instance lookup and would let a
+// rejected nearer declaration fall through to an ancestor.
+func (s *InterfaceSet) lookupMetaOwners(owners []InterfaceOwner, complete bool, cause, name string) LookupResult {
+	if s == nil {
+		return unknownLookup("class interface is unavailable")
+	}
+	for _, owner := range owners {
+		if owner.classID != "" {
+			class := s.classes[owner.classID]
+			if class == nil {
+				return unknownLookup(fmt.Sprintf("class interface %q is unavailable", owner.classID))
+			}
+			members := class.directByName[name]
+			switch len(members) {
+			case 0:
+				continue
+			case 1:
+				member := cloneMember(members[0])
+				if metaAccessibleMember(member) {
+					return LookupResult{state: LookupFound, member: &member}
+				}
+				return unknownLookup(fmt.Sprintf("member %q of class %q is not available through its meta class", name, owner.classID))
+			default:
+				return unknownLookup(fmt.Sprintf("member %q is declared more than once in class %q", name, owner.classID))
+			}
+		}
+
+		result := s.lookupDirectEngineMember(owner.engineOwner, name)
+		switch result.State() {
+		case LookupAbsent:
+			continue
+		case LookupUnknown:
+			return result
+		case LookupFound:
+			member, ok := result.Member()
+			if !ok {
+				return unknownLookup(fmt.Sprintf("engine member %s.%s is unavailable", owner.engineOwner, name))
+			}
+			if member.Kind() == MemberEngineMethod && member.Static() {
+				return LookupResult{state: LookupFound, member: &member}
+			}
+			return unknownLookup(fmt.Sprintf("engine member %s.%s is not a static method", owner.engineOwner, name))
+		}
+	}
+	if complete {
+		return LookupResult{state: LookupAbsent}
+	}
+	return unknownLookup(cause)
+}
+
+func metaAccessibleMember(member Member) bool {
+	switch member.Kind() {
+	case MemberConstant, MemberEnum, MemberEnumMember, MemberClass:
+		return true
+	case MemberVariable, MemberMethod:
+		return member.Static()
+	default:
+		return false
 	}
 }
 
