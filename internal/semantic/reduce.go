@@ -60,6 +60,7 @@ type reductionResult struct {
 type reductionRequest struct {
 	active  map[reductionKey]bool
 	tainted map[reductionKey]bool
+	local   map[reductionKey]reductionResult
 }
 
 // NewAnalyzer constructs the only accepted semantic pipeline for source and
@@ -148,13 +149,16 @@ func (a *Analyzer) reduce(expression ast.Expression, context reductionContext, r
 		return unknownReduction("expression scope is unavailable from this analyzer snapshot")
 	}
 	key := reductionKey{expression: expression, scope: context.scope.ID(), token: context.token}
-	if result, ok := a.cached(key); ok {
-		return result
-	}
 	if request == nil {
 		request = &reductionRequest{active: map[reductionKey]bool{}}
 	} else if request.active == nil {
 		request.active = map[reductionKey]bool{}
+	}
+	if result, ok := request.cached(key); ok {
+		return result
+	}
+	if result, ok := a.cached(key); ok {
+		return result
 	}
 	if request.active[key] {
 		request.markCycle()
@@ -168,7 +172,7 @@ func (a *Analyzer) reduce(expression ast.Expression, context reductionContext, r
 		// locally usable (for example a lambda remains Callable while its
 		// ignored default cycles), but caching it would make a later query
 		// depend on which traversal won the first write.
-		return result
+		return request.publish(key, result)
 	}
 	return a.publish(key, result)
 }
@@ -187,6 +191,34 @@ func (r *reductionRequest) markCycle() {
 	for key := range r.active {
 		r.tainted[key] = true
 	}
+}
+
+// cached returns one completed request-local result. These entries are only
+// for paths that observed a cycle, so they never cross a TypeOf request or
+// enter the synchronized shared cache.
+func (r *reductionRequest) cached(key reductionKey) (reductionResult, bool) {
+	if r == nil {
+		return reductionResult{}, false
+	}
+	result, ok := r.local[key]
+	if !ok {
+		return reductionResult{}, false
+	}
+	return cloneReductionResult(result), true
+}
+
+func (r *reductionRequest) publish(key reductionKey, result reductionResult) reductionResult {
+	if r == nil {
+		return result
+	}
+	if r.local == nil {
+		r.local = map[reductionKey]reductionResult{}
+	}
+	if existing, ok := r.local[key]; ok {
+		return cloneReductionResult(existing)
+	}
+	r.local[key] = cloneReductionResult(result)
+	return cloneReductionResult(result)
 }
 
 func (a *Analyzer) cached(key reductionKey) (reductionResult, bool) {

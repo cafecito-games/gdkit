@@ -2,6 +2,8 @@ package semantic
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -507,6 +509,66 @@ func TestAnalyzerDoesNotPublishCycleTaintedLambdaDefaults(t *testing.T) {
 				t.Fatal("cycle-tainted lambda default was published to the completed cache")
 			}
 		})
+	}
+}
+
+func TestAnalyzerMemoizesCycleTaintedFanoutWithinOneRequest(t *testing.T) {
+	const fanoutDepth = 30
+	var program strings.Builder
+	program.WriteString("class_name Fanout\nfunc run():\n\tvar holder := missing\n\tvar closure := func(default := holder): return default\n")
+	for level := 0; level <= fanoutDepth; level++ {
+		child := "holder"
+		if level > 0 {
+			child = fmt.Sprintf("a%d", level-1)
+		}
+		fmt.Fprintf(&program, "\tvar a%d := [%s, %s]\n", level, child, child)
+	}
+	source := sources(t, map[string]string{"fanout.gd": program.String()})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	file := source.File("fanout.gd")
+	lambda, ok := reducerVariableValue(t, file, "closure").(*ast.LambdaExpression)
+	if !ok {
+		t.Fatalf("real parser fixture did not produce a lambda: %#v", lambda)
+	}
+	var holder *ast.VariableDeclaration
+	ast.Inspect(file, func(node ast.Node) bool {
+		declaration, ok := node.(*ast.VariableDeclaration)
+		if ok && declaration.Name == "holder" {
+			holder = declaration
+		}
+		return true
+	})
+	if holder == nil || !holder.Inferred {
+		t.Fatalf("real parser fixture did not produce inferred holder: %#v", holder)
+	}
+	originalHolderValue := holder.Value
+	analyzer := NewAnalyzer(source, reducerTestEngine(t))
+	holder.Value = lambda
+	t.Cleanup(func() { holder.Value = originalHolderValue })
+	top := reducerVariableValue(t, file, fmt.Sprintf("a%d", fanoutDepth))
+	want := Callable()
+	for level := 0; level <= fanoutDepth; level++ {
+		want = reducerArray(want)
+	}
+	if got := analyzer.TypeOf(top); !got.Equal(want) {
+		t.Fatalf("fanout TypeOf = %s (%q), want %s", got, got.Reason(), want)
+	}
+	scope, found := analyzer.scopes.ScopeAt(top)
+	if !found {
+		t.Fatal("fanout expression has no recorded scope")
+	}
+	request := &reductionRequest{active: map[reductionKey]bool{}}
+	if got := analyzer.reduce(top, reductionContext{scope: scope}, request); !got.typeValue.Equal(want) {
+		t.Fatalf("fanout request result = %s (%q), want %s", got.typeValue, got.typeValue.Reason(), want)
+	}
+	key := reductionKey{expression: top, scope: scope.ID()}
+	if _, found := request.local[key]; !found {
+		t.Fatal("cycle-tainted fanout was not memoized within its request")
+	}
+	if _, found := analyzer.cache[key]; found {
+		t.Fatal("cycle-tainted fanout escaped into the shared completed cache")
 	}
 }
 
