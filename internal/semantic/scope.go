@@ -981,10 +981,23 @@ func (i *ScopeIndex) resolveSuper(scope *Scope) BindingResult {
 }
 
 func (i *ScopeIndex) resolveEnclosing(scope *Scope, name string) (BindingResult, bool) {
-	for outer := enclosingClass(scope.context.classID); outer != ""; outer = enclosingClass(outer) {
+	if i.interfaces == nil || i.interfaces.index == nil {
+		return unknownBinding("class index is unavailable while resolving enclosing class scope"), true
+	}
+	for current := scope.context.classID; ; {
+		class := i.interfaces.index.Classes[current]
+		if class == nil || !class.Inner {
+			break
+		}
+		cut := strings.LastIndexByte(class.ID, '#')
+		if cut < 0 {
+			return unknownBinding(fmt.Sprintf("inner class %q has no enclosing class identity", class.ID)), true
+		}
+		outer := class.ID[:cut]
 		result := i.interfaces.Lookup(outer, name)
 		switch result.State() {
 		case LookupAbsent:
+			current = outer
 			continue
 		case LookupUnknown:
 			return unknownBinding(result.Reason()), true
@@ -1006,14 +1019,6 @@ func (i *ScopeIndex) resolveEnclosing(scope *Scope, name string) (BindingResult,
 		}
 	}
 	return BindingResult{}, false
-}
-
-func enclosingClass(classID string) string {
-	cut := strings.LastIndexByte(classID, '#')
-	if cut < 0 {
-		return ""
-	}
-	return classID[:cut]
 }
 
 func (i *ScopeIndex) resolveProjectGlobal(scope *Scope, name string) (BindingResult, bool) {

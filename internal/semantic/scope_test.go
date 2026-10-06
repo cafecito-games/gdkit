@@ -628,6 +628,17 @@ func TestScopesDoNotFallThroughInaccessibleEnclosingMembers(t *testing.T) {
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "instance_method", 8), "inaccessible enclosing method must block utility fallback")
 }
 
+func TestScopesDoNotTreatHashInTopLevelPathsAsInnerClassSyntax(t *testing.T) {
+	source := sources(t, map[string]string{
+		"global.gd":             "class_name Global\n",
+		"levels/#boss/enemy.gd": "class_name Enemy\nfunc run():\n\tGlobal\n\tNative\n",
+	})
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeNamespaceEngine(t)))
+	file := source.File("levels/#boss/enemy.gd")
+	scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "Global", 3), BindingProjectClass)
+	scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "Native", 4), BindingEngineType)
+}
+
 func TestScopesEnforceStaticContextAndResolveCompatibleSuper(t *testing.T) {
 	source := sources(t, map[string]string{
 		"base.gd":  "class_name Base\nvar instance_field: int\nstatic var static_field: int\nfunc instance_method():\n\tpass\nstatic func static_method():\n\tpass\n",
