@@ -63,7 +63,7 @@ func TestRunLintJSONReportsEnabledCollectionInferenceAndEmbeddedProvenance(t *te
 		report.EngineSchema.Version != (engineschema.Version{Major: 4, Minor: 7, Patch: 2}) {
 		t.Fatalf("engine_schema = %+v", report.EngineSchema)
 	}
-	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Message != "Dictionary has no element type; write Dictionary[String, int]" {
+	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Message != "Dictionary has no element type; write Dictionary[K, V]" {
 		t.Fatalf("diagnostics = %+v", report.Diagnostics)
 	}
 }

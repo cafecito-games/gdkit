@@ -97,7 +97,7 @@ func (r typingRule) Check(context *Context, script *project.Script) []Diagnostic
 		message := site.message
 		if site.literal != nil {
 			var reported bool
-			message, reported = populatedCollectionMessage(context, site.literal)
+			message, reported = populatedCollectionMessage(context, site.declaration)
 			if !reported {
 				continue
 			}
@@ -135,6 +135,9 @@ type typingSite struct {
 	// written annotations stay entirely syntactic; this field asks the one
 	// value-sensitive consumer to query the run's analyzer exactly once.
 	literal ast.Expression
+	// declaration is the exact AST identity whose local binding lifetime the
+	// semantic consumer closes. It is never reconstructed from source spelling.
+	declaration *ast.VariableDeclaration
 }
 
 // annotated reports whether a declaration carries a static type. ":=" inference
@@ -285,7 +288,7 @@ func (c *typingCollector) variable(declaration *ast.VariableDeclaration, enclosi
 	// A written annotation is the whole story when there is one: "var x: Array =
 	// []" is one bare collection, reported from the annotation, not two.
 	if declaration.Type == "" {
-		c.collectionLiteral(declaration.Value, enclosing)
+		c.collectionLiteral(declaration, enclosing)
 	}
 }
 
@@ -295,34 +298,38 @@ func (c *typingCollector) variable(declaration *ast.VariableDeclaration, enclosi
 // run-local analyzer for exactly the outer literal and stay silent when it is
 // not conclusive. Calls, references, and all other initializers stay out of
 // scope: their result is not a literal the author can annotate directly.
-func (c *typingCollector) collectionLiteral(value ast.Expression, enclosing string) {
-	switch literal := value.(type) {
+func (c *typingCollector) collectionLiteral(declaration *ast.VariableDeclaration, enclosing string) {
+	if declaration == nil {
+		return
+	}
+	switch literal := declaration.Value.(type) {
 	case *ast.ArrayLiteral:
 		if len(literal.Elements) == 0 {
 			c.collection("Array", literal.Span(), enclosing)
 			return
 		}
-		c.populatedCollection("Array", literal, literal.Span(), enclosing)
+		c.populatedCollection("Array", declaration, literal, literal.Span(), enclosing)
 	case *ast.DictionaryLiteral:
 		if len(literal.Entries) == 0 {
 			c.collection("Dictionary", literal.Span(), enclosing)
 			return
 		}
-		c.populatedCollection("Dictionary", literal, literal.Span(), enclosing)
+		c.populatedCollection("Dictionary", declaration, literal, literal.Span(), enclosing)
 	}
 }
 
-func (c *typingCollector) populatedCollection(typeName string, literal ast.Expression, span token.Span, enclosing string) {
+func (c *typingCollector) populatedCollection(typeName string, declaration *ast.VariableDeclaration, literal ast.Expression, span token.Span, enclosing string) {
 	floor, _, ok := collectionSuggestion(typeName)
 	if !ok {
 		return
 	}
 	c.add(typingSite{
-		rule:      ruleRequireTypedCollection,
-		enclosing: enclosing,
-		floor:     floor,
-		span:      span,
-		literal:   literal,
+		rule:        ruleRequireTypedCollection,
+		enclosing:   enclosing,
+		floor:       floor,
+		span:        span,
+		literal:     literal,
+		declaration: declaration,
 	})
 }
 
@@ -361,14 +368,15 @@ func collectionSuggestion(typeName string) (versiongate.Version, string, bool) {
 	}
 }
 
-// populatedCollectionMessage classifies only a direct literal's one reduced
-// result. Unknown is deliberately silent: a generic suggestion would conceal
-// an unavailable semantic fact as though the container were confidently known.
-func populatedCollectionMessage(context *Context, literal ast.Expression) (string, bool) {
+// populatedCollectionMessage asks the run-local analyzer for the exact
+// declaration's closed binding lifetime. Unknown is deliberately silent: a
+// generic suggestion would conceal an unavailable initial semantic fact as
+// though the container were confidently known.
+func populatedCollectionMessage(context *Context, declaration *ast.VariableDeclaration) (string, bool) {
 	if context == nil || context.analyzer == nil {
 		return "", false
 	}
-	return collectionTypeMessage(context.Engine(), context.analyzer.TypeOf(literal))
+	return collectionTypeMessage(context.Engine(), context.analyzer.CollectionLifetime(declaration))
 }
 
 func collectionTypeMessage(engine *semantic.Engine, typeValue semantic.Type) (string, bool) {

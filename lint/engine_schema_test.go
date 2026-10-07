@@ -284,7 +284,7 @@ func TestEnabledCollectionRuleUsesTheWholesaleOverrideAndPublishesProvenance(t *
 	if report.EngineSchema == nil || report.EngineSchema.Source != engineschema.SourceOverride {
 		t.Fatalf("engine_schema = %+v", report.EngineSchema)
 	}
-	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Message != "Array has no element type; write Array[int]" {
+	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Message != "Array has no element type; write Array[T]" {
 		t.Fatalf("diagnostics = %+v", report.Diagnostics)
 	}
 }

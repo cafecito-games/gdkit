@@ -236,7 +236,7 @@ func TestRunLintEnabledCollectionInfersAPopulatedLiteral(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %s", stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Array has no element type; write Array[int]") ||
+	if !strings.Contains(stdout.String(), "Array has no element type; write Array[T]") ||
 		!strings.Contains(stdout.String(), "(require-typed-collection)") {
 		t.Fatalf("unexpected output: %s", stdout.String())
 	}

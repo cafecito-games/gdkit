@@ -226,10 +226,10 @@ func TestSemanticAnalyzerIsRunLocalAcrossSnapshots(t *testing.T) {
 	if linter.context.analyzer != nil {
 		t.Fatal("linter retained a snapshot-specific analyzer after Lint")
 	}
-	if got := firstReport.Diagnostics; len(got) != 1 || got[0].Message != "Array has no element type; write Array[int]" {
+	if got := firstReport.Diagnostics; len(got) != 1 || got[0].Message != "Array has no element type; write Array[T]" {
 		t.Fatalf("first report = %+v", got)
 	}
-	if got := secondReport.Diagnostics; len(got) != 1 || got[0].Message != "Array has no element type; write Array[String]" {
+	if got := secondReport.Diagnostics; len(got) != 1 || got[0].Message != "Array has no element type; write Array[T]" {
 		t.Fatalf("second report = %+v", got)
 	}
 }

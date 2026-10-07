@@ -453,9 +453,10 @@ var matrix := [[1], [2]]
 
 func TestRequireTypedCollectionStaysSilentForUnknownLiteralComponents(t *testing.T) {
 	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
-var items := [not_declared]
-var lookup := {"key": also_not_declared}
-var nested := [[still_not_declared]]
+func build() -> void:
+	var items := [not_declared]
+	var lookup := {"key": also_not_declared}
+	var nested := [[still_not_declared]]
 `)
 	if len(found) != 0 {
 		t.Fatalf("got %v, want no collection diagnostics for Unknown components", found)
@@ -605,7 +606,7 @@ func selectedCollectionEngine(t *testing.T) *semantic.Engine {
 
 func typePointer(value semantic.Type) *semantic.Type { return &value }
 
-func TestRequireTypedCollectionInfersDirectPopulatedLiterals(t *testing.T) {
+func TestRequireTypedCollectionUsesGenericPromptsForClassMembers(t *testing.T) {
 	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
 var items := [1, 2, 3]
 var lookup := {"a": 1}
@@ -616,9 +617,9 @@ var variants := [null, null]
 		column  int
 		message string
 	}{
-		{line: 2, column: 14, message: "Array has no element type; write Array[int]"},
-		{line: 3, column: 15, message: "Dictionary has no element type; write Dictionary[String, int]"},
-		{line: 4, column: 17, message: "Array has no element type; write Array[Variant]"},
+		{line: 2, column: 14, message: "Array has no element type; write Array[T]"},
+		{line: 3, column: 15, message: "Dictionary has no element type; write Dictionary[K, V]"},
+		{line: 4, column: 17, message: "Array has no element type; write Array[T]"},
 	}
 	if len(found) != len(want) {
 		t.Fatalf("got %v, want %d diagnostics", found, len(want))
@@ -634,6 +635,84 @@ var variants := [null, null]
 		}
 		if found[index].Message != expected.message {
 			t.Errorf("diagnostic %d message = %q, want %q", index, found[index].Message, expected.message)
+		}
+	}
+}
+
+func TestRequireTypedCollectionAccountsForCompleteLocalLifetime(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+func build(flag: bool) -> void:
+	var untouched := [1, 2, 3]
+	var widened := {"game_server_id": "server", "name": "character"}
+	if flag:
+		widened["appearance"] = {"avatar_id": "one"}
+	var escaped := [1]
+	consume(escaped)
+`)
+	want := []struct {
+		line    int
+		message string
+	}{
+		{line: 3, message: "Array has no element type; write Array[int]"},
+		{line: 4, message: "Dictionary has no element type; write Dictionary[String, Variant]"},
+		{line: 7, message: "Array has no element type; write Array[T]"},
+	}
+	if len(found) != len(want) {
+		t.Fatalf("got %v, want %d diagnostics", found, len(want))
+	}
+	for index, expected := range want {
+		if found[index].Line != expected.line || found[index].Message != expected.message {
+			t.Errorf("diagnostic %d = %+v, want line %d message %q", index, found[index], expected.line, expected.message)
+		}
+	}
+}
+
+// Exercising every retained mutation against the selected embedded 4.7 engine
+// pins the semantic table to the real method owner, arity, defaults, static,
+// and vararg metadata rather than to a test-only reconstruction.
+func TestRequireTypedCollectionValidatesClosedVocabularyAgainstSelectedEngine(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+func build() -> void:
+	var array := [1]
+	array.append(2)
+	array.push_back(3)
+	array.push_front(4)
+	array.insert(0, 5)
+	array.set(0, 6)
+	array.fill(7)
+	array.append_array([8.5])
+	array.assign([9])
+	array.clear()
+	array.erase(9)
+	array.pop_at(0)
+	array.pop_back()
+	array.pop_front()
+	array.remove_at(0)
+	array.reverse()
+	array.shuffle()
+	array.sort()
+	array.sort_custom(func(left: Variant, right: Variant) -> bool: return left < right)
+	array.make_read_only()
+	var dictionary := {"one": 1}
+	dictionary.set("two", 2.5)
+	dictionary.get_or_add("three", 3)
+	dictionary.merge({"four": 4})
+	dictionary.assign({"five": 5})
+	dictionary.clear()
+	dictionary.erase("five")
+	dictionary.sort()
+	dictionary.make_read_only()
+`)
+	want := []string{
+		"Array has no element type; write Array[float]",
+		"Dictionary has no element type; write Dictionary[String, float]",
+	}
+	if len(found) != len(want) {
+		t.Fatalf("got %v, want two diagnostics", found)
+	}
+	for index, message := range want {
+		if found[index].Message != message {
+			t.Errorf("diagnostic %d message = %q, want %q", index, found[index].Message, message)
 		}
 	}
 }
