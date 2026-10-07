@@ -16,8 +16,10 @@ import (
 	"github.com/cafecito-games/gdkit/internal/semantic"
 	"github.com/cafecito-games/gdkit/internal/semantic/engineschema"
 	"github.com/cafecito-games/gdkit/internal/semanticsource"
+	"github.com/cafecito-games/gdkit/internal/versiongate"
 	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdparser/ast"
+	"github.com/cafecito-games/gdparser/token"
 )
 
 const (
@@ -306,29 +308,28 @@ func corpusPreChangeRules() []Rule {
 	panic("require-typed-collection is not registered")
 }
 
-// corpusIssue80BaseCollectionRule is the immutable current-base mirror: it
-// renders a populated literal from TypeOf(initializer) and deliberately does
-// not inspect later writes. Keeping it in the receipt makes #80's exact tuple
-// movement reproducible after the production rule changes.
+// corpusIssue80BaseCollectionRule is the immutable #80-base mirror: it renders
+// a populated literal from TypeOf(initializer) and deliberately does not inspect
+// later writes. Its collector and renderer are test-local snapshots so a future
+// production typing-rule refactor cannot silently change the base receipt.
 type corpusIssue80BaseCollectionRule struct{}
 
 func (corpusIssue80BaseCollectionRule) Name() string                { return ruleRequireTypedCollection }
 func (corpusIssue80BaseCollectionRule) PendingSince() string        { return "0.5.0" }
 func (corpusIssue80BaseCollectionRule) NeedsSemanticAnalysis() bool { return true }
 func (corpusIssue80BaseCollectionRule) Check(context *Context, script *project.Script) []Diagnostic {
+	if context == nil || context.analyzer == nil || context.Engine() == nil || script == nil {
+		return nil
+	}
 	var found []Diagnostic
-	for _, site := range collectTypingSites(script) {
-		if site.rule != ruleRequireTypedCollection || !context.supports(site.floor) ||
-			context.exempt(ruleRequireTypedCollection, site.enclosing) {
+	for _, site := range corpusIssue80BaseCollectCollectionSites(script) {
+		if !context.supports(site.floor) || context.exempt(ruleRequireTypedCollection, site.enclosing) {
 			continue
 		}
 		message := site.message
 		if site.literal != nil {
-			if context == nil || context.analyzer == nil {
-				continue
-			}
 			var reported bool
-			message, reported = collectionTypeMessage(context.Engine(), context.analyzer.TypeOf(site.literal))
+			message, reported = corpusIssue80BaseCollectionTypeMessage(context.Engine(), context.analyzer.TypeOf(site.literal))
 			if !reported {
 				continue
 			}
@@ -340,6 +341,262 @@ func (corpusIssue80BaseCollectionRule) Check(context *Context, script *project.S
 		})
 	}
 	return found
+}
+
+type corpusIssue80BaseCollectionSite struct {
+	message   string
+	enclosing string
+	floor     versiongate.Version
+	span      token.Span
+	literal   ast.Expression
+}
+
+type corpusIssue80BaseCollectionCollector struct {
+	found []corpusIssue80BaseCollectionSite
+}
+
+func corpusIssue80BaseCollectCollectionSites(script *project.Script) []corpusIssue80BaseCollectionSite {
+	if script == nil || script.File == nil {
+		return nil
+	}
+	collector := &corpusIssue80BaseCollectionCollector{}
+	collector.classBody(script.File.Statements)
+	return collector.found
+}
+
+func (c *corpusIssue80BaseCollectionCollector) add(site corpusIssue80BaseCollectionSite) {
+	c.found = append(c.found, site)
+}
+
+func (c *corpusIssue80BaseCollectionCollector) classBody(statements []ast.Statement) {
+	for _, statement := range statements {
+		switch declaration := statement.(type) {
+		case *ast.ClassDeclaration:
+			c.classBody(declaration.Body)
+		case *ast.FunctionDeclaration:
+			c.function(declaration)
+		case *ast.VariableDeclaration:
+			c.classVariable(declaration)
+		case *ast.SignalDeclaration:
+			c.signal(declaration)
+		case *ast.EnumDeclaration:
+			for _, member := range declaration.Members {
+				c.inspect("", member.Value)
+			}
+		}
+	}
+}
+
+func (c *corpusIssue80BaseCollectionCollector) classVariable(declaration *ast.VariableDeclaration) {
+	c.variable(declaration, "")
+	c.inspect("", declaration.Value)
+	c.functionScope(declaration.Name, declaration.Getter)
+	if declaration.Setter != nil {
+		c.functionScope(declaration.Name, declaration.Setter.Body)
+	}
+}
+
+func (c *corpusIssue80BaseCollectionCollector) signal(declaration *ast.SignalDeclaration) {
+	c.parameters(declaration.Parameters, declaration.Name)
+}
+
+func (c *corpusIssue80BaseCollectionCollector) function(declaration *ast.FunctionDeclaration) {
+	c.collection(declaration.ReturnType, declaration.ReturnTypeSpan, declaration.Name)
+	c.parameters(declaration.Parameters, declaration.Name)
+	c.functionScope(declaration.Name, declaration.Body)
+}
+
+func (c *corpusIssue80BaseCollectionCollector) parameters(parameters []ast.Parameter, enclosing string) {
+	for _, parameter := range parameters {
+		c.inspect(enclosing, parameter.Default)
+		c.collection(parameter.Type, parameter.TypeSpan, enclosing)
+	}
+}
+
+func (c *corpusIssue80BaseCollectionCollector) variable(declaration *ast.VariableDeclaration, enclosing string) {
+	c.collection(declaration.Type, declaration.TypeSpan, enclosing)
+	if declaration.Type == "" {
+		c.collectionLiteral(declaration.Value, enclosing)
+	}
+}
+
+func (c *corpusIssue80BaseCollectionCollector) collectionLiteral(value ast.Expression, enclosing string) {
+	switch literal := value.(type) {
+	case *ast.ArrayLiteral:
+		if len(literal.Elements) == 0 {
+			c.collection("Array", literal.Span(), enclosing)
+			return
+		}
+		c.populatedCollection("Array", literal, literal.Span(), enclosing)
+	case *ast.DictionaryLiteral:
+		if len(literal.Entries) == 0 {
+			c.collection("Dictionary", literal.Span(), enclosing)
+			return
+		}
+		c.populatedCollection("Dictionary", literal, literal.Span(), enclosing)
+	}
+}
+
+func (c *corpusIssue80BaseCollectionCollector) populatedCollection(typeName string, literal ast.Expression, span token.Span, enclosing string) {
+	floor, _, ok := corpusIssue80BaseCollectionSuggestion(typeName)
+	if !ok {
+		return
+	}
+	c.add(corpusIssue80BaseCollectionSite{floor: floor, literal: literal, span: span, enclosing: enclosing})
+}
+
+func (c *corpusIssue80BaseCollectionCollector) collection(typeName string, span token.Span, enclosing string) {
+	floor, form, ok := corpusIssue80BaseCollectionSuggestion(typeName)
+	if !ok {
+		return
+	}
+	c.add(corpusIssue80BaseCollectionSite{
+		message:   fmt.Sprintf("%s has no element type; write %s", typeName, form),
+		enclosing: enclosing,
+		floor:     floor,
+		span:      span,
+	})
+}
+
+func (c *corpusIssue80BaseCollectionCollector) functionScope(enclosing string, statements []ast.Statement) {
+	for _, statement := range statements {
+		c.inspect(enclosing, statement)
+	}
+}
+
+func (c *corpusIssue80BaseCollectionCollector) inspect(enclosing string, node ast.Node) {
+	if node == nil {
+		return
+	}
+	ast.Inspect(node, func(node ast.Node) bool {
+		switch declaration := node.(type) {
+		case *ast.VariableDeclaration:
+			c.variable(declaration, enclosing)
+		case *ast.ForStatement:
+			c.collection(declaration.Type, declaration.TypeSpan, enclosing)
+		case *ast.LambdaExpression:
+			c.parameters(declaration.Parameters, enclosing)
+		}
+		return true
+	})
+}
+
+func corpusIssue80BaseCollectionSuggestion(typeName string) (versiongate.Version, string, bool) {
+	switch typeName {
+	case "Array":
+		return versiongate.Version{Major: 4}, "Array[T]", true
+	case "Dictionary":
+		return versiongate.Version{Major: 4, Minor: 4}, "Dictionary[K, V]", true
+	default:
+		return versiongate.Version{}, "", false
+	}
+}
+
+func corpusIssue80BaseCollectionTypeMessage(engine *semantic.Engine, typeValue semantic.Type) (string, bool) {
+	switch typeValue.Kind() {
+	case semantic.KindUnknown:
+		return "", false
+	case semantic.KindArray:
+		element, typed := typeValue.Element()
+		if !typed {
+			return "Array has no element type; write Array[T]", true
+		}
+		spelling, status := corpusIssue80BaseSourceWritableType(engine, element)
+		switch status {
+		case corpusIssue80BaseSourceTypeWritable:
+			return fmt.Sprintf("Array has no element type; write Array[%s]", spelling), true
+		case corpusIssue80BaseSourceTypeUnknown:
+			return "", false
+		default:
+			return "Array has no element type; write Array[T]", true
+		}
+	case semantic.KindDictionary:
+		key, typedKey := typeValue.Key()
+		value, typedValue := typeValue.Value()
+		if !typedKey || !typedValue {
+			return "Dictionary has no element type; write Dictionary[K, V]", true
+		}
+		keySpelling, keyStatus := corpusIssue80BaseSourceWritableType(engine, key)
+		valueSpelling, valueStatus := corpusIssue80BaseSourceWritableType(engine, value)
+		if keyStatus == corpusIssue80BaseSourceTypeUnknown || valueStatus == corpusIssue80BaseSourceTypeUnknown {
+			return "", false
+		}
+		if keyStatus != corpusIssue80BaseSourceTypeWritable || valueStatus != corpusIssue80BaseSourceTypeWritable {
+			return "Dictionary has no element type; write Dictionary[K, V]", true
+		}
+		return fmt.Sprintf("Dictionary has no element type; write Dictionary[%s, %s]", keySpelling, valueSpelling), true
+	default:
+		return "", false
+	}
+}
+
+type corpusIssue80BaseSourceTypeStatus uint8
+
+const (
+	corpusIssue80BaseSourceTypeUnwritable corpusIssue80BaseSourceTypeStatus = iota
+	corpusIssue80BaseSourceTypeWritable
+	corpusIssue80BaseSourceTypeUnknown
+)
+
+func corpusIssue80BaseSourceWritableType(engine *semantic.Engine, typeValue semantic.Type) (string, corpusIssue80BaseSourceTypeStatus) {
+	switch typeValue.Kind() {
+	case semantic.KindUnknown:
+		return "", corpusIssue80BaseSourceTypeUnknown
+	case semantic.KindVariant:
+		return "Variant", corpusIssue80BaseSourceTypeWritable
+	case semantic.KindCallable:
+		return "Callable", corpusIssue80BaseSourceTypeWritable
+	case semantic.KindSignal:
+		return "Signal", corpusIssue80BaseSourceTypeWritable
+	case semantic.KindBuiltin:
+		resolved := engine.ResolveType(typeValue.Name())
+		if resolved.Kind() == semantic.KindBuiltin && resolved.Equal(typeValue) {
+			return typeValue.Name(), corpusIssue80BaseSourceTypeWritable
+		}
+		return "", corpusIssue80BaseSourceTypeUnwritable
+	case semantic.KindClass:
+		if typeValue.Meta() {
+			return "", corpusIssue80BaseSourceTypeUnwritable
+		}
+		resolved := engine.Class(typeValue.Name())
+		if resolved.Kind() == semantic.KindClass && !resolved.Meta() && resolved.Equal(typeValue) {
+			return typeValue.Name(), corpusIssue80BaseSourceTypeWritable
+		}
+		return "", corpusIssue80BaseSourceTypeUnwritable
+	case semantic.KindArray, semantic.KindDictionary:
+		if corpusIssue80BaseNestedUnknownType(typeValue) {
+			return "", corpusIssue80BaseSourceTypeUnknown
+		}
+		return "", corpusIssue80BaseSourceTypeUnwritable
+	default:
+		return "", corpusIssue80BaseSourceTypeUnwritable
+	}
+}
+
+func corpusIssue80BaseNestedUnknownType(typeValue semantic.Type) bool {
+	switch typeValue.Kind() {
+	case semantic.KindUnknown:
+		return true
+	case semantic.KindArray:
+		element, typed := typeValue.Element()
+		return typed && corpusIssue80BaseNestedUnknownType(element)
+	case semantic.KindDictionary:
+		key, typedKey := typeValue.Key()
+		value, typedValue := typeValue.Value()
+		return typedKey && typedValue && (corpusIssue80BaseNestedUnknownType(key) || corpusIssue80BaseNestedUnknownType(value))
+	default:
+		return false
+	}
+}
+
+func TestCorpusIssue80BaseCollectionRuleFailsClosedWithoutSemanticContext(t *testing.T) {
+	rule := corpusIssue80BaseCollectionRule{}
+	if diagnostics := rule.Check(nil, nil); diagnostics != nil {
+		t.Fatalf("nil context diagnostics = %+v, want nil", diagnostics)
+	}
+	if diagnostics := rule.Check(&Context{}, nil); diagnostics != nil {
+		t.Fatalf("nil script diagnostics = %+v, want nil", diagnostics)
+	}
 }
 
 func corpusIssue80BaseRules() []Rule {

@@ -47,7 +47,7 @@ func TestRunLintJSONReportsExplicitEngineSchemaProvenance(t *testing.T) {
 
 func TestRunLintJSONReportsEnabledCollectionInferenceAndEmbeddedProvenance(t *testing.T) {
 	root := t.TempDir()
-	writeCLIFile(t, root, "player.gd", "var lookup := {\"a\": 1}\n")
+	writeCLIFile(t, root, "player.gd", "var lookup := {\"a\": 1}\n\nfunc run() -> void:\n\tvar local_lookup := {\"a\": 1}\n")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root}, &stdout, &stderr); code != 1 {
 		t.Fatalf("exit %d, want 1: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
@@ -63,7 +63,8 @@ func TestRunLintJSONReportsEnabledCollectionInferenceAndEmbeddedProvenance(t *te
 		report.EngineSchema.Version != (engineschema.Version{Major: 4, Minor: 7, Patch: 2}) {
 		t.Fatalf("engine_schema = %+v", report.EngineSchema)
 	}
-	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Message != "Dictionary has no element type; write Dictionary[K, V]" {
+	if len(report.Diagnostics) != 2 || report.Diagnostics[0].Message != "Dictionary has no element type; write Dictionary[K, V]" ||
+		report.Diagnostics[1].Message != "Dictionary has no element type; write Dictionary[String, int]" {
 		t.Fatalf("diagnostics = %+v", report.Diagnostics)
 	}
 }

@@ -209,8 +209,8 @@ func TestSemanticAnalyzerIsRunLocalAcrossSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := semanticSnapshot(t, "var values := [1]\n")
-	second := semanticSnapshot(t, "var values := [\"text\"]\n")
+	first := semanticSnapshot(t, "func first() -> void:\n\tvar values := [1]\n")
+	second := semanticSnapshot(t, "func second() -> void:\n\tvar values := [\"text\"]\n")
 	original := linter.newSemanticAnalyzer
 	var seen []*project.Snapshot
 	linter.newSemanticAnalyzer = func(snapshot *project.Snapshot, engine *semantic.Engine) *semantic.Analyzer {
@@ -226,10 +226,10 @@ func TestSemanticAnalyzerIsRunLocalAcrossSnapshots(t *testing.T) {
 	if linter.context.analyzer != nil {
 		t.Fatal("linter retained a snapshot-specific analyzer after Lint")
 	}
-	if got := firstReport.Diagnostics; len(got) != 1 || got[0].Message != "Array has no element type; write Array[T]" {
+	if got := firstReport.Diagnostics; len(got) != 1 || got[0].Message != "Array has no element type; write Array[int]" {
 		t.Fatalf("first report = %+v", got)
 	}
-	if got := secondReport.Diagnostics; len(got) != 1 || got[0].Message != "Array has no element type; write Array[T]" {
+	if got := secondReport.Diagnostics; len(got) != 1 || got[0].Message != "Array has no element type; write Array[String]" {
 		t.Fatalf("second report = %+v", got)
 	}
 }
