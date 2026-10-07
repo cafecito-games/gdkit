@@ -131,6 +131,17 @@ func run() -> void:
 	(ternary_receiver if true else other).append("two")
 	var cast_receiver := [1]
 	(cast_receiver as Array).append("two")
+	var subscript_aliased := [1]
+	var alias_from_subscript := [subscript_aliased][0]
+	alias_from_subscript.append("two")
+	var subscript_passed := [1]
+	consume([subscript_passed][0])
+	var subscript_returned := [1]
+	if true:
+		return [subscript_returned][0]
+	var subscript_iterated := [1]
+	for item in [subscript_iterated]:
+		item.append("two")
 	var self_passed := [1]
 	self_passed.append(self_passed)
 	var optional := {"one": 1}
@@ -154,7 +165,7 @@ func run() -> void:
 	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "shadowed")); !got.Equal(Array(&intType)) {
 		t.Fatalf("same-spelled lambda shadow changed outer result to %s (%q)", got, got.Reason())
 	}
-	for _, name := range []string{"passed", "captured", "aliased", "returned", "rebound", "compound", "dynamic", "unknown_write", "unknown_source", "stored", "stored_as_key", "self_index", "ternary_receiver", "cast_receiver", "self_passed", "wrong_arity"} {
+	for _, name := range []string{"passed", "captured", "aliased", "returned", "rebound", "compound", "dynamic", "unknown_write", "unknown_source", "stored", "stored_as_key", "self_index", "ternary_receiver", "cast_receiver", "subscript_aliased", "subscript_passed", "subscript_returned", "subscript_iterated", "self_passed", "wrong_arity"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.CollectionLifetime(collectionDeclaration(t, file, name))
 			if !got.Equal(Array(nil)) {

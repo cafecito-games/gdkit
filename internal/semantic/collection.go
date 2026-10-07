@@ -233,6 +233,10 @@ func (w *collectionLifetimeWalker) visitStatement(statement ast.Statement) {
 		w.visitExpression(node.Condition)
 		w.visitStatements(node.Body)
 	case *ast.ForStatement:
+		if !w.directTarget(node.Iterable) && w.containsTarget(node.Iterable) {
+			w.lost = true
+			return
+		}
 		w.visitExpression(node.Iterable)
 		w.visitStatements(node.Body)
 	case *ast.MatchStatement:
@@ -365,6 +369,10 @@ func (w *collectionLifetimeWalker) visitExpression(expression ast.Expression) {
 		}
 		w.visitExpression(node.Object)
 	case *ast.SubscriptExpression:
+		if !w.directTarget(node.Object) && w.containsTarget(node.Object) {
+			w.lost = true
+			return
+		}
 		w.visitExpression(node.Object)
 		w.visitExpression(node.Index)
 	default:
@@ -469,10 +477,14 @@ func (w *collectionLifetimeWalker) aliasesTarget(expression ast.Expression) bool
 	switch node := expression.(type) {
 	case *ast.Identifier:
 		return w.isTarget(node)
-	case *ast.CallExpression, *ast.SubscriptExpression:
+	case *ast.CallExpression:
 		// Their result is not the receiver. visitExpression separately checks
 		// receiver mutation and arguments that pass the binding itself.
 		return false
+	case *ast.SubscriptExpression:
+		// Indexing the collection itself yields one of its elements, but indexing
+		// a composite that contains it can yield the collection identity.
+		return !w.directTarget(node.Object) && w.containsTarget(node.Object)
 	case *ast.MemberExpression:
 		return w.aliasesTarget(node.Object)
 	case *ast.LambdaExpression:
