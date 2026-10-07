@@ -69,7 +69,7 @@ var godot47Identity = registryIdentity{
 	version:      Version{Major: 4, Minor: 7, Patch: 2},
 	rawSHA256:    "d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986",
 	sourceCommit: "ed1daf0bf",
-	schemaSHA256: "2b38249d74e48221e7fcc655592929e5c1bf4ab8d34c5c8b98ce8655a18c0a66",
+	schemaSHA256: "194f3994180ad043703ab3d324a93563c5886e69ffe9a3131d109c435660faa5",
 }
 
 var embeddedRegistry = map[MinorVersion]registryRecord{

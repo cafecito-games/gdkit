@@ -57,6 +57,7 @@ type reductionResult struct {
 	special            string
 	constructor        Type
 	hasConstructor     bool
+	builtinConstructor *builtinConstructorCapability
 	namedEnumObject    *namedEnumObjectProvenance
 	hasNamedEnumObject bool
 }
@@ -272,6 +273,10 @@ func cloneReductionResult(result reductionResult) reductionResult {
 		provenance := *result.namedEnumObject
 		result.namedEnumObject = &provenance
 	}
+	if result.builtinConstructor != nil {
+		capability := *result.builtinConstructor
+		result.builtinConstructor = &capability
+	}
 	return result
 }
 
@@ -425,6 +430,15 @@ func (a *Analyzer) reduceIdentifier(identifier *ast.Identifier, context reductio
 			return unknownReduction(fmt.Sprintf("identifier %q resolved without a binding", identifier.Name))
 		}
 		result := knownReduction(binding.Type())
+		if capability, found := binding.builtinConstructorCapability(); found {
+			constructor, problem := a.validateBuiltinConstructorCapability(capability, capability.result)
+			if problem != "" {
+				return unknownReduction(problem)
+			}
+			result.constructor = constructor
+			result.hasConstructor = true
+			result.builtinConstructor = capability
+		}
 		if binding.Kind() == BindingSuper {
 			if member, found := binding.SuperMember(); found {
 				result = memberReduction(member)
@@ -635,7 +649,27 @@ func (a *Analyzer) reduceCall(expression *ast.CallExpression, context reductionC
 		return unknownReduction("call expression is unavailable")
 	}
 	callee := a.reduceChild(expression.Callee, context, request)
-	if callee.typeValue.Kind() == KindUnknown {
+	var builtinConstructor Type
+	if callee.builtinConstructor != nil {
+		// A builtin type global remains Unknown in ordinary value position, so
+		// its capability may have flowed through an otherwise-Unknown compound
+		// expression. Only the exact bare identifier selected by Scope is a
+		// direct value-constructor call; never reinterpret an unknown member,
+		// subscript, operator, argument, or nested call as one.
+		if _, direct := expression.Callee.(*ast.Identifier); !direct {
+			return knownReduction(callee.typeValue)
+		}
+		if !callee.hasConstructor || callee.builtinConstructor == nil {
+			return unknownReduction("builtin constructor provenance is unavailable")
+		}
+		var problem string
+		builtinConstructor, problem = a.validateBuiltinConstructorCapability(callee.builtinConstructor, callee.constructor)
+		if problem != "" {
+			return unknownReduction(problem)
+		}
+	} else if callee.hasConstructor && callee.typeValue.Kind() == KindUnknown {
+		return unknownReduction("builtin constructor provenance is unavailable")
+	} else if callee.typeValue.Kind() == KindUnknown {
 		return callee
 	}
 	for _, argument := range expression.Arguments {
@@ -645,6 +679,9 @@ func (a *Analyzer) reduceCall(expression *ast.CallExpression, context reductionC
 		}
 	}
 	if callee.hasConstructor {
+		if callee.builtinConstructor != nil {
+			return knownReduction(builtinConstructor)
+		}
 		return knownReduction(callee.constructor)
 	}
 	if callee.special == "preload" || callee.special == "load" {
@@ -670,6 +707,29 @@ func (a *Analyzer) reduceCall(expression *ast.CallExpression, context reductionC
 		return unknownReduction("Callable value has no retained signature")
 	}
 	return unknownReduction(fmt.Sprintf("receiver %s is not callable", reductionTypeLabel(callee.typeValue)))
+}
+
+func (a *Analyzer) validateBuiltinConstructorCapability(capability *builtinConstructorCapability, result Type) (Type, string) {
+	if capability == nil {
+		return Type{}, "builtin constructor provenance is unavailable"
+	}
+	if a == nil || a.engine == nil {
+		return Type{}, "engine schema is unavailable while validating builtin constructor provenance"
+	}
+	if capability.engine != a.engine {
+		return Type{}, "builtin constructor provenance belongs to another Engine"
+	}
+	if a.scopes == nil || capability.index != a.scopes {
+		return Type{}, "builtin constructor provenance belongs to another ScopeIndex"
+	}
+	canonical, ok := a.engine.builtinConstructor(capability.name)
+	if !ok {
+		return Type{}, fmt.Sprintf("builtin constructor provenance for %q is not eligible in the selected Engine", capability.name)
+	}
+	if capability.result.Kind() == KindUnknown || !capability.result.Equal(canonical) || !result.Equal(canonical) {
+		return Type{}, fmt.Sprintf("builtin constructor provenance for %q does not name its canonical selected-Engine type", capability.name)
+	}
+	return canonical, ""
 }
 
 // reduceResourceCall consumes the dedicated language-special provenance from

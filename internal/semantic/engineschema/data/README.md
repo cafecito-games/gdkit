@@ -4,7 +4,9 @@
 dump produced by Godot 4.7.2 stable official (`ed1daf0bf`). Its raw SHA-256 is
 `d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986`.
 The artifact's semantic schema SHA-256 is
-`2b38249d74e48221e7fcc655592929e5c1bf4ab8d34c5c8b98ce8655a18c0a66`.
+`194f3994180ad043703ab3d324a93563c5886e69ffe9a3131d109c435660faa5`.
+The committed gzip is 205,753 bytes with SHA-256
+`a7737f1adb3765e1df446a915115585f8c0f9257cd08541551d8b1649d7c5f55`.
 
 Regenerate it from a verified official dump with:
 

@@ -417,6 +417,13 @@ an enabled semantic-aware rule requests engine facts. Today that is the enabled
 collection rule, and the other typing rules do not select an engine or perform
 whole-project semantic analysis.
 
+The selected schema also supplies builtin value-constructor eligibility. A
+direct call such as `Vector2(1, 2)` reduces to that selected Engine's canonical
+`Vector2` type only when its validated `constructors` table is nonempty. The
+bare `Vector2` global remains an unknown ordinary value—not a class meta object
+or a public Callable—and a missing, null, malformed, or explicitly empty
+constructor table never becomes callable by fallback or by name.
+
 When a schema is loaded, JSON reports include `engine_schema` with its source,
 numeric version, status, build, full name, and raw/schema digests. The raw dump
 itself and its filesystem path are never copied into the report.
@@ -1659,9 +1666,9 @@ The committed `4.7` artifact is generated from official Godot 4.7.2 stable
 SHA-256
 `d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986`.
 The canonical schema digest is
-`2b38249d74e48221e7fcc655592929e5c1bf4ab8d34c5c8b98ce8655a18c0a66`;
-the committed gzip is 205,744 bytes with SHA-256
-`bf23992dfff8d700515596254186e13e91df374aa4d13fe4dd74f4ef7792d7f6`.
+`194f3994180ad043703ab3d324a93563c5886e69ffe9a3131d109c435660faa5`;
+the committed gzip is 205,753 bytes with SHA-256
+`a7737f1adb3765e1df446a915115585f8c0f9257cd08541551d8b1649d7c5f55`.
 
 Regenerate from a separately verified official dump with:
 

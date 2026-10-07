@@ -22,9 +22,9 @@ import (
 const (
 	fixturePath            = "testdata/extension_api_4_7_2_sample.json"
 	officialRawFixturePath = "testdata/extension_api_4_7_2_official.json.gz"
-	fixtureRawSHA256       = "a9bf8cda0343d4ea7440611c3a1f1e18c450f44f2663093e14457262433dfdf3"
+	fixtureRawSHA256       = "106979f23c7131b0fd5997ab1b82d514e3fbbf83bf5709568f4e474deb5f05e5"
 	officialRawSHA256      = "d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986"
-	officialArtifactSHA256 = "bf23992dfff8d700515596254186e13e91df374aa4d13fe4dd74f4ef7792d7f6"
+	officialArtifactSHA256 = "a7737f1adb3765e1df446a915115585f8c0f9257cd08541551d8b1649d7c5f55"
 	officialRawBytes       = 6_965_057
 	officialGodotCommit    = "ed1daf0bf"
 )
@@ -67,6 +67,20 @@ func TestLoadRawAcceptsGodotProducedFixtureByteForByte(t *testing.T) {
 		provenance.FullName != "Godot Engine v4.7.2.stable.official" || provenance.RawSHA256 != fixtureRawSHA256 ||
 		provenance.SchemaSHA256 == "" || provenance.SourceCommit != "" {
 		t.Fatalf("provenance = %+v", provenance)
+	}
+	distilled, err := distillRaw(data, SourceOverride, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	constructible := map[string]bool{}
+	for _, builtin := range distilled.Builtins {
+		if builtin.Constructible == nil {
+			t.Fatalf("builtin %q omitted constructibility", builtin.Name)
+		}
+		constructible[builtin.Name] = *builtin.Constructible
+	}
+	if !constructible["Vector2"] || constructible["bool"] {
+		t.Fatalf("sample constructor facts = %#v, want Vector2 only among checked rows", constructible)
 	}
 
 	class := loaded.Engine.Class("Sprite2D")
@@ -127,6 +141,25 @@ func TestLoadRawAcceptsOfficialGodot472DumpByteForByte(t *testing.T) {
 	if len(producer.Classes) <= semantic.EngineInheritanceDepthLimit {
 		t.Fatalf("official class count = %d, want proof that the %d limit applies only to chain depth",
 			len(producer.Classes), semantic.EngineInheritanceDepthLimit)
+	}
+	constructorRows := 0
+	for _, builtin := range producer.BuiltinClasses {
+		if builtin.Constructors == nil || len(builtin.Constructors) == 0 {
+			t.Fatalf("official builtin %q has no constructor evidence", builtin.Name)
+		}
+		constructorRows += len(builtin.Constructors)
+	}
+	if len(producer.BuiltinClasses) != 38 || constructorRows != 156 {
+		t.Fatalf("official constructor inventory = %d builtins / %d rows, want 38 / 156", len(producer.BuiltinClasses), constructorRows)
+	}
+	distilled, err := distillRaw(raw, SourceOverride, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, builtin := range distilled.Builtins {
+		if builtin.Constructible == nil || !*builtin.Constructible {
+			t.Fatalf("official builtin %q lost constructor eligibility", builtin.Name)
+		}
 	}
 	loaded, err := LoadRaw(raw, SourceOverride, "")
 	if err != nil {
@@ -463,6 +496,64 @@ func TestRawValidationRejectsMalformedRetainedRows(t *testing.T) {
 	}
 }
 
+func TestRawBuiltinConstructorValidationFailsClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "missing", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			delete(row, "constructors")
+		})},
+		{name: "null", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			row["constructors"] = nil
+		})},
+		{name: "wrong shape", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			row["constructors"] = map[string]any{}
+		})},
+		{name: "non-object row", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			row["constructors"] = []any{1}
+		})},
+		{name: "missing index", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			delete(row["constructors"].([]any)[0].(map[string]any), "index")
+		})},
+		{name: "negative index", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			row["constructors"].([]any)[0].(map[string]any)["index"] = -1
+		})},
+		{name: "duplicate index", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			row["constructors"].([]any)[1].(map[string]any)["index"] = 0
+		})},
+		{name: "noncanonical index", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			row["constructors"].([]any)[1].(map[string]any)["index"] = 2
+		})},
+		{name: "fractional index", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			row["constructors"].([]any)[0].(map[string]any)["index"] = 0.5
+		})},
+		{name: "null arguments", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			row["constructors"].([]any)[1].(map[string]any)["arguments"] = nil
+		})},
+		{name: "wrong arguments shape", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			row["constructors"].([]any)[1].(map[string]any)["arguments"] = map[string]any{}
+		})},
+		{name: "non-object argument", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			row["constructors"].([]any)[1].(map[string]any)["arguments"] = []any{1}
+		})},
+		{name: "missing argument type", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			delete(row["constructors"].([]any)[1].(map[string]any)["arguments"].([]any)[0].(map[string]any), "type")
+		})},
+		{name: "unretained argument type", mutate: mutateNamedRow("builtin_classes", "Vector2", func(row map[string]any) {
+			row["constructors"].([]any)[1].(map[string]any)["arguments"].([]any)[0].(map[string]any)["type"] = "MissingType"
+		})},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			loaded, err := LoadRaw(mutateRawFixture(t, test.mutate), SourceOverride, "")
+			if err == nil || loaded != nil || !errors.Is(err, ErrRawInvalid) {
+				t.Fatalf("LoadRaw() = %+v, %v; want ErrRawInvalid without publication", loaded, err)
+			}
+		})
+	}
+}
+
 func TestRawValidationIgnoresUnknownProducerFields(t *testing.T) {
 	data := mutateRawFixture(t, func(document map[string]any) {
 		document["future_table"] = []any{map[string]any{"unknown": true}}
@@ -545,6 +636,33 @@ func TestArtifactRejectsDigestTamperingAndNonCanonicalRecords(t *testing.T) {
 		}
 		loaded, loadErr := LoadArtifact(compressArtifactForTest(t, tampered))
 		if loadErr == nil || loaded != nil || !strings.Contains(loadErr.Error(), "canonical order") {
+			t.Fatalf("LoadArtifact() = %+v, %v", loaded, loadErr)
+		}
+	})
+
+	t.Run("missing constructibility", func(t *testing.T) {
+		tampered := envelope
+		tampered.Schema.Builtins = append([]builtinRecord(nil), envelope.Schema.Builtins...)
+		tampered.Schema.Builtins[0].Constructible = nil
+		tampered.Digest, err = schemaDigest(tampered.Schema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded, loadErr := LoadArtifact(compressArtifactForTest(t, tampered))
+		if loadErr == nil || loaded != nil || !strings.Contains(loadErr.Error(), "constructible") {
+			t.Fatalf("LoadArtifact() = %+v, %v", loaded, loadErr)
+		}
+	})
+
+	t.Run("stale schema version", func(t *testing.T) {
+		tampered := envelope
+		tampered.Schema.Version = 1
+		tampered.Digest, err = schemaDigest(tampered.Schema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded, loadErr := LoadArtifact(compressArtifactForTest(t, tampered))
+		if loadErr == nil || loaded != nil || !strings.Contains(loadErr.Error(), "unsupported engine schema version 1") {
 			t.Fatalf("LoadArtifact() = %+v, %v", loaded, loadErr)
 		}
 	})

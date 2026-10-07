@@ -9,17 +9,24 @@
     "precision": "single"
   },
   "builtin_classes": [
-    {"name": "bool"},
+    {"name": "bool", "constructors": []},
     {
       "name": "int",
+      "constructors": [],
       "operators": [
         {"name": "*", "right_type": "float", "return_type": "float"}
       ]
     },
-    {"name": "float"},
-    {"name": "StringName"},
+    {"name": "float", "constructors": []},
+    {"name": "StringName", "constructors": []},
     {
       "name": "Vector2",
+      "constructors": [
+        {"index": 0},
+        {"index": 1, "arguments": [{"name": "from", "type": "Vector2"}]},
+        {"index": 2, "arguments": [{"name": "from", "type": "Vector2i"}]},
+        {"index": 3, "arguments": [{"name": "x", "type": "float"}, {"name": "y", "type": "float"}]}
+      ],
       "members": [
         {"name": "x", "type": "float"}
       ],
@@ -38,11 +45,12 @@
         }
       ]
     },
-    {"name": "NodePath"},
-    {"name": "Callable"},
-    {"name": "Signal"},
-    {"name": "Dictionary"},
-    {"name": "Array"}
+    {"name": "Vector2i", "constructors": []},
+    {"name": "NodePath", "constructors": []},
+    {"name": "Callable", "constructors": []},
+    {"name": "Signal", "constructors": []},
+    {"name": "Dictionary", "constructors": []},
+    {"name": "Array", "constructors": []}
   ],
   "classes": [
     {"name": "CanvasItem", "inherits": "Node"},

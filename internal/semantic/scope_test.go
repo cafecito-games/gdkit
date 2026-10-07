@@ -776,6 +776,67 @@ func TestScopesKeepBuiltinTypeObjectsFoundButUnknown(t *testing.T) {
 	}
 }
 
+func TestScopesKeepBuiltinConstructorCapabilityPrivateAndSnapshotBound(t *testing.T) {
+	builder := NewEngineBuilder()
+	for _, name := range []string{"Vector2", "Dormant", "Collision", "int"} {
+		if err := builder.AddBuiltin(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := builder.AddClass("Object", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddClass("RefCounted", "Object"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Vector2", "Collision"} {
+		if err := builder.AddBuiltinConstructor(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := builder.AddUtility("Collision", "int", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := sources(t, map[string]string{
+		"player.gd": "class_name Player\nfunc run():\n\tVector2\n\tDormant\n\tCollision\n",
+	})
+	file := source.File("player.gd")
+	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), engine))
+
+	binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "Vector2", 3), BindingEngineType)
+	if binding.Type().Kind() != KindUnknown || binding.Type().Reason() == "" {
+		t.Fatalf("bare constructible builtin = %s (%q), want reasoned Unknown", binding.Type(), binding.Type().Reason())
+	}
+	capability, ok := binding.builtinConstructorCapability()
+	if !ok || capability.engine != engine || capability.index != scopes || capability.name != "Vector2" ||
+		!capability.result.Equal(engine.ResolveType("Vector2")) {
+		t.Fatalf("constructor capability = %#v/%t", capability, ok)
+	}
+	clone := cloneBinding(binding)
+	clonedCapability, ok := clone.builtinConstructorCapability()
+	if !ok || clonedCapability == capability || clonedCapability.engine != capability.engine ||
+		clonedCapability.index != capability.index || !clonedCapability.result.Equal(capability.result) {
+		t.Fatalf("cloned constructor capability = %#v/%t, original %#v", clonedCapability, ok, capability)
+	}
+
+	dormant := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "Dormant", 4), BindingEngineType)
+	if capability, ok := dormant.builtinConstructorCapability(); ok || capability != nil {
+		t.Fatalf("non-constructible builtin capability = %#v/%t", capability, ok)
+	}
+	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "Collision", 5), "builtin/utility collision")
+
+	second := BuildScopes(BuildInterfaces(BuildIndex(sources(t, map[string]string{
+		"player.gd": "class_name Player\nfunc run():\n\tVector2\n",
+	})), engine))
+	if capability.index == second {
+		t.Fatal("separately parsed snapshot reused constructor capability identity")
+	}
+}
+
 func TestScopesGiveOneMemberDeclarationOneBindingIdentity(t *testing.T) {
 	source := sources(t, map[string]string{
 		"base.gd":  "class_name Base\nconst LIMIT = 1\nfunc direct():\n\tLIMIT\n",

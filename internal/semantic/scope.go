@@ -98,6 +98,17 @@ type ScopeID struct {
 
 func (id ScopeID) String() string { return fmt.Sprintf("scope:%d", id.ordinal) }
 
+// builtinConstructorCapability is private evidence that one exact ScopeIndex
+// selected a constructible builtin from one exact immutable Engine. Its public
+// shallow Type remains reasoned Unknown; only a direct call may consume this
+// capability after revalidating every identity and the canonical result.
+type builtinConstructorCapability struct {
+	engine *Engine
+	index  *ScopeIndex
+	name   string
+	result Type
+}
+
 // Binding records one resolved identifier without mutating the parsed AST.
 // ID is its only identity. Declaration is retained for lexical bindings and
 // user members when the snapshot owns their AST header; namespace origins with
@@ -105,19 +116,20 @@ func (id ScopeID) String() string { return fmt.Sprintf("scope:%d", id.ordinal) }
 // lexical records such as parameters, loop variables, setter parameters, and
 // match cases that do not each have a declaration statement.
 type Binding struct {
-	id          BindingID
-	kind        BindingKind
-	name        string
-	classID     string
-	scopeID     ScopeID
-	declaration ast.Node
-	slot        int
-	line        int
-	column      int
-	typeValue   Type
-	constant    bool
-	member      *Member
-	superMember *Member
+	id                 BindingID
+	kind               BindingKind
+	name               string
+	classID            string
+	scopeID            ScopeID
+	declaration        ast.Node
+	slot               int
+	line               int
+	column             int
+	typeValue          Type
+	constant           bool
+	member             *Member
+	superMember        *Member
+	builtinConstructor *builtinConstructorCapability
 }
 
 // ID returns the stable in-analysis identity of this binding.
@@ -173,6 +185,14 @@ func (b Binding) SuperMember() (Member, bool) {
 	return cloneMember(*b.superMember), true
 }
 
+func (b Binding) builtinConstructorCapability() (*builtinConstructorCapability, bool) {
+	if b.builtinConstructor == nil {
+		return nil, false
+	}
+	copy := *b.builtinConstructor
+	return &copy, true
+}
+
 func cloneBinding(binding Binding) Binding {
 	if binding.member != nil {
 		member := cloneMember(*binding.member)
@@ -181,6 +201,10 @@ func cloneBinding(binding Binding) Binding {
 	if binding.superMember != nil {
 		member := cloneMember(*binding.superMember)
 		binding.superMember = &member
+	}
+	if binding.builtinConstructor != nil {
+		capability := *binding.builtinConstructor
+		binding.builtinConstructor = &capability
 	}
 	return binding
 }
@@ -1413,7 +1437,11 @@ func (i *ScopeIndex) resolveEngineGlobal(scope *Scope, name string) BindingResul
 	// remain unknown below.
 	sameNamedSingleton := hasSingleton && sameNamedEngineSingletonClass(name, engineType, singleton)
 	if engineType.Kind() != KindUnknown && !sameNamedSingleton {
-		candidates = append(candidates, i.namespaceBinding(scope, "engine-type:"+name, BindingEngineType, name, "", engineTypeObjectType(name, engineType), nil, nil, 0, 0))
+		binding := i.namespaceBinding(scope, "engine-type:"+name, BindingEngineType, name, "", engineTypeObjectType(name, engineType), nil, nil, 0, 0)
+		if result, ok := engine.builtinConstructor(name); ok {
+			binding.builtinConstructor = &builtinConstructorCapability{engine: engine, index: i, name: name, result: result}
+		}
+		candidates = append(candidates, binding)
 	}
 	if hasSingleton {
 		candidates = append(candidates, i.namespaceBinding(scope, "engine-singleton:"+name, BindingEngineSingleton, name, "", singleton, nil, nil, 0, 0))

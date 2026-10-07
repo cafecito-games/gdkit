@@ -429,6 +429,262 @@ func TestAnalyzerReducesMembersCallsAndDeferredSpecials(t *testing.T) {
 	}
 }
 
+func TestAnalyzerReducesSchemaBackedBuiltinConstructors(t *testing.T) {
+	mandatory := []string{
+		"Vector2", "Vector2i", "Vector3", "Vector3i", "Color", "Rect2", "Rect2i",
+		"Transform2D", "Transform3D", "Basis", "Plane", "Quaternion", "AABB",
+		"String", "StringName", "NodePath", "RID",
+	}
+	var program strings.Builder
+	program.WriteString("class_name BuiltinCalls\nvar dynamic: Variant\nfunc inferred():\n\treturn Vector2(1, 2)\nfunc shadow(Vector2):\n\tvar shadowed := Vector2(1, 2)\nfunc run(value: Variant):\n")
+	for index, name := range mandatory {
+		fmt.Fprintf(&program, "\tvar mandatory_%d := %s()\n", index, name)
+	}
+	program.WriteString("\tvar direct := Vector2(1, 2)\n\tvar nested := Vector2i(Vector2(1, 2))\n\tvar packed := PackedByteArray([])\n\tvar future := FutureValue()\n\tvar dormant := Dormant()\n\tvar missing := MissingBuiltin()\n\tvar unknown_argument := Vector2(not_retained)\n\tvar bare := Vector2\n\tvar bare_member := Vector2.ZERO\n\tvar bare_member_call := Vector2.ZERO()\n\tvar member_chain_call := Vector2.ZERO.length()\n\tvar sum := Vector2(1, 2) + Vector2(3, 4)\n\tvar length := Vector2(1, 2).length()\n\tvar collection := [Vector2(1, 2)]\n\tvar returned := inferred()\n\tif value is Vector2:\n\t\tvar narrowed := value\n")
+	source := sources(t, map[string]string{
+		"constructors.gd":  program.String(),
+		"local_shadow.gd":  "class_name LocalShadow\nfunc run():\n\tvar Vector2: Callable\n\tvar local_shadowed := Vector2()\n",
+		"member_shadow.gd": "class_name MemberShadow\nvar Vector2: Callable\nfunc run():\n\tvar member_shadowed := Vector2()\n",
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("builtin constructor fixture did not parse: %v", failures)
+	}
+	engine := builtinConstructorTestEngine(t)
+	analyzer := NewAnalyzer(source, engine)
+	file := source.File("constructors.gd")
+	for index, name := range mandatory {
+		got := analyzer.TypeOf(reducerVariableValue(t, file, fmt.Sprintf("mandatory_%d", index)))
+		want := engine.ResolveType(name)
+		if !got.Equal(want) {
+			t.Errorf("%s constructor = %s (%q), want %s", name, got, got.Reason(), want)
+		}
+	}
+	for _, testCase := range []struct {
+		name string
+		want Type
+	}{
+		{name: "direct", want: engine.ResolveType("Vector2")},
+		{name: "nested", want: engine.ResolveType("Vector2i")},
+		{name: "packed", want: engine.ResolveType("PackedByteArray")},
+		{name: "future", want: engine.ResolveType("FutureValue")},
+		{name: "sum", want: engine.ResolveType("Vector2")},
+		{name: "length", want: engine.ResolveType("float")},
+		{name: "collection", want: reducerArray(engine.ResolveType("Vector2"))},
+		{name: "returned", want: engine.ResolveType("Vector2")},
+		{name: "narrowed", want: engine.ResolveType("Vector2")},
+		{name: "shadowed", want: Variant()},
+	} {
+		got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
+		if !got.Equal(testCase.want) {
+			t.Errorf("%s = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
+		}
+	}
+	for _, name := range []string{"dormant", "missing", "unknown_argument", "bare", "bare_member", "bare_member_call", "member_chain_call"} {
+		got := analyzer.TypeOf(reducerVariableValue(t, file, name))
+		if got.Kind() != KindUnknown || got.Reason() == "" {
+			t.Errorf("%s = %s (%q), want reasoned Unknown", name, got, got.Reason())
+		}
+	}
+	for fileName, name := range map[string]string{
+		"local_shadow.gd":  "local_shadowed",
+		"member_shadow.gd": "member_shadowed",
+	} {
+		got := analyzer.TypeOf(reducerVariableValue(t, source.File(fileName), name))
+		if got.Kind() != KindUnknown || got.Reason() == "" {
+			t.Errorf("%s = %s (%q), want shadowed reasoned Unknown", name, got, got.Reason())
+		}
+	}
+	unknownArgument := analyzer.TypeOf(reducerVariableValue(t, file, "unknown_argument"))
+	if !strings.Contains(unknownArgument.Reason(), "not_retained") {
+		t.Fatalf("unknown constructor argument reason = %q, want originating identifier", unknownArgument.Reason())
+	}
+}
+
+func TestAnalyzerKeepsBuiltinConstructorCapabilityEngineAndSnapshotBound(t *testing.T) {
+	parse := func(t *testing.T) (*memorySources, *ast.CallExpression) {
+		t.Helper()
+		source := sources(t, map[string]string{
+			"constructors.gd": "class_name BuiltinCalls\nfunc run():\n\tvar value := Vector2(1, 2)\n",
+		})
+		if failures := source.ParseFailures(); len(failures) != 0 {
+			t.Fatalf("builtin constructor fixture did not parse: %v", failures)
+		}
+		call, ok := reducerVariableValue(t, source.File("constructors.gd"), "value").(*ast.CallExpression)
+		if !ok {
+			t.Fatalf("value expression = %T, want CallExpression", reducerVariableValue(t, source.File("constructors.gd"), "value"))
+		}
+		return source, call
+	}
+
+	source, call := parse(t)
+	engine := builtinConstructorTestEngine(t)
+	analyzer := NewAnalyzer(source, engine)
+	want := engine.ResolveType("Vector2")
+	if got := analyzer.TypeOf(call.Callee); got.Kind() != KindUnknown || got.Reason() == "" {
+		t.Fatalf("bare constructor queried first = %s (%q), want reasoned Unknown", got, got.Reason())
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if got := analyzer.TypeOf(call); !got.Equal(want) {
+			t.Fatalf("cached constructor = %s (%q), want %s", got, got.Reason(), want)
+		}
+	}
+	calleeScope, ok := analyzer.scopes.ScopeAt(call.Callee)
+	if !ok {
+		t.Fatal("constructor callee has no scope")
+	}
+	callScope, ok := analyzer.scopes.ScopeAt(call)
+	if !ok {
+		t.Fatal("constructor call has no scope")
+	}
+	for _, token := range []reductionContextToken{{overlay: &reductionOverlay{}}, {overlay: &reductionOverlay{}}} {
+		got := analyzer.typeOfIn(call, callScope, token)
+		if !got.typeValue.Equal(want) {
+			t.Fatalf("overlay constructor = %s (%q), want %s", got.typeValue, got.typeValue.Reason(), want)
+		}
+		if _, cached := analyzer.cache[reductionKey{expression: call, scope: callScope.ID(), token: token}]; !cached {
+			t.Fatal("constructor overlay result did not retain distinct cache identity")
+		}
+	}
+	original := analyzer.typeOfIn(call.Callee, calleeScope, reductionContextToken{})
+	cloned := cloneReductionResult(original)
+	if original.builtinConstructor == nil || cloned.builtinConstructor == nil || original.builtinConstructor == cloned.builtinConstructor {
+		t.Fatal("cloneReductionResult did not defensively copy builtin constructor provenance")
+	}
+	cycleSource, cycleCall := parse(t)
+	cycleAnalyzer := NewAnalyzer(cycleSource, builtinConstructorTestEngine(t))
+	cycleCallScope, ok := cycleAnalyzer.scopes.ScopeAt(cycleCall)
+	if !ok {
+		t.Fatal("cycle constructor call has no scope")
+	}
+	cycleCalleeScope, ok := cycleAnalyzer.scopes.ScopeAt(cycleCall.Callee)
+	if !ok {
+		t.Fatal("cycle constructor callee has no scope")
+	}
+	cycleKey := reductionKey{expression: cycleCall.Callee, scope: cycleCalleeScope.ID()}
+	request := &reductionRequest{active: map[reductionKey]bool{cycleKey: true}}
+	cycled := cycleAnalyzer.reduce(cycleCall, reductionContext{scope: cycleCallScope}, request)
+	if cycled.typeValue.Kind() != KindUnknown || cycled.typeValue.Reason() != "expression reduction cycle" {
+		t.Fatalf("cycle-tainted constructor = %s (%q), want cycle Unknown", cycled.typeValue, cycled.typeValue.Reason())
+	}
+	if got := cycleAnalyzer.TypeOf(cycleCall); !got.Equal(cycleAnalyzer.engine.ResolveType("Vector2")) {
+		t.Fatalf("clean read after cycle-tainted constructor = %s (%q)", got, got.Reason())
+	}
+
+	foreignSource, foreignCall := parse(t)
+	if got := analyzer.TypeOf(foreignCall); got.Kind() != KindUnknown || got.Reason() == "" {
+		t.Fatalf("foreign parsed call = %s (%q), want reasoned Unknown", got, got.Reason())
+	}
+	foreignEngine := builtinConstructorTestEngine(t)
+	foreignAnalyzer := NewAnalyzer(foreignSource, engine)
+	foreignCalleeScope, ok := foreignAnalyzer.scopes.ScopeAt(foreignCall.Callee)
+	if !ok {
+		t.Fatal("foreign constructor callee has no scope")
+	}
+	foreignResult, ok := foreignEngine.builtinConstructor("Vector2")
+	if !ok {
+		t.Fatal("foreign Engine has no Vector2 constructor")
+	}
+	foreignAnalyzer.cache[reductionKey{expression: foreignCall.Callee, scope: foreignCalleeScope.ID()}] = reductionResult{
+		typeValue:      Unknown(`engine type "Vector2" has no class-object representation`),
+		constructor:    foreignResult,
+		hasConstructor: true,
+		builtinConstructor: &builtinConstructorCapability{
+			engine: foreignEngine,
+			index:  foreignAnalyzer.scopes,
+			name:   "Vector2",
+			result: foreignResult,
+		},
+	}
+	if got := foreignAnalyzer.TypeOf(foreignCall); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "another Engine") {
+		t.Fatalf("foreign Engine capability = %s (%q), want engine-bound Unknown", got, got.Reason())
+	}
+
+	invalidSource, invalidCall := parse(t)
+	invalid := NewAnalyzer(invalidSource, engine)
+	invalidCalleeScope, ok := invalid.scopes.ScopeAt(invalidCall.Callee)
+	if !ok {
+		t.Fatal("invalid constructor callee has no scope")
+	}
+	invalid.cache[reductionKey{expression: invalidCall.Callee, scope: invalidCalleeScope.ID()}] = reductionResult{
+		typeValue:      Unknown(`engine type "Vector2" has no class-object representation`),
+		constructor:    Builtin("float"),
+		hasConstructor: true,
+		builtinConstructor: &builtinConstructorCapability{
+			engine: engine,
+			index:  invalid.scopes,
+			name:   "Vector2",
+			result: Builtin("float"),
+		},
+	}
+	if got := invalid.TypeOf(invalidCall); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "canonical") {
+		t.Fatalf("malformed constructor capability = %s (%q), want canonical-type Unknown", got, got.Reason())
+	}
+
+	coldSource, coldCall := parse(t)
+	cold := NewAnalyzer(coldSource, builtinConstructorTestEngine(t))
+	const readers = 24
+	start := make(chan struct{})
+	problems := make(chan string, readers)
+	var done sync.WaitGroup
+	done.Add(readers)
+	for range readers {
+		go func() {
+			defer done.Done()
+			<-start
+			got := cold.TypeOf(coldCall)
+			if !got.Equal(cold.engine.ResolveType("Vector2")) {
+				problems <- got.String()
+			}
+		}()
+	}
+	close(start)
+	done.Wait()
+	close(problems)
+	for problem := range problems {
+		t.Errorf("concurrent cold builtin constructor = %s", problem)
+	}
+}
+
+func TestAnalyzerRejectsBuiltinConstructorCategoryCollisions(t *testing.T) {
+	builder := NewEngineBuilder()
+	for _, name := range []string{"Vector2", "Collision", "int"} {
+		if err := builder.AddBuiltin(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"Vector2", "Collision"} {
+		if err := builder.AddBuiltinConstructor(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := builder.AddClass("Object", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddClass("RefCounted", "Object"); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddUtility("Vector2", "int", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddSingleton("Collision", "Object"); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := sources(t, map[string]string{
+		"collisions.gd": "class_name Collisions\nfunc run():\n\tvar utility_collision := Vector2()\n\tvar singleton_collision := Collision()\n",
+	})
+	analyzer := NewAnalyzer(source, engine)
+	for _, name := range []string{"utility_collision", "singleton_collision"} {
+		got := analyzer.TypeOf(reducerVariableValue(t, source.File("collisions.gd"), name))
+		if got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "multiple categories") {
+			t.Errorf("%s = %s (%q), want collision Unknown", name, got, got.Reason())
+		}
+	}
+}
+
 func TestAnalyzerResolvesLanguageSpecialResourcesAndMetaMembers(t *testing.T) {
 	// Godot v4.7.2 reports typeof(Actor.Mode) as Dictionary. In particular,
 	// Array[Actor.Mode] rejects [Actor.Mode] because that annotation denotes
@@ -1320,6 +1576,49 @@ func reducerTestEngine(t *testing.T) *Engine {
 		t.Fatal(err)
 	}
 	if err := builder.AddMethod("ResourceLoader", "load", "Resource", nil, true, false); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return engine
+}
+
+func builtinConstructorTestEngine(t *testing.T) *Engine {
+	t.Helper()
+	builder := NewEngineBuilder()
+	mandatory := []string{
+		"Vector2", "Vector2i", "Vector3", "Vector3i", "Color", "Rect2", "Rect2i",
+		"Transform2D", "Transform3D", "Basis", "Plane", "Quaternion", "AABB",
+		"String", "StringName", "NodePath", "RID",
+	}
+	for _, name := range append([]string{
+		"Variant", "bool", "int", "float", "Array", "Dictionary", "Callable", "Signal",
+		"PackedByteArray", "FutureValue", "Dormant",
+	}, mandatory...) {
+		if err := builder.AddBuiltin(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range append([]string{"PackedByteArray", "FutureValue"}, mandatory...) {
+		if err := builder.AddBuiltinConstructor(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, class := range []struct{ name, parent string }{
+		{name: "Object"},
+		{name: "RefCounted", parent: "Object"},
+		{name: "Node", parent: "Object"},
+	} {
+		if err := builder.AddClass(class.name, class.parent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := builder.AddOperator("Vector2", "+", "Vector2", "Vector2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddMethod("Vector2", "length", "float", nil, false, false); err != nil {
 		t.Fatal(err)
 	}
 	engine, err := builder.Build()
