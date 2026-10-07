@@ -16,14 +16,21 @@ import (
 	"github.com/cafecito-games/gdkit/internal/semantic"
 	"github.com/cafecito-games/gdkit/internal/semantic/engineschema"
 	"github.com/cafecito-games/gdkit/internal/semanticsource"
+	"github.com/cafecito-games/gdkit/internal/versiongate"
 	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdparser/ast"
+	"github.com/cafecito-games/gdparser/token"
 )
 
 const (
 	corpusRevision                 = "e74c06f54e1bdbe79d40641193fb89fcc0c207e2"
 	corpusBaselineGDKit            = "2711952538c158df14086c43e872117789c6a70b"
 	corpusPreChangeCollectionCount = 861
+	corpusIssue80BaseGDKit         = "bab1b00fdba422ecde2aacd1eb0d65336ac988b5"
+	corpusIssue80BaseCount         = 983
+	corpusIssue80BaseDigest        = "d55e163439108a1d280cfaf71291e2c767a8aa98279c87c2fd33c9c1c77c937b"
+	corpusPayloadPath              = "features/auth/auth_client.gd"
+	corpusPayloadLine              = 122
 	// corpusPreChangeSuppliedDigest was supplied with the issue, but no
 	// serializer accompanied it. The receipt records it alongside the pinned
 	// canonical digest below rather than claiming an unverifiable match.
@@ -137,6 +144,20 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 		t.Fatalf("pre-change collection diagnostics = %d, want %d", len(beforeCollection), corpusPreChangeCollectionCount)
 	}
 
+	baseLinter, err := newLinterForProject(root, enabledConfig, corpusIssue80BaseRules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseReport := baseLinter.Lint(snapshot)
+	baseCollection := corpusCollectionDiagnostics(baseReport)
+	baseTuples := corpusDiagnosticTuples(baseCollection)
+	if len(baseTuples) != corpusIssue80BaseCount {
+		t.Fatalf("issue #80 base collection diagnostics = %d, want %d", len(baseTuples), corpusIssue80BaseCount)
+	}
+	if digest := corpusDiagnosticDigest(baseTuples); digest != corpusIssue80BaseDigest {
+		t.Fatalf("issue #80 base collection digest = %s, want %s", digest, corpusIssue80BaseDigest)
+	}
+
 	enabled, err := NewForProject(root, enabledConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +215,13 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 
 	beforeTuples := corpusDiagnosticTuples(beforeCollection)
 	afterTuples := corpusDiagnosticTuples(afterCollection)
-	added, removed := corpusDiagnosticDelta(beforeTuples, afterTuples)
+	added, removed, changed := corpusDiagnosticChanges(baseTuples, afterTuples)
+	baseExact, baseGeneric := corpusCollectionPrecision(baseTuples)
+	afterExact, afterGeneric := corpusCollectionPrecision(afterTuples)
+	payload := corpusRequireTuple(t, afterTuples, corpusPayloadPath, corpusPayloadLine)
+	if payload.Message == "Dictionary has no element type; write Dictionary[String, String]" {
+		t.Fatalf("payload tuple retained the unsound initializer-only suggestion: %+v", payload)
+	}
 	gdkitRoot := gitAt(t, "", "rev-parse", "--show-toplevel")
 	receipt := corpusSemanticReceipt{
 		CorpusPath:                         root,
@@ -230,12 +257,25 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 		BeforeCollectionSuppliedDigest:     corpusPreChangeSuppliedDigest,
 		BeforeCollectionSuppliedReproduced: false,
 		BeforeCollectionObservedDigest:     corpusDiagnosticDigest(beforeTuples),
+		Issue80BaseGDKit:                   corpusIssue80BaseGDKit,
+		Issue80BaseCollectionDiagnostics:   len(baseTuples),
+		Issue80BaseCollectionDigest:        corpusDiagnosticDigest(baseTuples),
+		Issue80BaseExactDiagnostics:        baseExact,
+		Issue80BaseGenericDiagnostics:      baseGeneric,
 		AfterCollectionDiagnostics:         len(afterTuples),
 		AfterCollectionDigest:              corpusDiagnosticDigest(afterTuples),
+		AfterCollectionExactDiagnostics:    afterExact,
+		AfterCollectionGenericDiagnostics:  afterGeneric,
 		AddedCollectionDiagnostics:         len(added),
 		RemovedCollectionDiagnostics:       len(removed),
+		ChangedCollectionDiagnostics:       len(changed),
 		AddedCollectionDigest:              corpusDiagnosticDigest(added),
 		RemovedCollectionDigest:            corpusDiagnosticDigest(removed),
+		ChangedCollectionDigest:            corpusDiagnosticChangeDigest(changed),
+		AddedCollectionTuples:              added,
+		RemovedCollectionTuples:            removed,
+		ChangedCollectionTuples:            changed,
+		PayloadTuple:                       payload,
 		DisabledLintMedian:                 disabledMedian.String(),
 		EnabledLintMedian:                  enabledMedian.String(),
 	}
@@ -262,6 +302,308 @@ func corpusPreChangeRules() []Rule {
 	for index, rule := range rules {
 		if rule.Name() == ruleRequireTypedCollection {
 			rules[index] = corpusPreChangeCollectionRule{}
+			return rules
+		}
+	}
+	panic("require-typed-collection is not registered")
+}
+
+// corpusIssue80BaseCollectionRule is the immutable #80-base mirror: it renders
+// a populated literal from TypeOf(initializer) and deliberately does not inspect
+// later writes. Its collector and renderer are test-local snapshots so a future
+// production typing-rule refactor cannot silently change the base receipt.
+type corpusIssue80BaseCollectionRule struct{}
+
+func (corpusIssue80BaseCollectionRule) Name() string                { return ruleRequireTypedCollection }
+func (corpusIssue80BaseCollectionRule) PendingSince() string        { return "0.5.0" }
+func (corpusIssue80BaseCollectionRule) NeedsSemanticAnalysis() bool { return true }
+func (corpusIssue80BaseCollectionRule) Check(context *Context, script *project.Script) []Diagnostic {
+	if context == nil || context.analyzer == nil || context.Engine() == nil || script == nil {
+		return nil
+	}
+	var found []Diagnostic
+	for _, site := range corpusIssue80BaseCollectCollectionSites(script) {
+		if !context.supports(site.floor) || context.exempt(ruleRequireTypedCollection, site.enclosing) {
+			continue
+		}
+		message := site.message
+		if site.literal != nil {
+			var reported bool
+			message, reported = corpusIssue80BaseCollectionTypeMessage(context.Engine(), context.analyzer.TypeOf(site.literal))
+			if !reported {
+				continue
+			}
+		}
+		start, end := site.span.Start, site.span.End
+		found = append(found, Diagnostic{
+			Message: message, Line: start.Line, Column: runeColumn(script, start),
+			EndLine: end.Line, EndColumn: runeColumn(script, end),
+		})
+	}
+	return found
+}
+
+type corpusIssue80BaseCollectionSite struct {
+	message   string
+	enclosing string
+	floor     versiongate.Version
+	span      token.Span
+	literal   ast.Expression
+}
+
+type corpusIssue80BaseCollectionCollector struct {
+	found []corpusIssue80BaseCollectionSite
+}
+
+func corpusIssue80BaseCollectCollectionSites(script *project.Script) []corpusIssue80BaseCollectionSite {
+	if script == nil || script.File == nil {
+		return nil
+	}
+	collector := &corpusIssue80BaseCollectionCollector{}
+	collector.classBody(script.File.Statements)
+	return collector.found
+}
+
+func (c *corpusIssue80BaseCollectionCollector) add(site corpusIssue80BaseCollectionSite) {
+	c.found = append(c.found, site)
+}
+
+func (c *corpusIssue80BaseCollectionCollector) classBody(statements []ast.Statement) {
+	for _, statement := range statements {
+		switch declaration := statement.(type) {
+		case *ast.ClassDeclaration:
+			c.classBody(declaration.Body)
+		case *ast.FunctionDeclaration:
+			c.function(declaration)
+		case *ast.VariableDeclaration:
+			c.classVariable(declaration)
+		case *ast.SignalDeclaration:
+			c.signal(declaration)
+		case *ast.EnumDeclaration:
+			for _, member := range declaration.Members {
+				c.inspect("", member.Value)
+			}
+		}
+	}
+}
+
+func (c *corpusIssue80BaseCollectionCollector) classVariable(declaration *ast.VariableDeclaration) {
+	c.variable(declaration, "")
+	c.inspect("", declaration.Value)
+	c.functionScope(declaration.Name, declaration.Getter)
+	if declaration.Setter != nil {
+		c.functionScope(declaration.Name, declaration.Setter.Body)
+	}
+}
+
+func (c *corpusIssue80BaseCollectionCollector) signal(declaration *ast.SignalDeclaration) {
+	c.parameters(declaration.Parameters, declaration.Name)
+}
+
+func (c *corpusIssue80BaseCollectionCollector) function(declaration *ast.FunctionDeclaration) {
+	c.collection(declaration.ReturnType, declaration.ReturnTypeSpan, declaration.Name)
+	c.parameters(declaration.Parameters, declaration.Name)
+	c.functionScope(declaration.Name, declaration.Body)
+}
+
+func (c *corpusIssue80BaseCollectionCollector) parameters(parameters []ast.Parameter, enclosing string) {
+	for _, parameter := range parameters {
+		c.inspect(enclosing, parameter.Default)
+		c.collection(parameter.Type, parameter.TypeSpan, enclosing)
+	}
+}
+
+func (c *corpusIssue80BaseCollectionCollector) variable(declaration *ast.VariableDeclaration, enclosing string) {
+	c.collection(declaration.Type, declaration.TypeSpan, enclosing)
+	if declaration.Type == "" {
+		c.collectionLiteral(declaration.Value, enclosing)
+	}
+}
+
+func (c *corpusIssue80BaseCollectionCollector) collectionLiteral(value ast.Expression, enclosing string) {
+	switch literal := value.(type) {
+	case *ast.ArrayLiteral:
+		if len(literal.Elements) == 0 {
+			c.collection("Array", literal.Span(), enclosing)
+			return
+		}
+		c.populatedCollection("Array", literal, literal.Span(), enclosing)
+	case *ast.DictionaryLiteral:
+		if len(literal.Entries) == 0 {
+			c.collection("Dictionary", literal.Span(), enclosing)
+			return
+		}
+		c.populatedCollection("Dictionary", literal, literal.Span(), enclosing)
+	}
+}
+
+func (c *corpusIssue80BaseCollectionCollector) populatedCollection(typeName string, literal ast.Expression, span token.Span, enclosing string) {
+	floor, _, ok := corpusIssue80BaseCollectionSuggestion(typeName)
+	if !ok {
+		return
+	}
+	c.add(corpusIssue80BaseCollectionSite{floor: floor, literal: literal, span: span, enclosing: enclosing})
+}
+
+func (c *corpusIssue80BaseCollectionCollector) collection(typeName string, span token.Span, enclosing string) {
+	floor, form, ok := corpusIssue80BaseCollectionSuggestion(typeName)
+	if !ok {
+		return
+	}
+	c.add(corpusIssue80BaseCollectionSite{
+		message:   fmt.Sprintf("%s has no element type; write %s", typeName, form),
+		enclosing: enclosing,
+		floor:     floor,
+		span:      span,
+	})
+}
+
+func (c *corpusIssue80BaseCollectionCollector) functionScope(enclosing string, statements []ast.Statement) {
+	for _, statement := range statements {
+		c.inspect(enclosing, statement)
+	}
+}
+
+func (c *corpusIssue80BaseCollectionCollector) inspect(enclosing string, node ast.Node) {
+	if node == nil {
+		return
+	}
+	ast.Inspect(node, func(node ast.Node) bool {
+		switch declaration := node.(type) {
+		case *ast.VariableDeclaration:
+			c.variable(declaration, enclosing)
+		case *ast.ForStatement:
+			c.collection(declaration.Type, declaration.TypeSpan, enclosing)
+		case *ast.LambdaExpression:
+			c.parameters(declaration.Parameters, enclosing)
+		}
+		return true
+	})
+}
+
+func corpusIssue80BaseCollectionSuggestion(typeName string) (versiongate.Version, string, bool) {
+	switch typeName {
+	case "Array":
+		return versiongate.Version{Major: 4}, "Array[T]", true
+	case "Dictionary":
+		return versiongate.Version{Major: 4, Minor: 4}, "Dictionary[K, V]", true
+	default:
+		return versiongate.Version{}, "", false
+	}
+}
+
+func corpusIssue80BaseCollectionTypeMessage(engine *semantic.Engine, typeValue semantic.Type) (string, bool) {
+	switch typeValue.Kind() {
+	case semantic.KindUnknown:
+		return "", false
+	case semantic.KindArray:
+		element, typed := typeValue.Element()
+		if !typed {
+			return "Array has no element type; write Array[T]", true
+		}
+		spelling, status := corpusIssue80BaseSourceWritableType(engine, element)
+		switch status {
+		case corpusIssue80BaseSourceTypeWritable:
+			return fmt.Sprintf("Array has no element type; write Array[%s]", spelling), true
+		case corpusIssue80BaseSourceTypeUnknown:
+			return "", false
+		default:
+			return "Array has no element type; write Array[T]", true
+		}
+	case semantic.KindDictionary:
+		key, typedKey := typeValue.Key()
+		value, typedValue := typeValue.Value()
+		if !typedKey || !typedValue {
+			return "Dictionary has no element type; write Dictionary[K, V]", true
+		}
+		keySpelling, keyStatus := corpusIssue80BaseSourceWritableType(engine, key)
+		valueSpelling, valueStatus := corpusIssue80BaseSourceWritableType(engine, value)
+		if keyStatus == corpusIssue80BaseSourceTypeUnknown || valueStatus == corpusIssue80BaseSourceTypeUnknown {
+			return "", false
+		}
+		if keyStatus != corpusIssue80BaseSourceTypeWritable || valueStatus != corpusIssue80BaseSourceTypeWritable {
+			return "Dictionary has no element type; write Dictionary[K, V]", true
+		}
+		return fmt.Sprintf("Dictionary has no element type; write Dictionary[%s, %s]", keySpelling, valueSpelling), true
+	default:
+		return "", false
+	}
+}
+
+type corpusIssue80BaseSourceTypeStatus uint8
+
+const (
+	corpusIssue80BaseSourceTypeUnwritable corpusIssue80BaseSourceTypeStatus = iota
+	corpusIssue80BaseSourceTypeWritable
+	corpusIssue80BaseSourceTypeUnknown
+)
+
+func corpusIssue80BaseSourceWritableType(engine *semantic.Engine, typeValue semantic.Type) (string, corpusIssue80BaseSourceTypeStatus) {
+	switch typeValue.Kind() {
+	case semantic.KindUnknown:
+		return "", corpusIssue80BaseSourceTypeUnknown
+	case semantic.KindVariant:
+		return "Variant", corpusIssue80BaseSourceTypeWritable
+	case semantic.KindCallable:
+		return "Callable", corpusIssue80BaseSourceTypeWritable
+	case semantic.KindSignal:
+		return "Signal", corpusIssue80BaseSourceTypeWritable
+	case semantic.KindBuiltin:
+		resolved := engine.ResolveType(typeValue.Name())
+		if resolved.Kind() == semantic.KindBuiltin && resolved.Equal(typeValue) {
+			return typeValue.Name(), corpusIssue80BaseSourceTypeWritable
+		}
+		return "", corpusIssue80BaseSourceTypeUnwritable
+	case semantic.KindClass:
+		if typeValue.Meta() {
+			return "", corpusIssue80BaseSourceTypeUnwritable
+		}
+		resolved := engine.Class(typeValue.Name())
+		if resolved.Kind() == semantic.KindClass && !resolved.Meta() && resolved.Equal(typeValue) {
+			return typeValue.Name(), corpusIssue80BaseSourceTypeWritable
+		}
+		return "", corpusIssue80BaseSourceTypeUnwritable
+	case semantic.KindArray, semantic.KindDictionary:
+		if corpusIssue80BaseNestedUnknownType(typeValue) {
+			return "", corpusIssue80BaseSourceTypeUnknown
+		}
+		return "", corpusIssue80BaseSourceTypeUnwritable
+	default:
+		return "", corpusIssue80BaseSourceTypeUnwritable
+	}
+}
+
+func corpusIssue80BaseNestedUnknownType(typeValue semantic.Type) bool {
+	switch typeValue.Kind() {
+	case semantic.KindUnknown:
+		return true
+	case semantic.KindArray:
+		element, typed := typeValue.Element()
+		return typed && corpusIssue80BaseNestedUnknownType(element)
+	case semantic.KindDictionary:
+		key, typedKey := typeValue.Key()
+		value, typedValue := typeValue.Value()
+		return typedKey && typedValue && (corpusIssue80BaseNestedUnknownType(key) || corpusIssue80BaseNestedUnknownType(value))
+	default:
+		return false
+	}
+}
+
+func TestCorpusIssue80BaseCollectionRuleFailsClosedWithoutSemanticContext(t *testing.T) {
+	rule := corpusIssue80BaseCollectionRule{}
+	if diagnostics := rule.Check(nil, nil); diagnostics != nil {
+		t.Fatalf("nil context diagnostics = %+v, want nil", diagnostics)
+	}
+	if diagnostics := rule.Check(&Context{}, nil); diagnostics != nil {
+		t.Fatalf("nil script diagnostics = %+v, want nil", diagnostics)
+	}
+}
+
+func corpusIssue80BaseRules() []Rule {
+	rules := registeredRules()
+	for index, rule := range rules {
+		if rule.Name() == ruleRequireTypedCollection {
+			rules[index] = corpusIssue80BaseCollectionRule{}
 			return rules
 		}
 	}
@@ -483,6 +825,72 @@ func corpusDiagnosticDelta(before, after []corpusDiagnosticTuple) (added, remove
 	return added, removed
 }
 
+type corpusDiagnosticChange struct {
+	Before corpusDiagnosticTuple `json:"before"`
+	After  corpusDiagnosticTuple `json:"after"`
+}
+
+func corpusDiagnosticChanges(before, after []corpusDiagnosticTuple) (added, removed []corpusDiagnosticTuple, changed []corpusDiagnosticChange) {
+	beforeByIdentity := make(map[string]corpusDiagnosticTuple, len(before))
+	for _, tuple := range before {
+		beforeByIdentity[corpusTupleIdentity(tuple)] = tuple
+	}
+	afterByIdentity := make(map[string]corpusDiagnosticTuple, len(after))
+	for _, tuple := range after {
+		afterByIdentity[corpusTupleIdentity(tuple)] = tuple
+	}
+	for identity, tuple := range afterByIdentity {
+		prior, exists := beforeByIdentity[identity]
+		if !exists {
+			added = append(added, tuple)
+			continue
+		}
+		if corpusTupleKey(prior) != corpusTupleKey(tuple) {
+			changed = append(changed, corpusDiagnosticChange{Before: prior, After: tuple})
+		}
+	}
+	for identity, tuple := range beforeByIdentity {
+		if _, exists := afterByIdentity[identity]; !exists {
+			removed = append(removed, tuple)
+		}
+	}
+	sort.Slice(added, func(i, j int) bool { return corpusTupleLess(added[i], added[j]) })
+	sort.Slice(removed, func(i, j int) bool { return corpusTupleLess(removed[i], removed[j]) })
+	sort.Slice(changed, func(i, j int) bool { return corpusTupleLess(changed[i].After, changed[j].After) })
+	return added, removed, changed
+}
+
+func corpusTupleIdentity(tuple corpusDiagnosticTuple) string {
+	return fmt.Sprintf("%s\x00%d\x00%d\x00%d\x00%d\x00%s\x00%s", tuple.Path, tuple.Line, tuple.Column,
+		tuple.EndLine, tuple.EndColumn, tuple.Rule, tuple.Severity)
+}
+
+func corpusCollectionPrecision(tuples []corpusDiagnosticTuple) (exact, generic int) {
+	for _, tuple := range tuples {
+		switch tuple.Message {
+		case "Array has no element type; write Array[T]", "Dictionary has no element type; write Dictionary[K, V]":
+			generic++
+		default:
+			exact++
+		}
+	}
+	return exact, generic
+}
+
+func corpusRequireTuple(t *testing.T, tuples []corpusDiagnosticTuple, path string, line int) corpusDiagnosticTuple {
+	t.Helper()
+	var found []corpusDiagnosticTuple
+	for _, tuple := range tuples {
+		if tuple.Path == path && tuple.Line == line {
+			found = append(found, tuple)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("tuple at %s:%d = %+v, want exactly one", path, line, found)
+	}
+	return found[0]
+}
+
 func corpusTupleKey(tuple corpusDiagnosticTuple) string {
 	data, err := json.Marshal(tuple)
 	if err != nil {
@@ -493,6 +901,16 @@ func corpusTupleKey(tuple corpusDiagnosticTuple) string {
 
 func corpusDiagnosticDigest(tuples []corpusDiagnosticTuple) string {
 	return corpusDigest(corpusCanonicalDiagnosticTupleJSON(tuples))
+}
+
+func corpusDiagnosticChangeDigest(changes []corpusDiagnosticChange) string {
+	canonical := append([]corpusDiagnosticChange(nil), changes...)
+	sort.Slice(canonical, func(i, j int) bool { return corpusTupleLess(canonical[i].After, canonical[j].After) })
+	data, err := json.Marshal(canonical)
+	if err != nil {
+		panic(err)
+	}
+	return corpusDigest(data)
 }
 
 // corpusCanonicalDiagnosticTupleJSON is the receipt's digest format: a
@@ -549,12 +967,25 @@ type corpusSemanticReceipt struct {
 	BeforeCollectionSuppliedDigest     string                   `json:"before_collection_supplied_digest"`
 	BeforeCollectionSuppliedReproduced bool                     `json:"before_collection_supplied_digest_reproduced"`
 	BeforeCollectionObservedDigest     string                   `json:"before_collection_observed_digest"`
+	Issue80BaseGDKit                   string                   `json:"issue_80_base_gdkit"`
+	Issue80BaseCollectionDiagnostics   int                      `json:"issue_80_base_collection_diagnostics"`
+	Issue80BaseCollectionDigest        string                   `json:"issue_80_base_collection_digest"`
+	Issue80BaseExactDiagnostics        int                      `json:"issue_80_base_exact_diagnostics"`
+	Issue80BaseGenericDiagnostics      int                      `json:"issue_80_base_generic_diagnostics"`
 	AfterCollectionDiagnostics         int                      `json:"after_collection_diagnostics"`
 	AfterCollectionDigest              string                   `json:"after_collection_digest"`
+	AfterCollectionExactDiagnostics    int                      `json:"after_collection_exact_diagnostics"`
+	AfterCollectionGenericDiagnostics  int                      `json:"after_collection_generic_diagnostics"`
 	AddedCollectionDiagnostics         int                      `json:"added_collection_diagnostics"`
 	RemovedCollectionDiagnostics       int                      `json:"removed_collection_diagnostics"`
+	ChangedCollectionDiagnostics       int                      `json:"changed_collection_diagnostics"`
 	AddedCollectionDigest              string                   `json:"added_collection_digest"`
 	RemovedCollectionDigest            string                   `json:"removed_collection_digest"`
+	ChangedCollectionDigest            string                   `json:"changed_collection_digest"`
+	AddedCollectionTuples              []corpusDiagnosticTuple  `json:"added_collection_tuples"`
+	RemovedCollectionTuples            []corpusDiagnosticTuple  `json:"removed_collection_tuples"`
+	ChangedCollectionTuples            []corpusDiagnosticChange `json:"changed_collection_tuples"`
+	PayloadTuple                       corpusDiagnosticTuple    `json:"payload_tuple"`
 	DisabledLintMedian                 string                   `json:"disabled_lint_median"`
 	EnabledLintMedian                  string                   `json:"enabled_lint_median"`
 }

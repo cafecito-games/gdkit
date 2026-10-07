@@ -209,8 +209,8 @@ func TestSemanticAnalyzerIsRunLocalAcrossSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := semanticSnapshot(t, "var values := [1]\n")
-	second := semanticSnapshot(t, "var values := [\"text\"]\n")
+	first := semanticSnapshot(t, "func first() -> void:\n\tvar values := [1]\n")
+	second := semanticSnapshot(t, "func second() -> void:\n\tvar values := [\"text\"]\n")
 	original := linter.newSemanticAnalyzer
 	var seen []*project.Snapshot
 	linter.newSemanticAnalyzer = func(snapshot *project.Snapshot, engine *semantic.Engine) *semantic.Analyzer {
