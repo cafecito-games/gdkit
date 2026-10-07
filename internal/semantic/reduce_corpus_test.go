@@ -58,6 +58,7 @@ type reducerCorpusReceipt struct {
 	Variant                        int                   `json:"variant"`
 	Unknown                        int                   `json:"unknown"`
 	StringReceiverNotSubscriptable int                   `json:"string_receiver_not_subscriptable"`
+	NamedEnumMemberAbsent          int                   `json:"named_enum_member_absent"`
 	Reasons                        []reducerCorpusReason `json:"top_unknown_reasons"`
 }
 
@@ -98,9 +99,11 @@ func collectReducerCorpusReceipt(analyzer *semantic.Analyzer, source semantic.So
 }
 
 const stringReceiverNotSubscriptableReason = "String receiver is not subscriptable"
+const namedEnumMemberAbsentReason = `member "NO_ERRORS" is absent from Dictionary`
 
 func finalizeReducerCorpusReceipt(receipt *reducerCorpusReceipt, reasons map[string]int) {
 	receipt.StringReceiverNotSubscriptable = reasons[stringReceiverNotSubscriptableReason]
+	receipt.NamedEnumMemberAbsent = reasons[namedEnumMemberAbsentReason]
 	for reason, count := range reasons {
 		receipt.Reasons = append(receipt.Reasons, reducerCorpusReason{Reason: reason, Count: count})
 	}
@@ -112,6 +115,26 @@ func finalizeReducerCorpusReceipt(receipt *reducerCorpusReceipt, reasons map[str
 	})
 	if len(receipt.Reasons) > 10 {
 		receipt.Reasons = receipt.Reasons[:10]
+	}
+}
+
+func TestReducerCorpusReceiptKeepsNamedEnumReasonOutsideTopTen(t *testing.T) {
+	reasons := map[string]int{namedEnumMemberAbsentReason: 5436}
+	for index := 0; index < 11; index++ {
+		reasons[fmt.Sprintf("larger reason %02d", index)] = 6000 - index
+	}
+	receipt := reducerCorpusReceipt{}
+	finalizeReducerCorpusReceipt(&receipt, reasons)
+	if receipt.NamedEnumMemberAbsent != 5436 {
+		t.Fatalf("exact named-enum reason = %d, want 5436", receipt.NamedEnumMemberAbsent)
+	}
+	if len(receipt.Reasons) != 10 {
+		t.Fatalf("presented reasons = %d, want top ten", len(receipt.Reasons))
+	}
+	for _, reason := range receipt.Reasons {
+		if reason.Reason == namedEnumMemberAbsentReason {
+			t.Fatal("target reason unexpectedly remained in the deliberately truncating top ten")
+		}
 	}
 }
 
@@ -137,7 +160,7 @@ func TestReducerCorpusReceiptKeepsStringReasonOutsideTopTen(t *testing.T) {
 
 func (r reducerCorpusReceipt) summary() string {
 	return fmt.Sprintf(
-		"reducer corpus: expressions=%d resolved=%d (%.1f%%) Variant=%d (%.1f%%) Unknown=%d (%.1f%%) string_receiver_not_subscriptable=%d top_unknown_reasons=%v",
+		"reducer corpus: expressions=%d resolved=%d (%.1f%%) Variant=%d (%.1f%%) Unknown=%d (%.1f%%) string_receiver_not_subscriptable=%d named_enum_member_absent=%d top_unknown_reasons=%v",
 		r.Total,
 		r.Resolved,
 		reducerCorpusShare(r.Resolved, r.Total),
@@ -146,6 +169,7 @@ func (r reducerCorpusReceipt) summary() string {
 		r.Unknown,
 		reducerCorpusShare(r.Unknown, r.Total),
 		r.StringReceiverNotSubscriptable,
+		r.NamedEnumMemberAbsent,
 		r.Reasons,
 	)
 }

@@ -48,15 +48,17 @@ type reductionKey struct {
 	token      reductionContextToken
 }
 
-// reductionResult retains just enough provenance for an enclosing call to use
-// a declared callable signature or a direct meta-class constructor. TypeOf
-// never exposes this extra information.
+// reductionResult retains just enough provenance for an enclosing operation
+// to use a declared callable signature, direct meta-class constructor, or
+// exact named-enum object. TypeOf never exposes this extra information.
 type reductionResult struct {
-	typeValue      Type
-	member         *Member
-	special        string
-	constructor    Type
-	hasConstructor bool
+	typeValue          Type
+	member             *Member
+	special            string
+	constructor        Type
+	hasConstructor     bool
+	namedEnumObject    *namedEnumObjectProvenance
+	hasNamedEnumObject bool
 }
 
 type reductionRequest struct {
@@ -266,6 +268,10 @@ func cloneReductionResult(result reductionResult) reductionResult {
 		member := cloneMember(*result.member)
 		result.member = &member
 	}
+	if result.namedEnumObject != nil {
+		provenance := *result.namedEnumObject
+		result.namedEnumObject = &provenance
+	}
 	return result
 }
 
@@ -286,9 +292,13 @@ func memberReduction(member Member) reductionResult {
 // type describes an enum member value, so publishing it here would make
 // Actor.Mode look like an int-compatible enum value rather than its runtime
 // Dictionary and contaminate collection inference.
-func metaMemberReduction(member Member) reductionResult {
+func metaMemberReduction(interfaces *InterfaceSet, receiver Type, member Member) reductionResult {
 	if member.Kind() == MemberEnum {
-		return knownReduction(Dictionary(nil, nil))
+		return reductionResult{
+			typeValue:          Dictionary(nil, nil),
+			namedEnumObject:    interfaces.namedEnumObject(receiver, member),
+			hasNamedEnumObject: true,
+		}
 	}
 	copy := cloneMember(member)
 	return reductionResult{typeValue: copy.Type(), member: &copy}
@@ -787,6 +797,12 @@ func (a *Analyzer) reduceMember(expression *ast.MemberExpression, context reduct
 	if receiver.member != nil && receiver.special == "super" {
 		return memberReduction(*receiver.member)
 	}
+	if receiver.hasNamedEnumObject {
+		if a.interfaces == nil {
+			return unknownReduction("interface set is unavailable while resolving named enum member")
+		}
+		return reduceNamedEnumMemberLookup(receiver.namedEnumObject, expression.Property, a.interfaces.lookupNamedEnumMember(receiver.namedEnumObject, expression.Property))
+	}
 	if receiver.typeValue.Meta() {
 		if expression.Property == "new" {
 			return a.reduceConstructorMember(receiver.typeValue)
@@ -795,7 +811,7 @@ func (a *Analyzer) reduceMember(expression *ast.MemberExpression, context reduct
 			return unknownReduction("interface set is unavailable while resolving meta member")
 		}
 		resolved := a.interfaces.LookupMetaMember(receiver.typeValue, expression.Property)
-		result := reduceMetaMemberLookup(receiver.typeValue, expression.Property, resolved)
+		result := reduceMetaMemberLookup(a.interfaces, receiver.typeValue, expression.Property, resolved)
 		if result.typeValue.Kind() != KindUnknown || result.member == nil {
 			return result
 		}
@@ -883,20 +899,39 @@ func reduceMemberLookup(receiver Type, name string, resolved LookupResult) reduc
 // reduceMetaMemberLookup is the corresponding tri-state boundary for static
 // meta-class selection. A selected named enum is reduced as its Dictionary
 // object while ordinary receiver lookup remains conservative.
-func reduceMetaMemberLookup(receiver Type, name string, resolved LookupResult) reductionResult {
+func reduceMetaMemberLookup(interfaces *InterfaceSet, receiver Type, name string, resolved LookupResult) reductionResult {
 	switch resolved.State() {
 	case LookupFound:
 		member, ok := resolved.Member()
 		if !ok {
 			return unknownReduction(fmt.Sprintf("meta member lookup for %q returned no member", name))
 		}
-		return metaMemberReduction(member)
+		return metaMemberReduction(interfaces, receiver, member)
 	case LookupUnknown:
 		return unknownReduction(resolved.Reason())
 	case LookupAbsent:
 		return unknownReduction(fmt.Sprintf("meta member %q is absent from %s", name, reductionTypeLabel(receiver)))
 	default:
 		return unknownReduction(fmt.Sprintf("meta member lookup for %q returned invalid state", name))
+	}
+}
+
+func reduceNamedEnumMemberLookup(provenance *namedEnumObjectProvenance, name string, resolved namedEnumMemberLookup) reductionResult {
+	switch resolved.state {
+	case LookupFound:
+		if problem := validate(resolved.typeValue); problem != "" || resolved.typeValue.Kind() != KindEnum {
+			return unknownReduction(fmt.Sprintf("named enum member lookup for %q returned an invalid enum type", name))
+		}
+		return knownReduction(resolved.typeValue)
+	case LookupUnknown:
+		return unknownReduction(resolved.reason)
+	case LookupAbsent:
+		if provenance == nil || provenance.typeValue.Kind() != KindEnum {
+			return unknownReduction(fmt.Sprintf("named enum member %q is absent but its declaration identity is unavailable", name))
+		}
+		return unknownReduction(fmt.Sprintf("member %q is absent from named enum %s", name, provenance.typeValue.String()))
+	default:
+		return unknownReduction(fmt.Sprintf("named enum member lookup for %q returned invalid state", name))
 	}
 }
 

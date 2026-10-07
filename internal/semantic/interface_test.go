@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/cafecito-games/gdparser/ast"
 )
 
 func TestInterfacesResolveImplicitEngineChainAndDirectMembers(t *testing.T) {
@@ -971,6 +973,137 @@ func TestInterfacesLookupMetaMemberFiltersStaticFactsAndPreservesOwnerChains(t *
 	assertResult(t, Class("Broken", nil, true), "direct_static", LookupFound, MemberEngineMethod)
 	assertResult(t, Class("Broken", nil, true), "missing", LookupUnknown, MemberEngineMethod)
 	assertResult(t, Class("Node", nil, false), "static_engine", LookupUnknown, MemberEngineMethod)
+}
+
+func TestInterfacesLookupNamedEnumMembersRequiresExactProvenance(t *testing.T) {
+	build := func(t *testing.T, files map[string]string, receiver Type, enumName string) (*InterfaceSet, Member, *namedEnumObjectProvenance) {
+		t.Helper()
+		source := sources(t, files)
+		if failures := source.ParseFailures(); len(failures) != 0 {
+			t.Fatalf("real parser fixture failed: %v", failures)
+		}
+		interfaces := BuildInterfaces(BuildIndex(source), reducerTestEngine(t))
+		selected := interfaces.LookupMetaMember(receiver, enumName)
+		if selected.State() != LookupFound {
+			t.Fatalf("LookupMetaMember(%s, %q) = %s (%q), want found", receiver, enumName, selected.State(), selected.Reason())
+		}
+		member, ok := selected.Member()
+		if !ok || member.Kind() != MemberEnum {
+			t.Fatalf("selected named enum = %#v, %t", member, ok)
+		}
+		return interfaces, member, interfaces.namedEnumObject(receiver, member)
+	}
+	assertUnknown := func(t *testing.T, got namedEnumMemberLookup) {
+		t.Helper()
+		if got.state != LookupUnknown || strings.TrimSpace(got.reason) == "" {
+			t.Fatalf("named enum lookup = %s (%q), want reasoned Unknown", got.state, got.reason)
+		}
+	}
+
+	files := map[string]string{
+		"base.gd":  "class_name Base\nenum Mode { IDLE, RUNNING }\n",
+		"child.gd": "class_name Child extends Base\n",
+	}
+	receiver := Class("child.gd", nil, true)
+	interfaces, _, provenance := build(t, files, receiver, "Mode")
+	found := interfaces.lookupNamedEnumMember(provenance, "IDLE")
+	if found.state != LookupFound || !found.typeValue.Equal(Enum("base.gd.Mode")) {
+		t.Fatalf("found named enum member = %s %s (%q), want base.gd.Mode", found.state, found.typeValue, found.reason)
+	}
+	if absent := interfaces.lookupNamedEnumMember(provenance, "MISSING"); absent.state != LookupAbsent {
+		t.Fatalf("missing named enum member = %s (%q), want absent", absent.state, absent.reason)
+	}
+
+	t.Run("foreign snapshot", func(t *testing.T) {
+		foreign, _, _ := build(t, files, receiver, "Mode")
+		assertUnknown(t, foreign.lookupNamedEnumMember(provenance, "IDLE"))
+	})
+	t.Run("missing payload", func(t *testing.T) {
+		assertUnknown(t, interfaces.lookupNamedEnumMember(nil, "IDLE"))
+	})
+	t.Run("unavailable interface set", func(t *testing.T) {
+		var unavailable *InterfaceSet
+		assertUnknown(t, unavailable.lookupNamedEnumMember(provenance, "IDLE"))
+	})
+	t.Run("incomplete owner", func(t *testing.T) {
+		incomplete, _, incompleteProvenance := build(t, map[string]string{
+			"broken.gd": "class_name Broken extends Missing\nenum Mode { IDLE }\n",
+		}, Class("broken.gd", nil, true), "Mode")
+		assertUnknown(t, incomplete.lookupNamedEnumMember(incompleteProvenance, "IDLE"))
+	})
+	t.Run("duplicate enum declarations", func(t *testing.T) {
+		source := sources(t, map[string]string{
+			"duplicate.gd": "class_name Duplicate\nenum Mode { IDLE }\n",
+		})
+		if failures := source.ParseFailures(); len(failures) != 0 {
+			t.Fatalf("real parser fixture failed: %v", failures)
+		}
+		index := BuildIndex(source)
+		index.Classes["duplicate.gd"].Declarations = append(index.Classes["duplicate.gd"].Declarations, index.Classes["duplicate.gd"].Declarations[0])
+		duplicate := BuildInterfaces(index, reducerTestEngine(t))
+		got := duplicate.LookupMetaMember(Class("duplicate.gd", nil, true), "Mode")
+		if got.State() != LookupUnknown || strings.TrimSpace(got.Reason()) == "" {
+			t.Fatalf("duplicate named enum selection = %s (%q), want reasoned Unknown", got.State(), got.Reason())
+		}
+	})
+	t.Run("duplicate enum member names", func(t *testing.T) {
+		duplicate, _, duplicateProvenance := build(t, map[string]string{
+			"duplicate.gd": "class_name Duplicate\nenum Mode { IDLE, IDLE }\n",
+		}, Class("duplicate.gd", nil, true), "Mode")
+		assertUnknown(t, duplicate.lookupNamedEnumMember(duplicateProvenance, "IDLE"))
+	})
+	t.Run("wrong retained node", func(t *testing.T) {
+		wrong, _, wrongProvenance := build(t, files, receiver, "Mode")
+		class := wrong.index.Classes[wrongProvenance.declaringClassID]
+		for at := range class.Declarations {
+			if class.Declarations[at].Name == "Mode" {
+				class.Declarations[at].Node = &ast.VariableDeclaration{Name: "Mode"}
+			}
+		}
+		assertUnknown(t, wrong.lookupNamedEnumMember(wrongProvenance, "IDLE"))
+	})
+	t.Run("multiple exact declarations", func(t *testing.T) {
+		multiple, _, multipleProvenance := build(t, files, receiver, "Mode")
+		class := multiple.index.Classes[multipleProvenance.declaringClassID]
+		for _, declaration := range class.Declarations {
+			if declaration.Name == "Mode" {
+				class.Declarations = append(class.Declarations, declaration)
+				break
+			}
+		}
+		assertUnknown(t, multiple.lookupNamedEnumMember(multipleProvenance, "IDLE"))
+	})
+	t.Run("shared retained node", func(t *testing.T) {
+		shared, _, sharedProvenance := build(t, map[string]string{
+			"base.gd":  "class_name Base\nenum Mode { IDLE }\n",
+			"other.gd": "class_name Other\n",
+		}, Class("base.gd", nil, true), "Mode")
+		shared.index.Classes["other.gd"].Declarations = append(shared.index.Classes["other.gd"].Declarations, Declaration{
+			Name: "OtherMode", Kind: DeclarationEnum, Line: 2, Column: 1, Node: sharedProvenance.declaration,
+		})
+		assertUnknown(t, shared.lookupNamedEnumMember(sharedProvenance, "IDLE"))
+	})
+	t.Run("malformed retained node", func(t *testing.T) {
+		malformed, _, malformedProvenance := build(t, files, receiver, "Mode")
+		malformedProvenance.declaration.Name = "Other"
+		assertUnknown(t, malformed.lookupNamedEnumMember(malformedProvenance, "IDLE"))
+	})
+	t.Run("identity disagreement", func(t *testing.T) {
+		for _, mutate := range []func(*namedEnumObjectProvenance){
+			func(value *namedEnumObjectProvenance) { value.set = nil },
+			func(value *namedEnumObjectProvenance) { value.receiver = Class("other.gd", nil, true) },
+			func(value *namedEnumObjectProvenance) { value.declaringClassID = "other.gd" },
+			func(value *namedEnumObjectProvenance) { value.enumName = "Other" },
+			func(value *namedEnumObjectProvenance) { value.line++ },
+			func(value *namedEnumObjectProvenance) { value.column++ },
+			func(value *namedEnumObjectProvenance) { value.typeValue = Enum("other.gd.Mode") },
+			func(value *namedEnumObjectProvenance) { value.declaration = nil },
+		} {
+			copy := *provenance
+			mutate(&copy)
+			assertUnknown(t, interfaces.lookupNamedEnumMember(&copy, "IDLE"))
+		}
+	})
 }
 
 type interfaceEngineClass struct {
