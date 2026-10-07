@@ -404,6 +404,88 @@ func TestEngineRejectsEveryDuplicateIdentity(t *testing.T) {
 	}
 }
 
+func TestEnginePublishesOnlyExplicitBuiltinConstructors(t *testing.T) {
+	builder := NewEngineBuilder()
+	for _, name := range []string{"Vector2", "Array", "KnownButNotConstructible", "FutureValue"} {
+		if err := builder.AddBuiltin(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"Vector2", "Array", "FutureValue"} {
+		if err := builder.AddBuiltinConstructor(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := builder.AddBuiltinConstructor("Vector2"); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate constructor eligibility = %v", err)
+	}
+	if err := builder.AddBuiltinConstructor("Missing"); err == nil || !strings.Contains(err.Error(), "unknown builtin") {
+		t.Fatalf("missing builtin constructor eligibility = %v", err)
+	}
+
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Vector2", "Array", "FutureValue"} {
+		got, ok := engine.builtinConstructor(name)
+		want := engine.ResolveType(name)
+		if !ok || !got.Equal(want) || got.Kind() == KindUnknown {
+			t.Errorf("builtin constructor %q = %s/%t, want canonical %s", name, got, ok, want)
+		}
+	}
+	if got, ok := engine.builtinConstructor("KnownButNotConstructible"); ok || got.Kind() != KindUnknown || got.Reason() == "" {
+		t.Fatalf("non-constructible builtin = %s/%t (%q), want reasoned Unknown miss", got, ok, got.Reason())
+	}
+
+	if err := builder.AddBuiltinConstructor("KnownButNotConstructible"); err != nil {
+		t.Fatal(err)
+	}
+	newer, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := engine.builtinConstructor("KnownButNotConstructible"); ok {
+		t.Fatal("builder mutation changed an already published Engine")
+	}
+	if got, ok := newer.builtinConstructor("KnownButNotConstructible"); !ok || !got.Equal(newer.ResolveType("KnownButNotConstructible")) {
+		t.Fatalf("new Engine constructor = %s/%t", got, ok)
+	}
+
+	otherBuilder := NewEngineBuilder()
+	if err := otherBuilder.AddBuiltin("Vector2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := otherBuilder.AddBuiltinConstructor("Vector2"); err != nil {
+		t.Fatal(err)
+	}
+	other, err := otherBuilder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine == other {
+		t.Fatal("separately built Engines share identity")
+	}
+	if got, ok := other.builtinConstructor("Vector2"); !ok || !got.Equal(other.ResolveType("Vector2")) {
+		t.Fatalf("other Engine constructor = %s/%t", got, ok)
+	}
+}
+
+func TestEngineBuiltinConstructorRequiresBuiltinBeforeEligibility(t *testing.T) {
+	builder := NewEngineBuilder()
+	for _, name := range []string{"", " Vector2", "Vector2 "} {
+		if err := builder.AddBuiltinConstructor(name); err == nil {
+			t.Errorf("AddBuiltinConstructor(%q) unexpectedly succeeded", name)
+		}
+	}
+	if err := builder.AddClass("Vector2", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddBuiltinConstructor("Vector2"); err == nil || !strings.Contains(err.Error(), "unknown builtin") {
+		t.Fatalf("class constructor eligibility = %v", err)
+	}
+}
+
 func TestEngineReturnedArgumentsCannotMutateTheIndex(t *testing.T) {
 	builder := NewEngineBuilder()
 	if err := builder.AddBuiltin("int"); err != nil {

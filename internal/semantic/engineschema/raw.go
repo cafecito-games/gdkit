@@ -60,10 +60,16 @@ type rawHeader struct {
 }
 
 type rawBuiltinClass struct {
-	Name      string        `json:"name"`
-	Members   []rawProperty `json:"members"`
-	Methods   []rawMethod   `json:"methods"`
-	Operators []rawOperator `json:"operators"`
+	Name         string           `json:"name"`
+	Constructors []rawConstructor `json:"constructors"`
+	Members      []rawProperty    `json:"members"`
+	Methods      []rawMethod      `json:"methods"`
+	Operators    []rawOperator    `json:"operators"`
+}
+
+type rawConstructor struct {
+	Index     *int                 `json:"index"`
+	Arguments rawOptionalArguments `json:"arguments"`
 }
 
 type rawClass struct {
@@ -134,6 +140,25 @@ func (v *rawOptionalString) UnmarshalJSON(data []byte) error {
 type rawOptionalType struct {
 	Present bool
 	Value   rawType
+}
+
+type rawOptionalArguments struct {
+	Present bool
+	Value   []rawArgument
+}
+
+func (v *rawOptionalArguments) UnmarshalJSON(data []byte) error {
+	v.Present = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return errors.New("must be an array, not null")
+	}
+	if err := json.Unmarshal(data, &v.Value); err != nil {
+		return err
+	}
+	if v.Value == nil {
+		return errors.New("must be an array")
+	}
+	return nil
 }
 
 func (v *rawOptionalType) UnmarshalJSON(data []byte) error {
@@ -216,11 +241,17 @@ func distillRaw(data []byte, source SourceKind, sourceCommit string) (document, 
 		Singletons: make([]singletonRecord, 0, len(raw.Singletons)),
 		Utilities:  make([]utilityRecord, 0, len(raw.UtilityFunctions)),
 	}
+	constructorArguments := []argumentRecord{}
 	for _, builtin := range raw.BuiltinClasses {
 		if err := requiredText("builtin name", builtin.Name); err != nil {
 			return document{}, err
 		}
-		result.Builtins = append(result.Builtins, builtinRecord{Name: builtin.Name})
+		constructible, arguments, err := distillConstructors(builtin.Name, builtin.Constructors)
+		if err != nil {
+			return document{}, err
+		}
+		constructorArguments = append(constructorArguments, arguments...)
+		result.Builtins = append(result.Builtins, builtinRecord{Name: builtin.Name, Constructible: &constructible})
 		for _, method := range builtin.Methods {
 			record, err := distillMethod(builtin.Name, method)
 			if err != nil {
@@ -307,6 +338,16 @@ func distillRaw(data []byte, source SourceKind, sourceCommit string) (document, 
 	if err := validateDocument(result, true); err != nil {
 		return document{}, fmt.Errorf("%w: %v", ErrRawInvalid, err)
 	}
+	engine, err := compileDocument(result)
+	if err != nil {
+		return document{}, fmt.Errorf("%w: compile schema while validating constructors: %v", ErrRawInvalid, err)
+	}
+	for _, argument := range constructorArguments {
+		resolved := engine.ResolveType(argument.Type)
+		if resolved.Kind() == semantic.KindUnknown {
+			return document{}, fmt.Errorf("%w: constructor argument type %q is not retained: %s", ErrRawInvalid, argument.Type, resolved.Reason())
+		}
+	}
 	return result, nil
 }
 
@@ -385,6 +426,31 @@ func distillArguments(owner string, raw []rawArgument) ([]argumentRecord, error)
 		arguments[index] = argumentRecord{Type: argument.Type, HasDefault: argument.DefaultValue.Present}
 	}
 	return arguments, nil
+}
+
+func distillConstructors(owner string, raw []rawConstructor) (bool, []argumentRecord, error) {
+	if raw == nil {
+		return false, nil, fmt.Errorf("%w: builtin %q is missing constructors", ErrRawInvalid, owner)
+	}
+	arguments := []argumentRecord{}
+	for position, constructor := range raw {
+		if constructor.Index == nil {
+			return false, nil, fmt.Errorf("%w: builtin %q constructor %d is missing index", ErrRawInvalid, owner, position)
+		}
+		if *constructor.Index != position {
+			return false, nil, fmt.Errorf("%w: builtin %q constructor index %d at position %d is noncanonical", ErrRawInvalid, owner, *constructor.Index, position)
+		}
+		rawArguments := []rawArgument{}
+		if constructor.Arguments.Present {
+			rawArguments = constructor.Arguments.Value
+		}
+		resolved, err := distillArguments(fmt.Sprintf("builtin %s constructor %d", owner, position), rawArguments)
+		if err != nil {
+			return false, nil, err
+		}
+		arguments = append(arguments, resolved...)
+	}
+	return len(raw) != 0, arguments, nil
 }
 
 func validateProperty(owner string, property rawProperty) error {
@@ -478,6 +544,9 @@ func validateDocument(value document, requireSorted bool) error {
 	for _, builtin := range value.Builtins {
 		if err := schemaText("builtin name", builtin.Name); err != nil {
 			return err
+		}
+		if builtin.Constructible == nil {
+			return fmt.Errorf("builtin %q is missing required constructible value", builtin.Name)
 		}
 		if types[builtin.Name] {
 			return fmt.Errorf("duplicate engine type %q", builtin.Name)
@@ -687,6 +756,16 @@ func compileDocument(value document) (*semantic.Engine, error) {
 	for _, class := range value.Classes {
 		if err := builder.AddClass(class.Name, class.Inherits); err != nil {
 			return nil, err
+		}
+	}
+	for _, builtin := range value.Builtins {
+		if builtin.Constructible == nil {
+			return nil, fmt.Errorf("engine builtin %q is missing constructor eligibility", builtin.Name)
+		}
+		if *builtin.Constructible {
+			if err := builder.AddBuiltinConstructor(builtin.Name); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for _, method := range value.Methods {

@@ -42,13 +42,14 @@ const EngineInheritanceDepthLimit = 256
 // one Godot engine schema. Its maps and slices are private so concurrent rule
 // execution can only observe the complete index published by Build.
 type Engine struct {
-	builtins   map[string]bool
-	classes    map[string]Type
-	methods    map[engineMemberKey]EngineMethod
-	properties map[engineMemberKey]EngineProperty
-	operators  map[engineOperatorKey]Type
-	singletons map[string]Type
-	utilities  map[string]EngineMethod
+	builtins            map[string]bool
+	builtinConstructors map[string]Type
+	classes             map[string]Type
+	methods             map[engineMemberKey]EngineMethod
+	properties          map[engineMemberKey]EngineProperty
+	operators           map[engineOperatorKey]Type
+	singletons          map[string]Type
+	utilities           map[string]EngineMethod
 }
 
 type engineMemberKey struct {
@@ -151,6 +152,21 @@ func (e *Engine) ResolveType(spelling string) Type {
 	return resolveEngineType(spelling, e.builtins, e.classes)
 }
 
+// builtinConstructor returns the canonical result of a direct builtin value
+// constructor. Eligibility is deliberately private: a builtin type global is
+// not an ordinary runtime value or class meta object, and only Scope may issue
+// the capability consumed by the reducer.
+func (e *Engine) builtinConstructor(name string) (Type, bool) {
+	if e == nil {
+		return Unknown("engine schema is unavailable"), false
+	}
+	result, ok := e.builtinConstructors[name]
+	if !ok {
+		return Unknown(fmt.Sprintf("engine builtin %q has no validated constructor", name)), false
+	}
+	return result, true
+}
+
 // Method returns the method declared directly by owner. Inherited lookup is a
 // consumer policy because user declarations may shadow engine members.
 func (e *Engine) Method(owner, name string) (EngineMethod, bool) {
@@ -229,25 +245,27 @@ type engineSingletonSpec struct {
 // publishing an immutable Engine. Add methods reject duplicate identities
 // immediately; Build resolves every retained type only after all names exist.
 type EngineBuilder struct {
-	builtins   map[string]bool
-	classes    map[string]string
-	methods    map[engineMemberKey]engineMethodSpec
-	properties map[engineMemberKey]enginePropertySpec
-	operators  map[engineOperatorKey]engineOperatorSpec
-	singletons map[string]engineSingletonSpec
-	utilities  map[string]engineMethodSpec
+	builtins            map[string]bool
+	builtinConstructors map[string]bool
+	classes             map[string]string
+	methods             map[engineMemberKey]engineMethodSpec
+	properties          map[engineMemberKey]enginePropertySpec
+	operators           map[engineOperatorKey]engineOperatorSpec
+	singletons          map[string]engineSingletonSpec
+	utilities           map[string]engineMethodSpec
 }
 
 // NewEngineBuilder creates an empty engine schema builder.
 func NewEngineBuilder() *EngineBuilder {
 	return &EngineBuilder{
-		builtins:   map[string]bool{},
-		classes:    map[string]string{},
-		methods:    map[engineMemberKey]engineMethodSpec{},
-		properties: map[engineMemberKey]enginePropertySpec{},
-		operators:  map[engineOperatorKey]engineOperatorSpec{},
-		singletons: map[string]engineSingletonSpec{},
-		utilities:  map[string]engineMethodSpec{},
+		builtins:            map[string]bool{},
+		builtinConstructors: map[string]bool{},
+		classes:             map[string]string{},
+		methods:             map[engineMemberKey]engineMethodSpec{},
+		properties:          map[engineMemberKey]enginePropertySpec{},
+		operators:           map[engineOperatorKey]engineOperatorSpec{},
+		singletons:          map[string]engineSingletonSpec{},
+		utilities:           map[string]engineMethodSpec{},
 	}
 }
 
@@ -260,6 +278,23 @@ func (b *EngineBuilder) AddBuiltin(name string) error {
 		return fmt.Errorf("duplicate engine type %q", name)
 	}
 	b.builtins[name] = true
+	return nil
+}
+
+// AddBuiltinConstructor records validated direct-call eligibility for one
+// already declared builtin. Keeping this separate from AddBuiltin preserves
+// fail-closed manual/test builders: membership alone never implies callable.
+func (b *EngineBuilder) AddBuiltinConstructor(name string) error {
+	if err := engineName("builtin constructor", name); err != nil {
+		return err
+	}
+	if !b.builtins[name] {
+		return fmt.Errorf("engine builtin constructor %q names unknown builtin", name)
+	}
+	if b.builtinConstructors[name] {
+		return fmt.Errorf("duplicate engine builtin constructor %q", name)
+	}
+	b.builtinConstructors[name] = true
 	return nil
 }
 
@@ -413,13 +448,21 @@ func (b *EngineBuilder) Build() (*Engine, error) {
 		resolver.class(name)
 	}
 	engine := &Engine{
-		builtins:   resolver.builtins,
-		classes:    resolver.classes,
-		methods:    make(map[engineMemberKey]EngineMethod, len(b.methods)),
-		properties: make(map[engineMemberKey]EngineProperty, len(b.properties)),
-		operators:  make(map[engineOperatorKey]Type, len(b.operators)),
-		singletons: make(map[string]Type, len(b.singletons)),
-		utilities:  make(map[string]EngineMethod, len(b.utilities)),
+		builtins:            resolver.builtins,
+		builtinConstructors: make(map[string]Type, len(b.builtinConstructors)),
+		classes:             resolver.classes,
+		methods:             make(map[engineMemberKey]EngineMethod, len(b.methods)),
+		properties:          make(map[engineMemberKey]EngineProperty, len(b.properties)),
+		operators:           make(map[engineOperatorKey]Type, len(b.operators)),
+		singletons:          make(map[string]Type, len(b.singletons)),
+		utilities:           make(map[string]EngineMethod, len(b.utilities)),
+	}
+	for name := range b.builtinConstructors {
+		resolved := resolveEngineType(name, engine.builtins, engine.classes)
+		if resolved.Kind() == KindUnknown {
+			return nil, fmt.Errorf("engine builtin constructor %q has no canonical builtin type", name)
+		}
+		engine.builtinConstructors[name] = resolved
 	}
 	for key, spec := range b.methods {
 		engine.methods[key] = resolveEngineMethod(spec, engine.builtins, engine.classes)

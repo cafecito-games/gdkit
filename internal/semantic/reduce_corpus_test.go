@@ -59,6 +59,9 @@ type reducerCorpusReceipt struct {
 	Unknown                        int                   `json:"unknown"`
 	StringReceiverNotSubscriptable int                   `json:"string_receiver_not_subscriptable"`
 	NamedEnumMemberAbsent          int                   `json:"named_enum_member_absent"`
+	Vector2iNoClassObject          int                   `json:"vector2i_no_class_object"`
+	Vector3iNoClassObject          int                   `json:"vector3i_no_class_object"`
+	Vector2NoClassObject           int                   `json:"vector2_no_class_object"`
 	Reasons                        []reducerCorpusReason `json:"top_unknown_reasons"`
 }
 
@@ -100,10 +103,16 @@ func collectReducerCorpusReceipt(analyzer *semantic.Analyzer, source semantic.So
 
 const stringReceiverNotSubscriptableReason = "String receiver is not subscriptable"
 const namedEnumMemberAbsentReason = `member "NO_ERRORS" is absent from Dictionary`
+const vector2iNoClassObjectReason = `engine type "Vector2i" has no class-object representation`
+const vector3iNoClassObjectReason = `engine type "Vector3i" has no class-object representation`
+const vector2NoClassObjectReason = `engine type "Vector2" has no class-object representation`
 
 func finalizeReducerCorpusReceipt(receipt *reducerCorpusReceipt, reasons map[string]int) {
 	receipt.StringReceiverNotSubscriptable = reasons[stringReceiverNotSubscriptableReason]
 	receipt.NamedEnumMemberAbsent = reasons[namedEnumMemberAbsentReason]
+	receipt.Vector2iNoClassObject = reasons[vector2iNoClassObjectReason]
+	receipt.Vector3iNoClassObject = reasons[vector3iNoClassObjectReason]
+	receipt.Vector2NoClassObject = reasons[vector2NoClassObjectReason]
 	for reason, count := range reasons {
 		receipt.Reasons = append(receipt.Reasons, reducerCorpusReason{Reason: reason, Count: count})
 	}
@@ -158,9 +167,33 @@ func TestReducerCorpusReceiptKeepsStringReasonOutsideTopTen(t *testing.T) {
 	}
 }
 
+func TestReducerCorpusReceiptKeepsBuiltinConstructorReasonsOutsideTopTen(t *testing.T) {
+	reasons := map[string]int{
+		vector2iNoClassObjectReason: 4456,
+		vector3iNoClassObjectReason: 2807,
+		vector2NoClassObjectReason:  2487,
+	}
+	for index := 0; index < 11; index++ {
+		reasons[fmt.Sprintf("larger reason %02d", index)] = 6000 - index
+	}
+	receipt := reducerCorpusReceipt{}
+	finalizeReducerCorpusReceipt(&receipt, reasons)
+	if receipt.Vector2iNoClassObject != 4456 || receipt.Vector3iNoClassObject != 2807 || receipt.Vector2NoClassObject != 2487 {
+		t.Fatalf("exact builtin constructor reasons = %d/%d/%d", receipt.Vector2iNoClassObject, receipt.Vector3iNoClassObject, receipt.Vector2NoClassObject)
+	}
+	if len(receipt.Reasons) != 10 {
+		t.Fatalf("presented reasons = %d, want top ten", len(receipt.Reasons))
+	}
+	for _, reason := range receipt.Reasons {
+		if reason.Reason == vector2iNoClassObjectReason || reason.Reason == vector3iNoClassObjectReason || reason.Reason == vector2NoClassObjectReason {
+			t.Fatalf("target reason %q unexpectedly remained in the deliberately truncating top ten", reason.Reason)
+		}
+	}
+}
+
 func (r reducerCorpusReceipt) summary() string {
 	return fmt.Sprintf(
-		"reducer corpus: expressions=%d resolved=%d (%.1f%%) Variant=%d (%.1f%%) Unknown=%d (%.1f%%) string_receiver_not_subscriptable=%d named_enum_member_absent=%d top_unknown_reasons=%v",
+		"reducer corpus: expressions=%d resolved=%d (%.1f%%) Variant=%d (%.1f%%) Unknown=%d (%.1f%%) string_receiver_not_subscriptable=%d named_enum_member_absent=%d vector2i_no_class_object=%d vector3i_no_class_object=%d vector2_no_class_object=%d top_unknown_reasons=%v",
 		r.Total,
 		r.Resolved,
 		reducerCorpusShare(r.Resolved, r.Total),
@@ -170,6 +203,9 @@ func (r reducerCorpusReceipt) summary() string {
 		reducerCorpusShare(r.Unknown, r.Total),
 		r.StringReceiverNotSubscriptable,
 		r.NamedEnumMemberAbsent,
+		r.Vector2iNoClassObject,
+		r.Vector3iNoClassObject,
+		r.Vector2NoClassObject,
 		r.Reasons,
 	)
 }

@@ -4,7 +4,7 @@ package engineschema
 
 import "github.com/cafecito-games/gdkit/internal/semantic"
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 // SourceKind identifies who controls the selected engine facts.
 type SourceKind string
@@ -71,7 +71,8 @@ type document struct {
 }
 
 type builtinRecord struct {
-	Name string `json:"name"`
+	Name          string `json:"name"`
+	Constructible *bool  `json:"constructible"`
 }
 
 type classRecord struct {
