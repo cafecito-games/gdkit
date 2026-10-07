@@ -162,6 +162,140 @@ func TestAnalyzerReducesOperatorsTernariesAndSubscripts(t *testing.T) {
 	}
 }
 
+func TestAnalyzerReducesCanonicalStringSubscripts(t *testing.T) {
+	source := sources(t, map[string]string{
+		"strings.gd": `class_name Strings
+func first(text: String):
+	return text[0]
+func run(text: String):
+	var direct := text[0]
+	var literal := "text"[0]
+	var chained := text[0].to_upper()
+	var inferred_return := first(text)
+	var unknown_receiver := missing_receiver[missing_index]
+	var unknown_index := text[missing_index]
+	var unsupported := 1[0]
+`,
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	engine := reducerTestEngine(t)
+	analyzer := NewAnalyzer(source, engine)
+	file := source.File("strings.gd")
+	stringType := engine.ResolveType("String")
+	for _, name := range []string{"direct", "literal", "chained", "inferred_return"} {
+		t.Run(name, func(t *testing.T) {
+			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
+			if !got.Equal(stringType) {
+				t.Fatalf("TypeOf(%s) = %s (%q), want selected-engine %s", name, got, got.Reason(), stringType)
+			}
+		})
+	}
+
+	for _, testCase := range []struct {
+		name       string
+		wantReason string
+	}{
+		{name: "unknown_receiver", wantReason: `global identifier "missing_receiver" is not retained by the selected engine schema`},
+		{name: "unknown_index", wantReason: `global identifier "missing_index" is not retained by the selected engine schema`},
+		{name: "unsupported", wantReason: "int receiver is not subscriptable"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
+			if got.Kind() != KindUnknown || got.Reason() != testCase.wantReason {
+				t.Fatalf("TypeOf(%s) = %s (%q), want Unknown %q", testCase.name, got, got.Reason(), testCase.wantReason)
+			}
+		})
+	}
+
+	direct := reducerVariableValue(t, file, "direct")
+	scope, ok := analyzer.scopes.ScopeAt(direct)
+	if !ok {
+		t.Fatal("direct String subscript has no recorded scope")
+	}
+	result := analyzer.typeOfIn(direct, scope, reductionContextToken{})
+	if !result.typeValue.Equal(stringType) || result.member != nil || result.special != "" || result.hasConstructor || result.constructor.Kind() != KindUnknown {
+		t.Fatalf("direct String subscript retained provenance: %#v", result)
+	}
+	if repeated := analyzer.TypeOf(direct); !repeated.Equal(stringType) {
+		t.Fatalf("repeated String subscript = %s (%q), want %s", repeated, repeated.Reason(), stringType)
+	}
+	if _, cached := analyzer.cache[reductionKey{expression: direct, scope: scope.ID()}]; !cached {
+		t.Fatal("completed String subscript was not published to the shared cache")
+	}
+
+	foreignSource := sources(t, map[string]string{
+		"strings.gd": "class_name Strings\nfunc run(text: String):\n\tvar direct := text[0]\n",
+	})
+	foreign := reducerVariableValue(t, foreignSource.File("strings.gd"), "direct")
+	if got := analyzer.TypeOf(foreign); got.Kind() != KindUnknown || got.Reason() != "expression is not indexed by this source snapshot" {
+		t.Fatalf("foreign String subscript = %s (%q), want snapshot-bound Unknown", got, got.Reason())
+	}
+
+	cold := NewAnalyzer(source, engine)
+	const readers = 16
+	start := make(chan struct{})
+	problems := make(chan string, readers)
+	var done sync.WaitGroup
+	done.Add(readers)
+	for reader := 0; reader < readers; reader++ {
+		go func() {
+			defer done.Done()
+			<-start
+			if got := cold.TypeOf(direct); !got.Equal(stringType) {
+				problems <- fmt.Sprintf("%s (%q)", got, got.Reason())
+			}
+		}()
+	}
+	close(start)
+	done.Wait()
+	close(problems)
+	for problem := range problems {
+		t.Errorf("concurrent cold String subscript = %s, want %s", problem, stringType)
+	}
+}
+
+func TestAnalyzerStringSubscriptRequiresSelectedEngineCanonicalType(t *testing.T) {
+	source := sources(t, map[string]string{
+		"strings.gd": "class_name Strings\nfunc run():\n\tvar literal := \"text\"[0]\n",
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	expression := reducerVariableValue(t, source.File("strings.gd"), "literal")
+
+	missingBuilder := NewEngineBuilder()
+	missing, err := missingBuilder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongKind := reducerTestEngine(t)
+	wrongKind.classes["String"] = Class("String", nil, false)
+	malformed := reducerTestEngine(t)
+	malformed.classes["String"] = Type{node: &typeNode{kind: KindBuiltin, name: "String", meta: true}}
+	noncanonical := reducerTestEngine(t)
+	noncanonical.classes["String"] = Builtin("SelectedStringAlias")
+
+	for _, testCase := range []struct {
+		name   string
+		engine *Engine
+	}{
+		{name: "nil engine", engine: nil},
+		{name: "missing String", engine: missing},
+		{name: "wrong selected kind", engine: wrongKind},
+		{name: "malformed selected type", engine: malformed},
+		{name: "builtin receiver name without selected canonical equality", engine: noncanonical},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := NewAnalyzer(source, testCase.engine).TypeOf(expression)
+			if got.Kind() != KindUnknown || got.Reason() == "" {
+				t.Fatalf("String subscript = %s (%q), want reasoned Unknown", got, got.Reason())
+			}
+		})
+	}
+}
+
 func TestAnalyzerReducesIdentifiersDeferredHeadersAndSuper(t *testing.T) {
 	source := sources(t, map[string]string{
 		"base.gd":        "class_name Base\nfunc same() -> String:\n\tpass\nfunc named() -> int:\n\tpass\n",
@@ -961,6 +1095,9 @@ func reducerTestEngine(t *testing.T) *Engine {
 		}
 	}
 	if err := builder.AddMethod("Node", "engine_method", "int", nil, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddMethod("String", "to_upper", "String", nil, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := builder.AddMethod("Node", "engine_static", "int", nil, true, false); err != nil {
