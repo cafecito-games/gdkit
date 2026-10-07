@@ -240,6 +240,10 @@ func (w *collectionLifetimeWalker) visitStatement(statement ast.Statement) {
 		w.visitExpression(node.Iterable)
 		w.visitStatements(node.Body)
 	case *ast.MatchStatement:
+		if w.containsTarget(node.Value) && matchBindsValue(node.Cases) {
+			w.lost = true
+			return
+		}
 		w.visitExpression(node.Value)
 		for _, matchCase := range node.Cases {
 			for _, pattern := range matchCase.Patterns {
@@ -499,6 +503,87 @@ func (w *collectionLifetimeWalker) aliasesTarget(expression ast.Expression) bool
 	}
 }
 
+func matchBindsValue(cases []ast.MatchCase) bool {
+	for _, matchCase := range cases {
+		for _, pattern := range matchCase.Patterns {
+			bound := false
+			ast.Inspect(pattern, func(node ast.Node) bool {
+				if _, ok := node.(*ast.BindingPattern); ok {
+					bound = true
+					return false
+				}
+				return true
+			})
+			if bound {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// dependsOnForeignCollectionContents reports whether TypeOf could be reading
+// stale contents from another local collection. The reducer intentionally types
+// a local from its initializer, whereas this query folds later writes, so using
+// that other collection as a bulk source or indexing it cannot justify an exact
+// type for this collection.
+func (w *collectionLifetimeWalker) dependsOnForeignCollectionContents(expression ast.Expression) bool {
+	if isNilNode(expression) || w.lost {
+		return false
+	}
+	value := w.analyzer.TypeOf(expression)
+	if (value.Kind() == KindArray || value.Kind() == KindDictionary) && w.referencesForeignLocalCollection(expression) {
+		return true
+	}
+	depends := false
+	ast.Inspect(expression, func(node ast.Node) bool {
+		if depends || w.lost {
+			return false
+		}
+		subscript, ok := node.(*ast.SubscriptExpression)
+		if !ok {
+			return true
+		}
+		if w.referencesForeignLocalCollection(subscript.Object) {
+			depends = true
+			return false
+		}
+		return true
+	})
+	return depends
+}
+
+func (w *collectionLifetimeWalker) referencesForeignLocalCollection(expression ast.Expression) bool {
+	if isNilNode(expression) || w.lost {
+		return false
+	}
+	found := false
+	ast.Inspect(expression, func(node ast.Node) bool {
+		if found || w.lost {
+			return false
+		}
+		identifier, ok := node.(*ast.Identifier)
+		if !ok {
+			return true
+		}
+		resolved := w.analyzer.scopes.Resolve(identifier)
+		if resolved.State() != LookupFound {
+			return true
+		}
+		binding, resolvedBinding := resolved.Binding()
+		if !resolvedBinding || (w.hasTarget && binding.ID() == w.target) || binding.Kind() != BindingLocal {
+			return true
+		}
+		typeValue := w.analyzer.TypeOf(identifier)
+		if typeValue.Kind() == KindArray || typeValue.Kind() == KindDictionary {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 type collectionMutationSpec struct {
 	owner          string
 	argumentTypes  []string
@@ -640,6 +725,10 @@ func (w *collectionLifetimeWalker) foldArray(expression ast.Expression) {
 	if w.lost {
 		return
 	}
+	if w.dependsOnForeignCollectionContents(expression) {
+		w.lost = true
+		return
+	}
 	element, typed := w.current.Element()
 	value := w.analyzer.TypeOf(expression)
 	if !typed || value.Kind() == KindUnknown {
@@ -656,6 +745,10 @@ func (w *collectionLifetimeWalker) foldArray(expression ast.Expression) {
 
 func (w *collectionLifetimeWalker) foldDictionary(keyExpression, valueExpression ast.Expression) {
 	if w.lost {
+		return
+	}
+	if w.dependsOnForeignCollectionContents(keyExpression) || w.dependsOnForeignCollectionContents(valueExpression) {
+		w.lost = true
 		return
 	}
 	key, typedKey := w.current.Key()
@@ -677,6 +770,10 @@ func (w *collectionLifetimeWalker) foldDictionary(keyExpression, valueExpression
 
 func (w *collectionLifetimeWalker) foldSource(expression ast.Expression) {
 	if w.lost {
+		return
+	}
+	if w.dependsOnForeignCollectionContents(expression) {
+		w.lost = true
 		return
 	}
 	source := w.analyzer.TypeOf(expression)
