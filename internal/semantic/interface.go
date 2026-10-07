@@ -165,6 +165,27 @@ type LookupResult struct {
 	reason string
 }
 
+// namedEnumObjectProvenance is a private capability for one named enum object
+// selected through LookupMetaMember. The public value remains Dictionary; the
+// issuing InterfaceSet, selected receiver, retained declaration, and published
+// enum Type are revalidated before any following member selection can use it.
+type namedEnumObjectProvenance struct {
+	set              *InterfaceSet
+	receiver         Type
+	declaringClassID string
+	enumName         string
+	line             int
+	column           int
+	typeValue        Type
+	declaration      *ast.EnumDeclaration
+}
+
+type namedEnumMemberLookup struct {
+	state     LookupState
+	typeValue Type
+	reason    string
+}
+
 // State returns whether the name was found, proven absent, or remains unknown.
 func (r LookupResult) State() LookupState { return r.state }
 
@@ -318,6 +339,9 @@ type InterfaceSet struct {
 	engine     *Engine
 	classes    map[string]*ClassInterface
 	classTypes map[string]Type
+	// enumDeclarationOwners is the immutable identity inventory used to reject
+	// a parsed named-enum node retained by zero or multiple declarations.
+	enumDeclarationOwners map[*ast.EnumDeclaration]int
 }
 
 // BuildInterfaces composes a deterministic shallow interface for every class
@@ -325,13 +349,25 @@ type InterfaceSet struct {
 func BuildInterfaces(index *Index, engine *Engine) *InterfaceSet {
 	snapshot := interfaceIndexSnapshot(index)
 	set := &InterfaceSet{
-		index:      snapshot,
-		engine:     engine,
-		classes:    map[string]*ClassInterface{},
-		classTypes: map[string]Type{},
+		index:                 snapshot,
+		engine:                engine,
+		classes:               map[string]*ClassInterface{},
+		classTypes:            map[string]Type{},
+		enumDeclarationOwners: map[*ast.EnumDeclaration]int{},
 	}
 	if snapshot == nil {
 		return set
+	}
+	for _, class := range snapshot.Classes {
+		if class == nil {
+			continue
+		}
+		for _, declaration := range class.Declarations {
+			node, ok := declaration.Node.(*ast.EnumDeclaration)
+			if declaration.Kind == DeclarationEnum && ok && node != nil {
+				set.enumDeclarationOwners[node]++
+			}
+		}
 	}
 
 	states := map[string]interfaceVisit{}
@@ -541,6 +577,176 @@ func (s *InterfaceSet) LookupMetaMember(receiver Type, name string) LookupResult
 	}
 	owners, complete, cause := s.engineOwners(receiver.Name())
 	return s.lookupMetaOwners(owners, complete, cause, name)
+}
+
+// namedEnumObject issues exact declaration provenance only for a MemberEnum
+// already selected through LookupMetaMember. It deliberately records a nil
+// declaration when any identity fact is unavailable or ambiguous; the
+// consumer then fails closed instead of treating the value as an ordinary
+// Dictionary.
+func (s *InterfaceSet) namedEnumObject(receiver Type, member Member) *namedEnumObjectProvenance {
+	provenance := &namedEnumObjectProvenance{
+		set:              s,
+		receiver:         receiver,
+		declaringClassID: member.DeclaringClassID(),
+		enumName:         member.Name(),
+		line:             member.Line(),
+		column:           member.Column(),
+		typeValue:        member.Type(),
+	}
+	if s == nil || s.index == nil || member.Kind() != MemberEnum {
+		return provenance
+	}
+	class := s.index.Classes[provenance.declaringClassID]
+	if class == nil {
+		return provenance
+	}
+	var matched *ast.EnumDeclaration
+	for _, declaration := range class.Declarations {
+		if declaration.Kind != DeclarationEnum || declaration.Name != provenance.enumName || declaration.Line != provenance.line || declaration.Column != provenance.column {
+			continue
+		}
+		node, ok := declaration.Node.(*ast.EnumDeclaration)
+		if !ok || node == nil || matched != nil {
+			return provenance
+		}
+		matched = node
+	}
+	provenance.declaration = matched
+	return provenance
+}
+
+// lookupNamedEnumMember consumes only a capability issued by this exact
+// InterfaceSet and revalidates every retained declaration fact. Absence is
+// returned only after one complete exact declaration has been proven.
+func (s *InterfaceSet) lookupNamedEnumMember(provenance *namedEnumObjectProvenance, name string) namedEnumMemberLookup {
+	unknown := func(reason string) namedEnumMemberLookup {
+		if strings.TrimSpace(reason) == "" {
+			reason = "named enum member lookup is incomplete"
+		}
+		return namedEnumMemberLookup{state: LookupUnknown, reason: reason}
+	}
+	if s == nil || s.index == nil {
+		return unknown("named enum interface set is unavailable")
+	}
+	if strings.TrimSpace(name) == "" {
+		return unknown("named enum member name is empty")
+	}
+	if provenance == nil {
+		return unknown("named enum object provenance is unavailable")
+	}
+	if provenance.set != s {
+		return unknown("named enum object provenance belongs to another interface set")
+	}
+	if problem := validate(provenance.receiver); problem != "" {
+		return unknown(fmt.Sprintf("named enum owner type is malformed: %s", problem))
+	}
+	if provenance.receiver.Kind() != KindClass || !provenance.receiver.Meta() {
+		return unknown("named enum owner is not a meta class")
+	}
+	owner, ok := s.Class(provenance.receiver.Name())
+	if !ok {
+		return unknown(fmt.Sprintf("named enum owner %q is unavailable", provenance.receiver.Name()))
+	}
+	if !owner.Complete() {
+		return unknown(fmt.Sprintf("named enum owner %q is incomplete: %s", provenance.receiver.Name(), owner.Cause()))
+	}
+	if provenance.declaringClassID == "" || strings.TrimSpace(provenance.enumName) == "" || provenance.line <= 0 || provenance.column <= 0 {
+		return unknown("named enum declaration identity is incomplete")
+	}
+	if problem := validate(provenance.typeValue); problem != "" {
+		return unknown(fmt.Sprintf("named enum value type is malformed: %s", problem))
+	}
+	if provenance.typeValue.Kind() != KindEnum {
+		return unknown("named enum provenance does not retain an enum value type")
+	}
+	if provenance.typeValue.Name() != provenance.declaringClassID+"."+provenance.enumName {
+		return unknown("named enum value type disagrees with its declaration identity")
+	}
+	if provenance.declaration == nil {
+		return unknown("named enum declaration provenance is unavailable")
+	}
+
+	selected := s.LookupMetaMember(provenance.receiver, provenance.enumName)
+	if selected.State() != LookupFound {
+		if selected.State() == LookupUnknown {
+			return unknown(selected.Reason())
+		}
+		return unknown(fmt.Sprintf("named enum %q is no longer selected through its owner", provenance.enumName))
+	}
+	selectedMember, ok := selected.Member()
+	if !ok || !sameNamedEnumMember(selectedMember, provenance) {
+		return unknown(fmt.Sprintf("named enum %q selection disagrees with its provenance", provenance.enumName))
+	}
+
+	declaringClass := s.index.Classes[provenance.declaringClassID]
+	declaringInterface, interfaceOK := s.Class(provenance.declaringClassID)
+	if declaringClass == nil || !interfaceOK {
+		return unknown(fmt.Sprintf("named enum declaring class %q is unavailable", provenance.declaringClassID))
+	}
+	if !declaringInterface.Complete() {
+		return unknown(fmt.Sprintf("named enum declaring class %q is incomplete: %s", provenance.declaringClassID, declaringInterface.Cause()))
+	}
+
+	var exact []Declaration
+	for _, declaration := range declaringClass.Declarations {
+		if declaration.Kind == DeclarationEnum && declaration.Name == provenance.enumName && declaration.Line == provenance.line && declaration.Column == provenance.column {
+			exact = append(exact, declaration)
+		}
+	}
+	if len(exact) != 1 {
+		return unknown(fmt.Sprintf("named enum declaration %q has %d exact matches", provenance.enumName, len(exact)))
+	}
+	node, ok := exact[0].Node.(*ast.EnumDeclaration)
+	if !ok || node == nil || node != provenance.declaration {
+		return unknown(fmt.Sprintf("named enum declaration %q does not retain its exact parsed node", provenance.enumName))
+	}
+	if node.Name != provenance.enumName || node.NameSpan.Start.Line != provenance.line || node.NameSpan.Start.Column != provenance.column {
+		return unknown(fmt.Sprintf("named enum declaration %q has inconsistent parsed identity", provenance.enumName))
+	}
+
+	if s.enumDeclarationOwners == nil {
+		return unknown("named enum declaration ownership inventory is unavailable")
+	}
+	shared := s.enumDeclarationOwners[provenance.declaration]
+	if shared != 1 {
+		return unknown(fmt.Sprintf("named enum declaration %q is retained by %d declarations", provenance.enumName, shared))
+	}
+
+	members := declaringInterface.directByName[provenance.enumName]
+	if len(members) != 1 || !sameNamedEnumMember(members[0], provenance) {
+		return unknown(fmt.Sprintf("named enum interface member %q disagrees with its declaration", provenance.enumName))
+	}
+
+	seen := make(map[string]bool, len(node.Members))
+	found := false
+	for _, enumMember := range node.Members {
+		if strings.TrimSpace(enumMember.Name) == "" || enumMember.NameSpan.Start.Line <= 0 || enumMember.NameSpan.Start.Column <= 0 {
+			return unknown(fmt.Sprintf("named enum declaration %q contains a malformed member", provenance.enumName))
+		}
+		if seen[enumMember.Name] {
+			return unknown(fmt.Sprintf("named enum member %q is declared more than once in %s", enumMember.Name, provenance.typeValue.String()))
+		}
+		seen[enumMember.Name] = true
+		if enumMember.Name == name {
+			found = true
+		}
+	}
+	if found {
+		return namedEnumMemberLookup{state: LookupFound, typeValue: provenance.typeValue}
+	}
+	return namedEnumMemberLookup{state: LookupAbsent}
+}
+
+func sameNamedEnumMember(member Member, provenance *namedEnumObjectProvenance) bool {
+	return provenance != nil &&
+		member.Kind() == MemberEnum &&
+		member.Name() == provenance.enumName &&
+		member.DeclaringClassID() == provenance.declaringClassID &&
+		member.EngineOwner() == "" &&
+		member.Line() == provenance.line &&
+		member.Column() == provenance.column &&
+		member.Type().Equal(provenance.typeValue)
 }
 
 // lookupMetaOwners applies static-access policy after finding a direct name in

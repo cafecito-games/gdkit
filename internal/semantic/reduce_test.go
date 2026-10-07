@@ -522,6 +522,213 @@ func TestAnalyzerResolvesLanguageSpecialResourcesAndMetaMembers(t *testing.T) {
 	}
 }
 
+func TestAnalyzerReducesNamedEnumObjectMembers(t *testing.T) {
+	base := sources(t, map[string]string{
+		"actors/actor.gd": "class_name Actor\nenum Mode { IDLE, RUNNING }\nenum { ANONYMOUS }\nclass Inner:\n\tenum State { READY }\n",
+		"actors/child.gd": "class_name Child extends Actor\n",
+		"generated.gd":    "class_name Generated\nenum Result { OK }\n",
+		"proto.gd":        "class_name ProtoCoreUtils\nenum ProtobufError { NO_ERRORS }\n",
+		"loader.gd": `class_name Loader
+func run():
+	var bare := Actor.Mode
+	var container := [Actor.Mode]
+	var direct := Actor.Mode.IDLE
+	var preloaded := preload("res://actors/actor.gd").Mode.RUNNING
+	var inner := Actor.Inner.State.READY
+	var inherited := Child.Mode.IDLE
+	var generated := Generated.Result.OK
+	var protobuf := ProtoCoreUtils.ProtobufError.NO_ERRORS
+	var anonymous := Actor.ANONYMOUS
+	var missing := Actor.Mode.MISSING
+	var arbitrary := {"IDLE": 1}
+	var arbitrary_member := arbitrary.IDLE
+`,
+	})
+	if failures := base.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	source := &resourceTestSources{
+		memorySources: base,
+		resolutions: map[string]ResourceResolution{
+			"res://actors/actor.gd": FoundResource(ResourceScript, "res://actors/actor.gd", "actors/actor.gd", ResourceLiteralPath),
+		},
+	}
+	analyzer := NewAnalyzer(source, reducerTestEngine(t))
+	file := source.File("loader.gd")
+	for _, testCase := range []struct {
+		name string
+		want Type
+	}{
+		{name: "bare", want: Dictionary(nil, nil)},
+		{name: "container", want: reducerArray(Dictionary(nil, nil))},
+		{name: "direct", want: Enum("actors/actor.gd.Mode")},
+		{name: "preloaded", want: Enum("actors/actor.gd.Mode")},
+		{name: "inner", want: Enum("actors/actor.gd#Inner.State")},
+		{name: "inherited", want: Enum("actors/actor.gd.Mode")},
+		{name: "generated", want: Enum("generated.gd.Result")},
+		{name: "protobuf", want: Enum("proto.gd.ProtobufError")},
+		{name: "anonymous", want: Builtin("int")},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
+			if !got.Equal(testCase.want) {
+				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
+			}
+		})
+	}
+	missing := analyzer.TypeOf(reducerVariableValue(t, file, "missing"))
+	if missing.Kind() != KindUnknown || !strings.Contains(missing.Reason(), `member "MISSING" is absent from named enum`) {
+		t.Fatalf("missing named-enum member = %s (%q), want enum-specific reasoned Unknown", missing, missing.Reason())
+	}
+	arbitrary := analyzer.TypeOf(reducerVariableValue(t, file, "arbitrary_member"))
+	if arbitrary.Kind() != KindUnknown || !strings.Contains(arbitrary.Reason(), `member "IDLE" is absent from Dictionary`) {
+		t.Fatalf("arbitrary Dictionary member = %s (%q), want ordinary Dictionary Unknown", arbitrary, arbitrary.Reason())
+	}
+}
+
+func TestAnalyzerKeepsNamedEnumProvenanceSnapshotAndCacheBound(t *testing.T) {
+	program := map[string]string{
+		"actor.gd":  "class_name Actor\nenum Mode { IDLE }\n",
+		"loader.gd": "class_name Loader\nfunc run():\n\tvar selected := Actor.Mode.IDLE\n",
+	}
+	parse := func(t *testing.T) (*memorySources, *ast.MemberExpression, *ast.MemberExpression) {
+		t.Helper()
+		source := sources(t, program)
+		if failures := source.ParseFailures(); len(failures) != 0 {
+			t.Fatalf("real parser fixture failed: %v", failures)
+		}
+		selected, ok := reducerVariableValue(t, source.File("loader.gd"), "selected").(*ast.MemberExpression)
+		if !ok {
+			t.Fatalf("selected expression = %T, want MemberExpression", reducerVariableValue(t, source.File("loader.gd"), "selected"))
+		}
+		enumObject, ok := selected.Object.(*ast.MemberExpression)
+		if !ok {
+			t.Fatalf("selected receiver = %T, want MemberExpression", selected.Object)
+		}
+		return source, selected, enumObject
+	}
+	want := Enum("actor.gd.Mode")
+
+	source, selected, enumObject := parse(t)
+	analyzer := NewAnalyzer(source, reducerTestEngine(t))
+	if got := analyzer.TypeOf(enumObject); !got.Equal(Dictionary(nil, nil)) {
+		t.Fatalf("enum object queried first = %s (%q), want Dictionary", got, got.Reason())
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if got := analyzer.TypeOf(selected); !got.Equal(want) {
+			t.Fatalf("cached named enum selection = %s (%q), want %s", got, got.Reason(), want)
+		}
+	}
+	scope, ok := analyzer.scopes.ScopeAt(selected)
+	if !ok {
+		t.Fatal("selected expression has no recorded scope")
+	}
+	for _, token := range []reductionContextToken{
+		{overlay: &reductionOverlay{}},
+		{overlay: &reductionOverlay{}},
+	} {
+		if got := analyzer.typeOfIn(selected, scope, token); !got.typeValue.Equal(want) {
+			t.Fatalf("overlay named enum selection = %s (%q), want %s", got.typeValue, got.typeValue.Reason(), want)
+		}
+		if _, cached := analyzer.cache[reductionKey{expression: selected, scope: scope.ID(), token: token}]; !cached {
+			t.Fatal("named enum overlay result did not retain its distinct cache identity")
+		}
+	}
+
+	cloneSource, _, cloneEnumObject := parse(t)
+	cloneAnalyzer := NewAnalyzer(cloneSource, reducerTestEngine(t))
+	cloneScope, ok := cloneAnalyzer.scopes.ScopeAt(cloneEnumObject)
+	if !ok {
+		t.Fatal("enum object has no recorded scope")
+	}
+	original := cloneAnalyzer.typeOfIn(cloneEnumObject, cloneScope, reductionContextToken{})
+	cloned := cloneReductionResult(original)
+	if original.namedEnumObject == nil || cloned.namedEnumObject == nil || original.namedEnumObject == cloned.namedEnumObject {
+		t.Fatal("cloneReductionResult did not defensively copy named enum provenance")
+	}
+	if cloned.namedEnumObject.set != original.namedEnumObject.set || cloned.namedEnumObject.declaration != original.namedEnumObject.declaration {
+		t.Fatal("cloneReductionResult changed immutable named enum identity")
+	}
+
+	cycleSource, cycleSelected, cycleEnumObject := parse(t)
+	cycleAnalyzer := NewAnalyzer(cycleSource, reducerTestEngine(t))
+	cycleScope, ok := cycleAnalyzer.scopes.ScopeAt(cycleSelected)
+	if !ok {
+		t.Fatal("cycle fixture selected expression has no scope")
+	}
+	cycleEnumScope, ok := cycleAnalyzer.scopes.ScopeAt(cycleEnumObject)
+	if !ok {
+		t.Fatal("cycle fixture enum object has no scope")
+	}
+	cycleKey := reductionKey{expression: cycleEnumObject, scope: cycleEnumScope.ID()}
+	request := &reductionRequest{active: map[reductionKey]bool{cycleKey: true}}
+	cycled := cycleAnalyzer.reduce(cycleSelected, reductionContext{scope: cycleScope}, request)
+	if cycled.typeValue.Kind() != KindUnknown || cycled.typeValue.Reason() != "expression reduction cycle" {
+		t.Fatalf("cycle-tainted named enum selection = %s (%q), want cycle Unknown", cycled.typeValue, cycled.typeValue.Reason())
+	}
+	if got := cycleAnalyzer.TypeOf(cycleSelected); !got.Equal(want) {
+		t.Fatalf("clean read after cycle-tainted request = %s (%q), want %s", got, got.Reason(), want)
+	}
+
+	foreignSource, foreignSelected, foreignEnumObject := parse(t)
+	foreignAnalyzer := NewAnalyzer(foreignSource, reducerTestEngine(t))
+	if got := analyzer.TypeOf(foreignSelected); got.Kind() != KindUnknown || got.Reason() == "" {
+		t.Fatalf("foreign parsed expression = %s (%q), want reasoned Unknown", got, got.Reason())
+	}
+	foreignScope, ok := foreignAnalyzer.scopes.ScopeAt(foreignEnumObject)
+	if !ok {
+		t.Fatal("foreign enum object has no scope")
+	}
+	foreignKey := reductionKey{expression: foreignEnumObject, scope: foreignScope.ID()}
+	foreignAnalyzer.cache[foreignKey] = reductionResult{
+		typeValue:          Dictionary(nil, nil),
+		namedEnumObject:    original.namedEnumObject,
+		hasNamedEnumObject: true,
+	}
+	foreign := foreignAnalyzer.TypeOf(foreignSelected)
+	if foreign.Kind() != KindUnknown || !strings.Contains(foreign.Reason(), "another interface set") {
+		t.Fatalf("foreign cached provenance = %s (%q), want interface-specific Unknown", foreign, foreign.Reason())
+	}
+
+	invalidSource, invalidSelected, invalidEnumObject := parse(t)
+	invalidAnalyzer := NewAnalyzer(invalidSource, reducerTestEngine(t))
+	invalidScope, ok := invalidAnalyzer.scopes.ScopeAt(invalidEnumObject)
+	if !ok {
+		t.Fatal("invalid-cache enum object has no scope")
+	}
+	invalidAnalyzer.cache[reductionKey{expression: invalidEnumObject, scope: invalidScope.ID()}] = reductionResult{
+		typeValue:          Dictionary(nil, nil),
+		hasNamedEnumObject: true,
+	}
+	invalid := invalidAnalyzer.TypeOf(invalidSelected)
+	if invalid.Kind() != KindUnknown || !strings.Contains(invalid.Reason(), "provenance is unavailable") {
+		t.Fatalf("invalid cached provenance = %s (%q), want provenance-specific Unknown", invalid, invalid.Reason())
+	}
+
+	coldSource, coldSelected, _ := parse(t)
+	cold := NewAnalyzer(coldSource, reducerTestEngine(t))
+	const readers = 24
+	start := make(chan struct{})
+	problems := make(chan string, readers)
+	var done sync.WaitGroup
+	done.Add(readers)
+	for reader := 0; reader < readers; reader++ {
+		go func() {
+			defer done.Done()
+			<-start
+			if got := cold.TypeOf(coldSelected); !got.Equal(want) {
+				problems <- got.String()
+			}
+		}()
+	}
+	close(start)
+	done.Wait()
+	close(problems)
+	for problem := range problems {
+		t.Errorf("concurrent cold named enum selection = %s, want %s", problem, want)
+	}
+}
+
 func TestAnalyzerFailsClosedForUnavailableInvalidAndUnsupportedResourceEvidence(t *testing.T) {
 	base := sources(t, map[string]string{
 		"loader.gd": "class_name Loader\nfunc run():\n\tvar unavailable := load(\"res://levels/main.tscn\")\n\tvar invalid := load(\"res://invalid.tres\")\n\tvar mismatched := load(\"res://mismatched.tres\")\n\tvar wrong_provenance := load(\"res://wrong-provenance.gd\")\n\tvar scene := load(\"res://levels/main.tscn\")\n\tvar text := load(\"res://theme.tres\")\n",
