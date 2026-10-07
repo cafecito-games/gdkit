@@ -1102,6 +1102,16 @@ func TestInterfacesLookupNamedEnumMembersRequiresExactProvenance(t *testing.T) {
 		copyProvenance.set = &copy
 		assertUnknown(t, copy.lookupNamedEnumMember(&copyProvenance, "IDLE"))
 	})
+	t.Run("nil class entry", func(t *testing.T) {
+		source := sources(t, map[string]string{"valid.gd": "class_name Valid\n"})
+		index := BuildIndex(source)
+		index.Classes["missing.gd"] = nil
+		withNilClass := BuildInterfaces(index, reducerTestEngine(t))
+		got := withNilClass.LookupMetaMember(Class("missing.gd", nil, true), "Mode")
+		if got.State() != LookupUnknown || strings.TrimSpace(got.Reason()) == "" {
+			t.Fatalf("nil class meta lookup = %s (%q), want reasoned Unknown", got.State(), got.Reason())
+		}
+	})
 	t.Run("malformed retained node", func(t *testing.T) {
 		malformed, _, malformedProvenance := build(t, files, receiver, "Mode")
 		malformedProvenance.declaration.Name = "Other"

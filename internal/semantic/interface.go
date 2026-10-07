@@ -359,6 +359,9 @@ func BuildInterfaces(index *Index, engine *Engine) *InterfaceSet {
 		return set
 	}
 	for _, class := range snapshot.Classes {
+		if class == nil {
+			continue
+		}
 		for _, declaration := range class.Declarations {
 			node, ok := declaration.Node.(*ast.EnumDeclaration)
 			if declaration.Kind == DeclarationEnum && ok && node != nil {
