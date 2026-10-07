@@ -233,6 +233,10 @@ func (w *collectionLifetimeWalker) visitStatement(statement ast.Statement) {
 		w.visitExpression(node.Condition)
 		w.visitStatements(node.Body)
 	case *ast.ForStatement:
+		if w.directTarget(node.Iterable) && w.exposesNestedCollection() {
+			w.lost = true
+			return
+		}
 		if !w.directTarget(node.Iterable) && w.containsTarget(node.Iterable) {
 			w.lost = true
 			return
@@ -373,6 +377,10 @@ func (w *collectionLifetimeWalker) visitExpression(expression ast.Expression) {
 		}
 		w.visitExpression(node.Object)
 	case *ast.SubscriptExpression:
+		if w.directTarget(node.Object) && w.exposesNestedCollection() {
+			w.lost = true
+			return
+		}
 		if !w.directTarget(node.Object) && w.containsTarget(node.Object) {
 			w.lost = true
 			return
@@ -390,6 +398,10 @@ func (w *collectionLifetimeWalker) visitCall(call *ast.CallExpression) {
 	}
 	if member, ok := call.Callee.(*ast.MemberExpression); ok {
 		if w.directTarget(member.Object) {
+			if collectionMutationReturnsNestedValue(w.current, member.Property) {
+				w.lost = true
+				return
+			}
 			for _, argument := range call.Arguments {
 				if w.aliasesTarget(argument) {
 					w.lost = true
@@ -414,6 +426,47 @@ func (w *collectionLifetimeWalker) visitCall(call *ast.CallExpression) {
 	w.visitExpression(call.Callee)
 	for _, argument := range call.Arguments {
 		w.visitExpression(argument)
+	}
+}
+
+// exposesNestedCollection reports whether reading an element out of the target
+// can disclose a mutable collection whose later writes the root walk cannot
+// observe. In that case, keeping a nested exact component would advertise a
+// fact that is no longer justified.
+func (w *collectionLifetimeWalker) exposesNestedCollection() bool {
+	switch w.current.Kind() {
+	case KindArray:
+		element, typed := w.current.Element()
+		return typed && isNestedCollection(element)
+	case KindDictionary:
+		key, typedKey := w.current.Key()
+		value, typedValue := w.current.Value()
+		return typedKey && isNestedCollection(key) || typedValue && isNestedCollection(value)
+	default:
+		return true
+	}
+}
+
+func isNestedCollection(value Type) bool {
+	return value.Kind() == KindArray || value.Kind() == KindDictionary
+}
+
+func collectionMutationReturnsNestedValue(collection Type, name string) bool {
+	switch collection.Kind() {
+	case KindArray:
+		if name != "pop_at" && name != "pop_back" && name != "pop_front" {
+			return false
+		}
+		element, typed := collection.Element()
+		return typed && isNestedCollection(element)
+	case KindDictionary:
+		if name != "get_or_add" {
+			return false
+		}
+		value, typed := collection.Value()
+		return typed && isNestedCollection(value)
+	default:
+		return false
 	}
 }
 

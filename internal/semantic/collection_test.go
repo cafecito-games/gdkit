@@ -211,6 +211,43 @@ func run() -> void:
 	}
 }
 
+func TestCollectionLifetimeFailsClosedWhenNestedContentsLeaveDirectly(t *testing.T) {
+	source := sources(t, map[string]string{
+		"nested.gd": `class_name Nested
+func run() -> void:
+	var subscript := [[1]]
+	var row = subscript[0]
+	row.append("two")
+	var iterated := [[1]]
+	for item in iterated:
+		item.append("two")
+	var popped := [[1]]
+	var popped_row = popped.pop_back()
+	popped_row.append("two")
+	var mapping := {"one": [1]}
+	var value = mapping["one"]
+	value.append("two")
+	var added := {"one": [1]}
+	var added_value = added.get_or_add("two", [2])
+	added_value.append("two")
+`,
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	analyzer := NewAnalyzer(source, collectionTestEngine(t))
+	file := source.File("nested.gd")
+	for _, name := range []string{"subscript", "iterated", "popped", "mapping", "added"} {
+		t.Run(name, func(t *testing.T) {
+			got := analyzer.CollectionLifetime(collectionDeclaration(t, file, name))
+			if got.Kind() == KindArray && got.Equal(Array(nil)) || got.Kind() == KindDictionary && got.Equal(Dictionary(nil, nil)) {
+				return
+			}
+			t.Fatalf("CollectionLifetime(%s) = %s (%q), want generic collection", name, got, got.Reason())
+		})
+	}
+}
+
 func TestCollectionLifetimeFailsClosedForSharedDeclarationOwnership(t *testing.T) {
 	source := sources(t, map[string]string{
 		"shared.gd": `class_name Shared
