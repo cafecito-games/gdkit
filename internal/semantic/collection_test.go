@@ -92,8 +92,13 @@ func run(flag: bool) -> void:
 func TestCollectionLifetimeUsesExactBindingAndFailsClosedAfterEscapes(t *testing.T) {
 	source := sources(t, map[string]string{
 		"lifetime.gd": `class_name Lifetime
+var stale_member_source := [1]
 func consume(value: Variant) -> void:
 	pass
+func parameter_source(parameter := [1]) -> void:
+	parameter.append("two")
+	var parameter_target := [1]
+	parameter_target.append(parameter[1])
 func run() -> void:
 	var untouched := [1]
 	var shadowed := [1]
@@ -114,6 +119,14 @@ func run() -> void:
 	stale_bulk_source.append("two")
 	var stale_bulk_target := [1]
 	stale_bulk_target.append_array(stale_bulk_source)
+	var stale_indirect_source := [1]
+	stale_indirect_source.append("two")
+	var stale_element := stale_indirect_source[1]
+	var stale_indirect_target := [1]
+	stale_indirect_target.append(stale_element)
+	stale_member_source.append("two")
+	var stale_member_target := [1]
+	stale_member_target.append(stale_member_source[1])
 	var match_bound := [1]
 	match match_bound:
 		var whole:
@@ -177,7 +190,7 @@ func run() -> void:
 	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "shadowed")); !got.Equal(Array(&intType)) {
 		t.Fatalf("same-spelled lambda shadow changed outer result to %s (%q)", got, got.Reason())
 	}
-	for _, name := range []string{"passed", "captured", "aliased", "stale_element_target", "stale_bulk_target", "match_bound", "returned", "rebound", "compound", "dynamic", "unknown_write", "unknown_source", "stored", "stored_as_key", "self_index", "ternary_receiver", "cast_receiver", "subscript_aliased", "subscript_passed", "subscript_returned", "subscript_iterated", "self_passed", "wrong_arity"} {
+	for _, name := range []string{"passed", "captured", "aliased", "parameter_target", "stale_element_target", "stale_bulk_target", "stale_indirect_target", "stale_member_target", "match_bound", "returned", "rebound", "compound", "dynamic", "unknown_write", "unknown_source", "stored", "stored_as_key", "self_index", "ternary_receiver", "cast_receiver", "subscript_aliased", "subscript_passed", "subscript_returned", "subscript_iterated", "self_passed", "wrong_arity"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.CollectionLifetime(collectionDeclaration(t, file, name))
 			if !got.Equal(Array(nil)) {

@@ -523,16 +523,23 @@ func matchBindsValue(cases []ast.MatchCase) bool {
 }
 
 // dependsOnForeignCollectionContents reports whether TypeOf could be reading
-// stale contents from another local collection. The reducer intentionally types
-// a local from its initializer, whereas this query folds later writes, so using
-// that other collection as a bulk source or indexing it cannot justify an exact
-// type for this collection.
+// stale contents from another inferred collection. The reducer intentionally
+// types inferred bindings from their initializer, whereas this query folds
+// later writes, so neither a direct indexed read nor an intermediate inferred
+// binding can justify an exact type for this collection.
 func (w *collectionLifetimeWalker) dependsOnForeignCollectionContents(expression ast.Expression) bool {
 	if isNilNode(expression) || w.lost {
 		return false
 	}
+	return w.expressionDependsOnForeignCollectionContents(expression, map[BindingID]bool{})
+}
+
+func (w *collectionLifetimeWalker) expressionDependsOnForeignCollectionContents(expression ast.Expression, visiting map[BindingID]bool) bool {
+	if isNilNode(expression) || w.lost {
+		return false
+	}
 	value := w.analyzer.TypeOf(expression)
-	if (value.Kind() == KindArray || value.Kind() == KindDictionary) && w.referencesForeignLocalCollection(expression) {
+	if (value.Kind() == KindArray || value.Kind() == KindDictionary) && w.referencesForeignCollection(expression) {
 		return true
 	}
 	depends := false
@@ -540,20 +547,25 @@ func (w *collectionLifetimeWalker) dependsOnForeignCollectionContents(expression
 		if depends || w.lost {
 			return false
 		}
-		subscript, ok := node.(*ast.SubscriptExpression)
-		if !ok {
+		switch node := node.(type) {
+		case *ast.SubscriptExpression:
+			if w.referencesForeignCollection(node.Object) {
+				depends = true
+				return false
+			}
 			return true
-		}
-		if w.referencesForeignLocalCollection(subscript.Object) {
-			depends = true
-			return false
+		case *ast.Identifier:
+			if binding, found := w.bindingFor(node); found && w.bindingInitializerDependsOnForeignCollectionContents(binding, visiting) {
+				depends = true
+				return false
+			}
 		}
 		return true
 	})
 	return depends
 }
 
-func (w *collectionLifetimeWalker) referencesForeignLocalCollection(expression ast.Expression) bool {
+func (w *collectionLifetimeWalker) referencesForeignCollection(expression ast.Expression) bool {
 	if isNilNode(expression) || w.lost {
 		return false
 	}
@@ -564,14 +576,17 @@ func (w *collectionLifetimeWalker) referencesForeignLocalCollection(expression a
 		}
 		identifier, ok := node.(*ast.Identifier)
 		if !ok {
+			if member, ok := node.(*ast.MemberExpression); ok {
+				typeValue := w.analyzer.TypeOf(member)
+				if typeValue.Kind() == KindArray || typeValue.Kind() == KindDictionary {
+					found = true
+					return false
+				}
+			}
 			return true
 		}
-		resolved := w.analyzer.scopes.Resolve(identifier)
-		if resolved.State() != LookupFound {
-			return true
-		}
-		binding, resolvedBinding := resolved.Binding()
-		if !resolvedBinding || (w.hasTarget && binding.ID() == w.target) || binding.Kind() != BindingLocal {
+		binding, resolved := w.bindingFor(identifier)
+		if !resolved || (w.hasTarget && binding.ID() == w.target) {
 			return true
 		}
 		typeValue := w.analyzer.TypeOf(identifier)
@@ -582,6 +597,71 @@ func (w *collectionLifetimeWalker) referencesForeignLocalCollection(expression a
 		return true
 	})
 	return found
+}
+
+func (w *collectionLifetimeWalker) bindingFor(identifier *ast.Identifier) (Binding, bool) {
+	if identifier == nil || w.analyzer == nil || w.analyzer.scopes == nil {
+		return Binding{}, false
+	}
+	resolved := w.analyzer.scopes.Resolve(identifier)
+	if resolved.State() != LookupFound {
+		return Binding{}, false
+	}
+	return resolved.Binding()
+}
+
+func (w *collectionLifetimeWalker) bindingInitializerDependsOnForeignCollectionContents(binding Binding, visiting map[BindingID]bool) bool {
+	if w.hasTarget && binding.ID() == w.target {
+		return false
+	}
+	initializer, inferred := inferredBindingInitializer(binding)
+	if !inferred {
+		return false
+	}
+	if visiting[binding.ID()] {
+		return true
+	}
+	visiting[binding.ID()] = true
+	depends := w.expressionDependsOnForeignCollectionContents(initializer, visiting)
+	delete(visiting, binding.ID())
+	return depends
+}
+
+func inferredBindingInitializer(binding Binding) (ast.Expression, bool) {
+	switch node := binding.Declaration().(type) {
+	case *ast.VariableDeclaration:
+		if node != nil && (node.Constant || node.Inferred) && node.Type == "" && !isNilNode(node.Value) {
+			return node.Value, true
+		}
+	case *ast.FunctionDeclaration:
+		return inferredParameterInitializer(node, binding)
+	case *ast.LambdaExpression:
+		return inferredParameterInitializer(node, binding)
+	}
+	return nil, false
+}
+
+func inferredParameterInitializer(owner interface{}, binding Binding) (ast.Expression, bool) {
+	if binding.Kind() != BindingParameter || binding.Slot() < 0 {
+		return nil, false
+	}
+	var parameters []ast.Parameter
+	switch node := owner.(type) {
+	case *ast.FunctionDeclaration:
+		parameters = node.Parameters
+	case *ast.LambdaExpression:
+		parameters = node.Parameters
+	default:
+		return nil, false
+	}
+	if binding.Slot() >= len(parameters) {
+		return nil, false
+	}
+	parameter := parameters[binding.Slot()]
+	if !parameter.Inferred || isNilNode(parameter.Default) {
+		return nil, false
+	}
+	return parameter.Default, true
 }
 
 type collectionMutationSpec struct {
