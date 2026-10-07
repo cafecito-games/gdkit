@@ -248,6 +248,57 @@ func run() -> void:
 	}
 }
 
+func TestCollectionLifetimeFailsClosedForForeignInitialLiteralContents(t *testing.T) {
+	source := sources(t, map[string]string{
+		"initial.gd": `class_name Initial
+var member_source := [1]
+func stale_member_element():
+	return member_source[1]
+func run() -> void:
+	var fresh := [[1]]
+	var row := [1]
+	var array_value := [row]
+	var dictionary_value := {"row": row}
+	var dictionary_key := {row: 1}
+	var member_value := [member_source]
+	row.append("two")
+	var source := [1]
+	source.append("two")
+	var direct_subscript := [source[1]]
+	var stale_element := source[1]
+	var indirect_subscript := [stale_element]
+	member_source.append("two")
+	var call_subscript := [stale_member_element()]
+`,
+	})
+	if failures := source.ParseFailures(); len(failures) != 0 {
+		t.Fatalf("real parser fixture failed: %v", failures)
+	}
+	analyzer := NewAnalyzer(source, collectionTestEngine(t))
+	file := source.File("initial.gd")
+	intType := Builtin("int")
+	inner := Array(&intType)
+	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "fresh")); !got.Equal(Array(&inner)) {
+		t.Fatalf("fresh = %s (%q), want Array[Array[int]]", got, got.Reason())
+	}
+	for _, name := range []string{"array_value", "member_value", "direct_subscript", "indirect_subscript", "call_subscript"} {
+		t.Run(name, func(t *testing.T) {
+			got := analyzer.CollectionLifetime(collectionDeclaration(t, file, name))
+			if !got.Equal(Array(nil)) {
+				t.Fatalf("CollectionLifetime(%s) = %s (%q), want generic Array", name, got, got.Reason())
+			}
+		})
+	}
+	for _, name := range []string{"dictionary_value", "dictionary_key"} {
+		t.Run(name, func(t *testing.T) {
+			got := analyzer.CollectionLifetime(collectionDeclaration(t, file, name))
+			if !got.Equal(Dictionary(nil, nil)) {
+				t.Fatalf("CollectionLifetime(%s) = %s (%q), want generic Dictionary", name, got, got.Reason())
+			}
+		})
+	}
+}
+
 func TestCollectionLifetimeFailsClosedForSharedDeclarationOwnership(t *testing.T) {
 	source := sources(t, map[string]string{
 		"shared.gd": `class_name Shared

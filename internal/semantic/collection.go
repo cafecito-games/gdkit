@@ -38,6 +38,9 @@ func (a *Analyzer) CollectionLifetime(declaration *ast.VariableDeclaration) Type
 		declaration: declaration,
 		current:     initial,
 	}
+	if walker.dependsOnForeignCollectionContents(declaration.Value) {
+		return generic
+	}
 	walker.visitStatements(body)
 	if !walker.started || walker.lost {
 		return generic
