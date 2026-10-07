@@ -650,7 +650,15 @@ func (a *Analyzer) reduceCall(expression *ast.CallExpression, context reductionC
 	}
 	callee := a.reduceChild(expression.Callee, context, request)
 	var builtinConstructor Type
-	if callee.builtinConstructor != nil || (callee.hasConstructor && callee.typeValue.Kind() == KindUnknown) {
+	if callee.builtinConstructor != nil {
+		// A builtin type global remains Unknown in ordinary value position, so
+		// its capability may have flowed through an otherwise-Unknown compound
+		// expression. Only the exact bare identifier selected by Scope is a
+		// direct value-constructor call; never reinterpret an unknown member,
+		// subscript, operator, argument, or nested call as one.
+		if _, direct := expression.Callee.(*ast.Identifier); !direct {
+			return knownReduction(callee.typeValue)
+		}
 		if !callee.hasConstructor || callee.builtinConstructor == nil {
 			return unknownReduction("builtin constructor provenance is unavailable")
 		}
@@ -659,6 +667,8 @@ func (a *Analyzer) reduceCall(expression *ast.CallExpression, context reductionC
 		if problem != "" {
 			return unknownReduction(problem)
 		}
+	} else if callee.hasConstructor && callee.typeValue.Kind() == KindUnknown {
+		return unknownReduction("builtin constructor provenance is unavailable")
 	} else if callee.typeValue.Kind() == KindUnknown {
 		return callee
 	}

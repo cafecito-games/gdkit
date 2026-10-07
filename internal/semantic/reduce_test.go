@@ -440,7 +440,7 @@ func TestAnalyzerReducesSchemaBackedBuiltinConstructors(t *testing.T) {
 	for index, name := range mandatory {
 		fmt.Fprintf(&program, "\tvar mandatory_%d := %s()\n", index, name)
 	}
-	program.WriteString("\tvar direct := Vector2(1, 2)\n\tvar nested := Vector2i(Vector2(1, 2))\n\tvar packed := PackedByteArray([])\n\tvar future := FutureValue()\n\tvar dormant := Dormant()\n\tvar missing := MissingBuiltin()\n\tvar unknown_argument := Vector2(not_retained)\n\tvar bare := Vector2\n\tvar bare_member := Vector2.ZERO\n\tvar sum := Vector2(1, 2) + Vector2(3, 4)\n\tvar length := Vector2(1, 2).length()\n\tvar collection := [Vector2(1, 2)]\n\tvar returned := inferred()\n\tif value is Vector2:\n\t\tvar narrowed := value\n")
+	program.WriteString("\tvar direct := Vector2(1, 2)\n\tvar nested := Vector2i(Vector2(1, 2))\n\tvar packed := PackedByteArray([])\n\tvar future := FutureValue()\n\tvar dormant := Dormant()\n\tvar missing := MissingBuiltin()\n\tvar unknown_argument := Vector2(not_retained)\n\tvar bare := Vector2\n\tvar bare_member := Vector2.ZERO\n\tvar bare_member_call := Vector2.ZERO()\n\tvar member_chain_call := Vector2.ZERO.length()\n\tvar sum := Vector2(1, 2) + Vector2(3, 4)\n\tvar length := Vector2(1, 2).length()\n\tvar collection := [Vector2(1, 2)]\n\tvar returned := inferred()\n\tif value is Vector2:\n\t\tvar narrowed := value\n")
 	source := sources(t, map[string]string{
 		"constructors.gd":  program.String(),
 		"local_shadow.gd":  "class_name LocalShadow\nfunc run():\n\tvar Vector2: Callable\n\tvar local_shadowed := Vector2()\n",
@@ -479,7 +479,7 @@ func TestAnalyzerReducesSchemaBackedBuiltinConstructors(t *testing.T) {
 			t.Errorf("%s = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
 		}
 	}
-	for _, name := range []string{"dormant", "missing", "unknown_argument", "bare", "bare_member"} {
+	for _, name := range []string{"dormant", "missing", "unknown_argument", "bare", "bare_member", "bare_member_call", "member_chain_call"} {
 		got := analyzer.TypeOf(reducerVariableValue(t, file, name))
 		if got.Kind() != KindUnknown || got.Reason() == "" {
 			t.Errorf("%s = %s (%q), want reasoned Unknown", name, got, got.Reason())
