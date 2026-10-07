@@ -548,6 +548,12 @@ func (w *collectionLifetimeWalker) expressionDependsOnForeignCollectionContents(
 			return false
 		}
 		switch node := node.(type) {
+		case *ast.CallExpression:
+			if w.callUsesInferredUserReturn(node) {
+				depends = true
+				return false
+			}
+			return true
 		case *ast.SubscriptExpression:
 			if w.referencesForeignCollection(node.Object) {
 				depends = true
@@ -608,6 +614,26 @@ func (w *collectionLifetimeWalker) bindingFor(identifier *ast.Identifier) (Bindi
 		return Binding{}, false
 	}
 	return resolved.Binding()
+}
+
+func (w *collectionLifetimeWalker) callUsesInferredUserReturn(call *ast.CallExpression) bool {
+	if call == nil || isNilNode(call.Callee) || w.analyzer == nil || w.analyzer.scopes == nil {
+		return false
+	}
+	scope, indexed := w.analyzer.scopes.ScopeAt(call.Callee)
+	if !indexed || scope == nil {
+		return false
+	}
+	token := reductionContextToken{}
+	if w.analyzer.narrow != nil {
+		token = w.analyzer.narrow.tokenAt(call.Callee)
+	}
+	callee := w.analyzer.typeOfIn(call.Callee, scope, token)
+	if callee.member == nil {
+		return false
+	}
+	_, inferred := w.analyzer.directFunctionDeclaration(*callee.member)
+	return inferred
 }
 
 func (w *collectionLifetimeWalker) bindingInitializerDependsOnForeignCollectionContents(binding Binding, visiting map[BindingID]bool) bool {
