@@ -230,6 +230,11 @@ func run() -> void:
 	var added := {"one": [1]}
 	var added_value = added.get_or_add("two", [2])
 	added_value.append("two")
+	var sorted := [[1]]
+	var comparator := func(left: Array, right: Array) -> bool:
+		left.append("two")
+		return true
+	sorted.sort_custom(comparator)
 `,
 	})
 	if failures := source.ParseFailures(); len(failures) != 0 {
@@ -237,7 +242,7 @@ func run() -> void:
 	}
 	analyzer := NewAnalyzer(source, collectionTestEngine(t))
 	file := source.File("nested.gd")
-	for _, name := range []string{"subscript", "iterated", "popped", "mapping", "added"} {
+	for _, name := range []string{"subscript", "iterated", "popped", "mapping", "added", "sorted"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.CollectionLifetime(collectionDeclaration(t, file, name))
 			if got.Kind() == KindArray && got.Equal(Array(nil)) || got.Kind() == KindDictionary && got.Equal(Dictionary(nil, nil)) {
@@ -261,6 +266,8 @@ func run() -> void:
 	var dictionary_value := {"row": row}
 	var dictionary_key := {row: 1}
 	var member_value := [member_source]
+	var scalar_read := [row.size()]
+	var scalar_dictionary := {"size": row.size()}
 	row.append("two")
 	var source := [1]
 	source.append("two")
@@ -280,6 +287,13 @@ func run() -> void:
 	inner := Array(&intType)
 	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "fresh")); !got.Equal(Array(&inner)) {
 		t.Fatalf("fresh = %s (%q), want Array[Array[int]]", got, got.Reason())
+	}
+	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "scalar_read")); !got.Equal(Array(&intType)) {
+		t.Fatalf("scalar_read = %s (%q), want Array[int]", got, got.Reason())
+	}
+	stringType := Builtin("String")
+	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "scalar_dictionary")); !got.Equal(Dictionary(&stringType, &intType)) {
+		t.Fatalf("scalar_dictionary = %s (%q), want Dictionary[String, int]", got, got.Reason())
 	}
 	for _, name := range []string{"array_value", "member_value", "direct_subscript", "indirect_subscript", "call_subscript"} {
 		t.Run(name, func(t *testing.T) {
@@ -441,8 +455,8 @@ func collectionTestEngine(t *testing.T) *Engine {
 		}
 	}
 	methods := []struct {
-		owner, name string
-		arguments   []EngineArgumentSpec
+		owner, name, result string
+		arguments           []EngineArgumentSpec
 	}{
 		{owner: "Array", name: "append", arguments: collectionArguments("Variant")},
 		{owner: "Array", name: "push_back", arguments: collectionArguments("Variant")},
@@ -462,6 +476,7 @@ func collectionTestEngine(t *testing.T) *Engine {
 		{owner: "Array", name: "shuffle"},
 		{owner: "Array", name: "sort"},
 		{owner: "Array", name: "sort_custom", arguments: collectionArguments("Callable")},
+		{owner: "Array", name: "size", result: "int"},
 		{owner: "Array", name: "make_read_only"},
 		{owner: "Dictionary", name: "set", arguments: collectionArguments("Variant", "Variant")},
 		{owner: "Dictionary", name: "get_or_add", arguments: []EngineArgumentSpec{{Type: "Variant"}, {Type: "Variant", HasDefault: true}}},
@@ -473,7 +488,11 @@ func collectionTestEngine(t *testing.T) *Engine {
 		{owner: "Dictionary", name: "make_read_only"},
 	}
 	for _, method := range methods {
-		if err := builder.AddMethod(method.owner, method.name, "Variant", method.arguments, false, false); err != nil {
+		result := method.result
+		if result == "" {
+			result = "Variant"
+		}
+		if err := builder.AddMethod(method.owner, method.name, result, method.arguments, false, false); err != nil {
 			t.Fatal(err)
 		}
 	}

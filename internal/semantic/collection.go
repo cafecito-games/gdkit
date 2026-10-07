@@ -38,7 +38,7 @@ func (a *Analyzer) CollectionLifetime(declaration *ast.VariableDeclaration) Type
 		declaration: declaration,
 		current:     initial,
 	}
-	if walker.dependsOnForeignCollectionContents(declaration.Value) {
+	if walker.initialLiteralDependsOnForeignCollectionContents(declaration.Value) {
 		return generic
 	}
 	walker.visitStatements(body)
@@ -59,6 +59,32 @@ func genericCollection(declaration *ast.VariableDeclaration) (Type, bool) {
 		return Dictionary(nil, nil), true
 	default:
 		return Type{}, false
+	}
+}
+
+// initialLiteralDependsOnForeignCollectionContents applies the same source
+// rule as a later write to each literal component. Inspecting the whole
+// literal would make a scalar observation such as values.size() look like a
+// collection escape merely because the outer literal is itself a collection.
+func (w *collectionLifetimeWalker) initialLiteralDependsOnForeignCollectionContents(literal ast.Expression) bool {
+	switch node := literal.(type) {
+	case *ast.ArrayLiteral:
+		for _, element := range node.Elements {
+			if w.initialLiteralDependsOnForeignCollectionContents(element) {
+				return true
+			}
+		}
+		return false
+	case *ast.DictionaryLiteral:
+		for _, entry := range node.Entries {
+			if w.initialLiteralDependsOnForeignCollectionContents(entry.Key) ||
+				w.initialLiteralDependsOnForeignCollectionContents(entry.Value) {
+				return true
+			}
+		}
+		return false
+	default:
+		return w.dependsOnForeignCollectionContents(literal)
 	}
 }
 
@@ -401,7 +427,7 @@ func (w *collectionLifetimeWalker) visitCall(call *ast.CallExpression) {
 	}
 	if member, ok := call.Callee.(*ast.MemberExpression); ok {
 		if w.directTarget(member.Object) {
-			if collectionMutationReturnsNestedValue(w.current, member.Property) {
+			if collectionMutationEscapesNestedComponent(w.current, member.Property) {
 				w.lost = true
 				return
 			}
@@ -454,10 +480,10 @@ func isNestedCollection(value Type) bool {
 	return value.Kind() == KindArray || value.Kind() == KindDictionary
 }
 
-func collectionMutationReturnsNestedValue(collection Type, name string) bool {
+func collectionMutationEscapesNestedComponent(collection Type, name string) bool {
 	switch collection.Kind() {
 	case KindArray:
-		if name != "pop_at" && name != "pop_back" && name != "pop_front" {
+		if name != "pop_at" && name != "pop_back" && name != "pop_front" && name != "sort_custom" {
 			return false
 		}
 		element, typed := collection.Element()
