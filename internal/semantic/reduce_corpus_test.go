@@ -53,11 +53,12 @@ func TestCorpusReducer(t *testing.T) {
 }
 
 type reducerCorpusReceipt struct {
-	Total    int                   `json:"total"`
-	Resolved int                   `json:"resolved"`
-	Variant  int                   `json:"variant"`
-	Unknown  int                   `json:"unknown"`
-	Reasons  []reducerCorpusReason `json:"top_unknown_reasons"`
+	Total                          int                   `json:"total"`
+	Resolved                       int                   `json:"resolved"`
+	Variant                        int                   `json:"variant"`
+	Unknown                        int                   `json:"unknown"`
+	StringReceiverNotSubscriptable int                   `json:"string_receiver_not_subscriptable"`
+	Reasons                        []reducerCorpusReason `json:"top_unknown_reasons"`
 }
 
 type reducerCorpusReason struct {
@@ -92,6 +93,14 @@ func collectReducerCorpusReceipt(analyzer *semantic.Analyzer, source semantic.So
 			return true
 		})
 	}
+	finalizeReducerCorpusReceipt(&receipt, reasons)
+	return receipt
+}
+
+const stringReceiverNotSubscriptableReason = "String receiver is not subscriptable"
+
+func finalizeReducerCorpusReceipt(receipt *reducerCorpusReceipt, reasons map[string]int) {
+	receipt.StringReceiverNotSubscriptable = reasons[stringReceiverNotSubscriptableReason]
 	for reason, count := range reasons {
 		receipt.Reasons = append(receipt.Reasons, reducerCorpusReason{Reason: reason, Count: count})
 	}
@@ -104,12 +113,31 @@ func collectReducerCorpusReceipt(analyzer *semantic.Analyzer, source semantic.So
 	if len(receipt.Reasons) > 10 {
 		receipt.Reasons = receipt.Reasons[:10]
 	}
-	return receipt
+}
+
+func TestReducerCorpusReceiptKeepsStringReasonOutsideTopTen(t *testing.T) {
+	reasons := map[string]int{stringReceiverNotSubscriptableReason: 7}
+	for index := 0; index < 11; index++ {
+		reasons[fmt.Sprintf("larger reason %02d", index)] = 100 - index
+	}
+	receipt := reducerCorpusReceipt{}
+	finalizeReducerCorpusReceipt(&receipt, reasons)
+	if receipt.StringReceiverNotSubscriptable != 7 {
+		t.Fatalf("exact String reason = %d, want 7", receipt.StringReceiverNotSubscriptable)
+	}
+	if len(receipt.Reasons) != 10 {
+		t.Fatalf("presented reasons = %d, want top ten", len(receipt.Reasons))
+	}
+	for _, reason := range receipt.Reasons {
+		if reason.Reason == stringReceiverNotSubscriptableReason {
+			t.Fatal("target reason unexpectedly remained in the deliberately truncating top ten")
+		}
+	}
 }
 
 func (r reducerCorpusReceipt) summary() string {
 	return fmt.Sprintf(
-		"reducer corpus: expressions=%d resolved=%d (%.1f%%) Variant=%d (%.1f%%) Unknown=%d (%.1f%%) top_unknown_reasons=%v",
+		"reducer corpus: expressions=%d resolved=%d (%.1f%%) Variant=%d (%.1f%%) Unknown=%d (%.1f%%) string_receiver_not_subscriptable=%d top_unknown_reasons=%v",
 		r.Total,
 		r.Resolved,
 		reducerCorpusShare(r.Resolved, r.Total),
@@ -117,6 +145,7 @@ func (r reducerCorpusReceipt) summary() string {
 		reducerCorpusShare(r.Variant, r.Total),
 		r.Unknown,
 		reducerCorpusShare(r.Unknown, r.Total),
+		r.StringReceiverNotSubscriptable,
 		r.Reasons,
 	)
 }

@@ -915,6 +915,12 @@ func (a *Analyzer) reduceSubscript(expression *ast.SubscriptExpression, context 
 	switch receiver.typeValue.Kind() {
 	case KindVariant:
 		return knownReduction(Variant())
+	case KindBuiltin:
+		stringType := a.engine.ResolveType("String")
+		if stringType.Kind() == KindBuiltin && stringType.Name() == "String" && stringType.Equal(receiver.typeValue) {
+			return knownReduction(stringType)
+		}
+		return unknownReduction(fmt.Sprintf("%s receiver is not subscriptable", reductionTypeLabel(receiver.typeValue)))
 	case KindArray:
 		if element, typed := receiver.typeValue.Element(); typed {
 			return knownReduction(element)
