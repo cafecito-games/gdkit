@@ -339,6 +339,9 @@ type InterfaceSet struct {
 	engine     *Engine
 	classes    map[string]*ClassInterface
 	classTypes map[string]Type
+	// enumDeclarationOwners is the immutable identity inventory used to reject
+	// a parsed named-enum node retained by zero or multiple declarations.
+	enumDeclarationOwners map[*ast.EnumDeclaration]int
 }
 
 // BuildInterfaces composes a deterministic shallow interface for every class
@@ -346,13 +349,22 @@ type InterfaceSet struct {
 func BuildInterfaces(index *Index, engine *Engine) *InterfaceSet {
 	snapshot := interfaceIndexSnapshot(index)
 	set := &InterfaceSet{
-		index:      snapshot,
-		engine:     engine,
-		classes:    map[string]*ClassInterface{},
-		classTypes: map[string]Type{},
+		index:                 snapshot,
+		engine:                engine,
+		classes:               map[string]*ClassInterface{},
+		classTypes:            map[string]Type{},
+		enumDeclarationOwners: map[*ast.EnumDeclaration]int{},
 	}
 	if snapshot == nil {
 		return set
+	}
+	for _, class := range snapshot.Classes {
+		for _, declaration := range class.Declarations {
+			node, ok := declaration.Node.(*ast.EnumDeclaration)
+			if declaration.Kind == DeclarationEnum && ok && node != nil {
+				set.enumDeclarationOwners[node]++
+			}
+		}
 	}
 
 	states := map[string]interfaceVisit{}
@@ -690,16 +702,10 @@ func (s *InterfaceSet) lookupNamedEnumMember(provenance *namedEnumObjectProvenan
 		return unknown(fmt.Sprintf("named enum declaration %q has inconsistent parsed identity", provenance.enumName))
 	}
 
-	shared := 0
-	for _, classID := range s.index.ClassIDs() {
-		class := s.index.Classes[classID]
-		for _, declaration := range class.Declarations {
-			candidate, ok := declaration.Node.(*ast.EnumDeclaration)
-			if declaration.Kind == DeclarationEnum && ok && candidate == provenance.declaration {
-				shared++
-			}
-		}
+	if s.enumDeclarationOwners == nil {
+		return unknown("named enum declaration ownership inventory is unavailable")
 	}
+	shared := s.enumDeclarationOwners[provenance.declaration]
 	if shared != 1 {
 		return unknown(fmt.Sprintf("named enum declaration %q is retained by %d declarations", provenance.enumName, shared))
 	}

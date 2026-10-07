@@ -1074,14 +1074,33 @@ func TestInterfacesLookupNamedEnumMembersRequiresExactProvenance(t *testing.T) {
 		assertUnknown(t, multiple.lookupNamedEnumMember(multipleProvenance, "IDLE"))
 	})
 	t.Run("shared retained node", func(t *testing.T) {
-		shared, _, sharedProvenance := build(t, map[string]string{
+		source := sources(t, map[string]string{
 			"base.gd":  "class_name Base\nenum Mode { IDLE }\n",
 			"other.gd": "class_name Other\n",
-		}, Class("base.gd", nil, true), "Mode")
-		shared.index.Classes["other.gd"].Declarations = append(shared.index.Classes["other.gd"].Declarations, Declaration{
-			Name: "OtherMode", Kind: DeclarationEnum, Line: 2, Column: 1, Node: sharedProvenance.declaration,
 		})
+		if failures := source.ParseFailures(); len(failures) != 0 {
+			t.Fatalf("real parser fixture failed: %v", failures)
+		}
+		index := BuildIndex(source)
+		declaration := index.Classes["base.gd"].Declarations[0]
+		index.Classes["other.gd"].Declarations = append(index.Classes["other.gd"].Declarations, Declaration{
+			Name: "OtherMode", Kind: DeclarationEnum, Line: 2, Column: 1, Node: declaration.Node,
+		})
+		shared := BuildInterfaces(index, reducerTestEngine(t))
+		selected := shared.LookupMetaMember(Class("base.gd", nil, true), "Mode")
+		member, ok := selected.Member()
+		if selected.State() != LookupFound || !ok {
+			t.Fatalf("shared-node fixture selection = %s %#v, %t", selected.State(), member, ok)
+		}
+		sharedProvenance := shared.namedEnumObject(Class("base.gd", nil, true), member)
 		assertUnknown(t, shared.lookupNamedEnumMember(sharedProvenance, "IDLE"))
+	})
+	t.Run("unavailable ownership inventory", func(t *testing.T) {
+		copy := *interfaces
+		copy.enumDeclarationOwners = nil
+		copyProvenance := *provenance
+		copyProvenance.set = &copy
+		assertUnknown(t, copy.lookupNamedEnumMember(&copyProvenance, "IDLE"))
 	})
 	t.Run("malformed retained node", func(t *testing.T) {
 		malformed, _, malformedProvenance := build(t, files, receiver, "Mode")
