@@ -359,6 +359,10 @@ func (w *collectionLifetimeWalker) visitExpression(expression ast.Expression) {
 			w.lost = true
 			return
 		}
+		if w.containsTarget(node.Object) {
+			w.lost = true
+			return
+		}
 		w.visitExpression(node.Object)
 	case *ast.SubscriptExpression:
 		w.visitExpression(node.Object)
@@ -372,16 +376,22 @@ func (w *collectionLifetimeWalker) visitCall(call *ast.CallExpression) {
 	if call == nil || w.lost {
 		return
 	}
-	if member, ok := call.Callee.(*ast.MemberExpression); ok && w.directTarget(member.Object) {
-		for _, argument := range call.Arguments {
-			if w.aliasesTarget(argument) {
-				w.lost = true
-				return
+	if member, ok := call.Callee.(*ast.MemberExpression); ok {
+		if w.directTarget(member.Object) {
+			for _, argument := range call.Arguments {
+				if w.aliasesTarget(argument) {
+					w.lost = true
+					return
+				}
+				w.visitExpression(argument)
 			}
-			w.visitExpression(argument)
+			w.applyMutation(member.Property, call.Arguments)
+			return
 		}
-		w.applyMutation(member.Property, call.Arguments)
-		return
+		if w.containsTarget(member.Object) {
+			w.lost = true
+			return
+		}
 	}
 	for _, argument := range call.Arguments {
 		if w.aliasesTarget(argument) {

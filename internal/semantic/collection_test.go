@@ -126,6 +126,11 @@ func run() -> void:
 	dictionary[stored_as_key] = 1
 	var self_index := [1]
 	self_index[self_index] = 2
+	var ternary_receiver := [1]
+	var other := [2]
+	(ternary_receiver if true else other).append("two")
+	var cast_receiver := [1]
+	(cast_receiver as Array).append("two")
 	var self_passed := [1]
 	self_passed.append(self_passed)
 	var optional := {"one": 1}
@@ -149,7 +154,7 @@ func run() -> void:
 	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "shadowed")); !got.Equal(Array(&intType)) {
 		t.Fatalf("same-spelled lambda shadow changed outer result to %s (%q)", got, got.Reason())
 	}
-	for _, name := range []string{"passed", "captured", "aliased", "returned", "rebound", "compound", "dynamic", "unknown_write", "unknown_source", "stored", "stored_as_key", "self_index", "self_passed", "wrong_arity"} {
+	for _, name := range []string{"passed", "captured", "aliased", "returned", "rebound", "compound", "dynamic", "unknown_write", "unknown_source", "stored", "stored_as_key", "self_index", "ternary_receiver", "cast_receiver", "self_passed", "wrong_arity"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.CollectionLifetime(collectionDeclaration(t, file, name))
 			if !got.Equal(Array(nil)) {
