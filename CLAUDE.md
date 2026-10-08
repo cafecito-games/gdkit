@@ -149,6 +149,37 @@ the default branch.
   `TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks` pins the equality lint
   depends on: `Selected` under a `Selection` equals `Paths` under the same three
   filters applied to discovery.
+  `Config.FollowDirectorySymlinks` is the fifth option, and only a semantic
+  `lint` run sets it. It replaces `filepath.WalkDir` with `symlinkWalk`, which
+  exists because `WalkDir` reports a directory symlink below the walked root as
+  a non-regular, non-directory entry and skips it — and also Lstats the walked
+  root, so a source root that is *itself* a link silently discovers nothing
+  even though `Load`'s `os.Stat` check passed. That second gap is why
+  `walkRoot` resolves the root. The capability is what closes the asymmetry
+  the semantic load created: a filtered walk resolves an intermediate mount
+  through its own root path, while a universe walk from the project root meets
+  the same mount as an ordinary entry below it.
+  Three invariants hold the walk together. The logical path is threaded
+  alongside the path being opened and is the only identity published or named
+  in an error, so no resolved host path can reach a snapshot. Physical
+  evidence — the resolved target, the stat proving it a directory, the handle
+  its entries are read through — is validation that is discarded, and
+  `readDirectory` compares the opened handle against that stat with
+  `os.SameFile` so a target retargeted after acceptance fails rather than
+  substituting its contents. And cycles terminate on the canonical directories
+  of the *current recursion ancestry*, pushed before descending and popped on
+  return: a global visited set is forbidden because it would collapse one
+  target intentionally mounted at two logical paths into one logical source,
+  and both claimants have to stay visible to the existing duplicate handling.
+  `prunesDirectory` is shared by the callback and the walk so a link the walk
+  would never have entered is never resolved, and a broken link under an
+  excluded or ignored directory cannot fail a load that used to pass.
+  Everything else fails closed: an unresolvable or unstattable link is an error
+  naming its logical path and is never guessed to have been one of the file
+  symlinks the capability leaves alone. `loaderHooks` is the unexported,
+  instance-scoped seam `load` takes and `Load` always passes empty; it fires
+  after a target is accepted as a directory and before a discovered file is
+  opened, which is how the race tests substitute an object with no sleep.
   `Snapshot.Autoloads` holds the manifest's `[autoload]` table, because Godot
   resolves an autoload identifier as a project global while analysing a base
   class, so `extends SomeAutoload` is a real inheritance edge. `Snapshot.UIDs` resolves an identifier to one path and covers every

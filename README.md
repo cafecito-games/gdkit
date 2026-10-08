@@ -375,9 +375,31 @@ gdkit honors neither Godot's `.gdignore` nor a nested `project.godot`, so a
 duplicate checkout of the project under the root — a worktree, a backup copy —
 declares every `class_name` twice, which keeps those names ambiguous and makes
 the rule go quiet rather than guess. Keep such copies outside the project root.
+
+A semantic run also follows a **directory symlink** found under a source root
+and indexes what it names under the link's own project path, which is what lets
+a project mount a shared addon the way Godot loads it:
+
+```text
+addons/worldmap_runtime -> ../../common/godot-addons/worldmap_runtime
+```
+
+The mounted scripts enter the universe as `addons/worldmap_runtime/...`, which
+is the only path they are ever reported or resolved by; the directory they
+physically live in never appears. Following is read-only and limited to the
+semantic universe: `gdkit format`, `gdkit gen`, and `gdkit uid` do not enter a
+mount, so no gdkit write can reach a checkout outside the project. A link the
+run cannot resolve or cannot prove to name a directory fails the run with exit
+`2` and a `project.load` failure naming the link's project path — a mount Godot
+would load but gdkit cannot read is not one it may guess about — and so does a
+link that closes a directory cycle. A link proven to name a regular file is
+left alone and unread. One directory mounted at two project paths stays two
+sources, so whatever it declares is declared twice and stays ambiguous, exactly
+as a duplicate checkout does.
+
 With every semantic rule disabled
-or still inert, nothing changes: the filters stay on discovery and an excluded
-file is neither read nor parsed.
+or still inert, nothing changes: the filters stay on discovery, an excluded
+file is neither read nor parsed, and a directory symlink is skipped.
 
 `enable` and `enable_new_rules` turn on rules that ship inert; see
 [Rules that ship inert](#rules-that-ship-inert).

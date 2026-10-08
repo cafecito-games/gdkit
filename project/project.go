@@ -354,6 +354,13 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 		// identity, and the walk has to reach it to record the claim.
 		return !config.Identities && !ignored.HasNegation() && ignored.Ignored(relative, true)
 	}
+	// One walk across every source root, so the mount evidence it must
+	// re-verify before publication covers the whole load. Its cycle ancestry
+	// is empty between roots, because every frame pops on return.
+	var walk *symlinkWalk
+	if config.FollowDirectorySymlinks {
+		walk = &symlinkWalk{root: root, prunes: prunesDirectory, hooks: hooks}
+	}
 	for _, sourceRoot := range sourceRoots {
 		absolute := filepath.Join(root, filepath.FromSlash(sourceRoot))
 		relativeRoot, relErr := filepath.Rel(root, absolute)
@@ -515,8 +522,10 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 		// off its behavior is exactly what is wanted, so it stays the walk
 		// every caller but a semantic lint run uses.
 		var walkErr error
-		if config.FollowDirectorySymlinks {
-			walk := symlinkWalk{root: root, visit: visit, prunes: prunesDirectory, hooks: hooks}
+		if walk != nil {
+			// visit closes over this source root's loop state, so it is bound
+			// per root rather than when the walk was built.
+			walk.visit = visit
 			walkErr = walk.walkRoot(absolute, filepath.ToSlash(relativeRoot))
 		} else {
 			walkErr = filepath.WalkDir(absolute, visit)
@@ -566,6 +575,11 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 			table.references = append(table.references, scriptReferences(scripts[name])...)
 		}
 		table.sort()
+	}
+	if walk != nil {
+		if err := walk.verifyMounts(root); err != nil {
+			return nil, err
+		}
 	}
 	selected, err := selectPaths(root, config.Selection, paths)
 	if err != nil {
@@ -940,6 +954,9 @@ type symlinkWalk struct {
 	// that would otherwise have succeeded.
 	prunes func(logicalPath string) bool
 	hooks  loaderHooks
+	// mounts is every followed link, kept until the load has finished reading
+	// through all of them. See verifyMounts.
+	mounts []mountEvidence
 	// ancestry holds one canonical directory per frame on the stack below.
 	// Pushed before descending and popped on return, so it is per-load state
 	// held in a value the caller owns and two concurrent loads share nothing.
@@ -1082,7 +1099,42 @@ func (w *symlinkWalk) walkEntry(absolute, logical, parentCanonical string, entry
 	// only because the capability is on and the link was reached during the
 	// authorized walk; the external location is not another res:// root, and
 	// the same validation and cycle policy applies below it.
+	w.mounts = append(w.mounts, mountEvidence{logical: logical, target: target})
 	return w.walkDirectory(absolute, logical, canonical, mountedDirEntry{name: entry.Name(), info: target}, target)
+}
+
+// mountEvidence is one followed directory symlink and the object its contents
+// were attributed to. It is validation evidence, discarded before publication.
+type mountEvidence struct {
+	logical string
+	target  fs.FileInfo
+}
+
+// verifyMounts re-checks every followed mount after the load has finished
+// reading through it.
+//
+// Every file is read by its logical path, which is what keeps the logical
+// identity primary and is how the loader has always read a file. But it also
+// means the kernel resolves the link again at read time, so a mount retargeted
+// mid-load could substitute content under a logical path the walk had
+// validated against a different object. Target validation and the reads it
+// authorizes are tied together here instead: no snapshot is published unless
+// every mount is still the object its contents were attributed to, and a
+// mismatch is an error rather than a retry against the new target.
+func (w *symlinkWalk) verifyMounts(root string) error {
+	for _, mount := range w.mounts {
+		current, err := os.Stat(filepath.Join(root, filepath.FromSlash(mount.logical)))
+		if err != nil {
+			return fmt.Errorf("verify mount %s: %w", mount.logical, err)
+		}
+		if !current.IsDir() {
+			return fmt.Errorf("verify mount %s: no longer a directory", mount.logical)
+		}
+		if !os.SameFile(mount.target, current) {
+			return fmt.Errorf("verify mount %s: target changed during the load", mount.logical)
+		}
+	}
+	return nil
 }
 
 // mountedDirEntry presents a followed directory symlink to the walk callback as

@@ -1605,6 +1605,46 @@ func TestLoadFailsClosedWhenAnAcceptedObjectChangesUnderTheWalk(t *testing.T) {
 			want: "read directory addons/mount: target changed during the load",
 		},
 		{
+			// Every file is read by its logical path, so the kernel resolves
+			// the mount again at read time. A retarget after the mounted file
+			// was read would otherwise leave a snapshot whose paths were
+			// attributed to one object and whose bytes came from another.
+			name: "the link is retargeted after the load read through it",
+			hooks: func(root, external string) loaderHooks {
+				return loaderHooks{beforeFileRead: func(logical string) {
+					if logical != "own.gd" {
+						return
+					}
+					other, err := os.MkdirTemp("", "retarget")
+					if err != nil {
+						panic(err)
+					}
+					mount := filepath.Join(root, "addons", "mount")
+					if err := os.Remove(mount); err != nil {
+						panic(err)
+					}
+					if err := os.Symlink(other, mount); err != nil {
+						panic(err)
+					}
+				}}
+			},
+			want: "verify mount addons/mount: target changed during the load",
+		},
+		{
+			name: "the mount disappears after the load read through it",
+			hooks: func(root, external string) loaderHooks {
+				return loaderHooks{beforeFileRead: func(logical string) {
+					if logical != "own.gd" {
+						return
+					}
+					if err := os.Remove(filepath.Join(root, "addons", "mount")); err != nil {
+						panic(err)
+					}
+				}}
+			},
+			want: "verify mount addons/mount",
+		},
+		{
 			name: "a discovered script is removed before it is read",
 			hooks: func(root, external string) loaderHooks {
 				return loaderHooks{beforeFileRead: func(logical string) {
