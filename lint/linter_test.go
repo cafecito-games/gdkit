@@ -2,8 +2,11 @@ package lint
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -92,11 +95,11 @@ func lintWithRules(t *testing.T, config Config, rules ...Rule) Report {
 	if err := os.WriteFile(filepath.Join(root, "a.gd"), []byte("var a := 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude})
+	linter, err := newLinter(config, rules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	linter, err := newLinter(config, rules)
+	snapshot, err := project.Load(lintLoadConfig(root, config, linter))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,5 +429,197 @@ func TestSourceParseReportsThePositionOfTheFailure(t *testing.T) {
 				t.Fatalf("got %d:%d %q, want %d:%d %q", got[0].Line, got[0].Column, got[0].Message, testCase.line, testCase.column, testCase.message)
 			}
 		})
+	}
+}
+
+func TestNeedsSemanticAnalysisFollowsTheResolvedEnabledRules(t *testing.T) {
+	collection := []Rule{typingRule{rule: ruleRequireTypedCollection}}
+	tests := []struct {
+		name   string
+		config Config
+		rules  []Rule
+		want   bool
+	}{
+		{name: "default config", config: DefaultConfig(), rules: collection},
+		{
+			name: "disable wins over enable",
+			config: func() Config {
+				config := DefaultConfig()
+				config.Enable = []string{ruleRequireTypedCollection}
+				config.Disable = []string{ruleRequireTypedCollection}
+				return config
+			}(),
+			rules: collection,
+		},
+		{
+			name: "another typing rule only",
+			config: func() Config {
+				config := DefaultConfig()
+				config.Enable = []string{ruleRequireReturnType}
+				return config
+			}(),
+			rules: []Rule{typingRule{rule: ruleRequireReturnType}},
+		},
+		{
+			name: "enabled collection rule",
+			config: func() Config {
+				config := DefaultConfig()
+				config.Enable = []string{ruleRequireTypedCollection}
+				return config
+			}(),
+			rules: collection,
+			want:  true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			linter, err := newLinter(test.config, test.rules)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := linter.NeedsSemanticAnalysis(); got != test.want {
+				t.Fatalf("NeedsSemanticAnalysis() = %t, want %t", got, test.want)
+			}
+			// The capability the load boundary reads and the one Lint acts on
+			// must be the same decision, not two caches that can drift.
+			original := linter.newSemanticAnalyzer
+			constructed := 0
+			linter.newSemanticAnalyzer = func(snapshot *project.Snapshot, engine *semantic.Engine) *semantic.Analyzer {
+				constructed++
+				return original(snapshot, engine)
+			}
+			linter.Lint(semanticSnapshot(t, "var values := [1]\n"))
+			want := 0
+			if test.want {
+				want = 1
+			}
+			if constructed != want {
+				t.Fatalf("analyzer constructions = %d, want %d for capability %t", constructed, want, test.want)
+			}
+		})
+	}
+}
+
+func TestLintReportsOnlyOnSelectedScripts(t *testing.T) {
+	snapshot, report := lintTree(t, collectionConfig(),
+		[]Rule{typingRule{rule: ruleRequireTypedCollection}},
+		map[string]string{
+			"a.gd":                "var items := [1]\n# gdkit:ignore = not-a-rule\n",
+			"generated/gen.gd":    "var items := [1]\n# gdkit:ignore = not-a-rule\n",
+			"generated/broken.gd": "func (((\n",
+		})
+
+	// The excluded scripts are dependencies: walked, parsed, and indexed.
+	for _, path := range []string{"generated/gen.gd", "generated/broken.gd"} {
+		if snapshot.Scripts[path] == nil {
+			t.Fatalf("Paths = %v, want excluded dependency %s", snapshot.Paths, path)
+		}
+	}
+	if !slices.Equal(snapshot.Selected, []string{"a.gd"}) {
+		t.Fatalf("Selected = %v, want [a.gd]", snapshot.Selected)
+	}
+	for _, diagnostic := range report.Diagnostics {
+		if diagnostic.Path != "a.gd" {
+			t.Errorf("diagnostic for unselected path: %+v", diagnostic)
+		}
+	}
+	// Only the selected file's own rule finding and unknown-ignore survive,
+	// which pins that the loop narrowed without going silent.
+	var rules []string
+	for _, diagnostic := range report.Diagnostics {
+		rules = append(rules, diagnostic.Rule)
+	}
+	sort.Strings(rules)
+	if !slices.Equal(rules, []string{ruleRequireTypedCollection, "unknown-ignore"}) {
+		t.Fatalf("rules = %v, want the selected file's collection and unknown-ignore findings", rules)
+	}
+}
+
+// protoDependency declares the class, named enum, method signature, and return
+// type a selected consumer resolves through the complete project universe.
+const protoDependency = "class_name Proto\n" +
+	"enum Kind { ONE }\n" +
+	"static func make() -> Proto:\n\treturn null\n" +
+	"func label(value: int) -> String:\n\treturn \"x\"\n"
+
+// protoConsumer is selected and resolves every one of those facts. Each local
+// is reported only when the declaration is visible: Array[String] needs
+// label's signature and return type, and the three Array[T] forms need the
+// class and the named enum to resolve to a known-but-unwritable type. A fact
+// the analyzer cannot reach is a reasoned Unknown, which this rule keeps
+// silent, so an unreachable dependency reports nothing at all.
+const protoConsumer = "func run() -> void:\n" +
+	"\tvar classes := [Proto.new()]\n" +
+	"\tvar enums := [Proto.Kind.ONE]\n" +
+	"\tvar returns := [Proto.make()]\n" +
+	"\tvar calls := [Proto.new().label(1)]\n"
+
+func TestSelectedScriptResolvesDeclarationsOnlyInAnExcludedDependency(t *testing.T) {
+	_, report := lintTree(t, collectionConfig(),
+		[]Rule{typingRule{rule: ruleRequireTypedCollection}},
+		map[string]string{"generated/proto.gd": protoDependency, "a.gd": protoConsumer})
+	var got []string
+	for _, diagnostic := range report.Diagnostics {
+		if diagnostic.Path != "a.gd" {
+			t.Fatalf("diagnostic outside the selected file: %+v", diagnostic)
+		}
+		got = append(got, fmt.Sprintf("%d: %s", diagnostic.Line, diagnostic.Message))
+	}
+	want := []string{
+		"2: Array has no element type; write Array[T]",
+		"3: Array has no element type; write Array[T]",
+		"4: Array has no element type; write Array[T]",
+		"5: Array has no element type; write Array[String]",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("diagnostics = %v, want %v", got, want)
+	}
+}
+
+// TestUnreachableDependencyLeavesTheConsumerSilent is the control for the test
+// above: the same consumer reports nothing when the declaration is not in the
+// universe, so those four findings are evidence of resolution rather than of
+// the rule firing anyway.
+func TestUnreachableDependencyLeavesTheConsumerSilent(t *testing.T) {
+	_, report := lintTree(t, collectionConfig(),
+		[]Rule{typingRule{rule: ruleRequireTypedCollection}},
+		map[string]string{"a.gd": protoConsumer})
+	if len(report.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %+v, want silence when the declaration is absent", report.Diagnostics)
+	}
+}
+
+func TestDuplicateDeclarationAcrossSelectionStaysAmbiguous(t *testing.T) {
+	_, report := lintTree(t, collectionConfig(),
+		[]Rule{typingRule{rule: ruleRequireTypedCollection}},
+		map[string]string{
+			"generated/proto.gd": protoDependency,
+			"other.gd":           "class_name Proto\n",
+			"a.gd":               protoConsumer,
+		})
+	// Both claimants are preserved, so the class stays ambiguous and every
+	// dependent answer is Unknown. Picking by selection or by walk order would
+	// resolve Proto to the generated declaration and report here.
+	if len(report.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %+v, want silence on an ambiguous class", report.Diagnostics)
+	}
+}
+
+func TestParseFailedExcludedDependencyStaysSilentEvidence(t *testing.T) {
+	snapshot, report := lintTree(t, collectionConfig(),
+		[]Rule{typingRule{rule: ruleRequireTypedCollection}},
+		map[string]string{
+			"generated/proto.gd": protoDependency + "func (((\n",
+			"a.gd":               protoConsumer,
+		})
+	script := snapshot.Scripts["generated/proto.gd"]
+	if script == nil || script.ParseError == nil {
+		t.Fatal("the fixture dependency must be in the universe and must fail to parse")
+	}
+	// The failure is retained as evidence, so the consumer's answers are a
+	// reasoned Unknown. Nothing is reported for the unselected path, and
+	// nothing is guessed for the selected one.
+	if len(report.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %+v, want no finding for or from an unparseable dependency", report.Diagnostics)
 	}
 }

@@ -875,3 +875,190 @@ func TestLoadWithNoManifestHasNoAutoloads(t *testing.T) {
 		t.Errorf("Autoloads = %v, want empty", snapshot.Autoloads)
 	}
 }
+
+// TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks pins the equality lint
+// depends on when it moves its source_roots, exclude, and .gdkitignore filters
+// from discovery into Selection so the semantic analyzer can see every script:
+// the broad load's Selected must be the filtered load's Paths, and a
+// configuration the filtered load rejects must be rejected identically. A
+// divergence means a tool that indexes more than it acts on would report on a
+// different set of files than the filtered walk admits -- or, worse, report a
+// clean run on a configuration the filtered walk would have failed.
+//
+// The spellings matter. The configuration layers accept a root written "./src"
+// and an exclude pattern that names a directory rather than the files under it,
+// and the walk prunes those while a naive per-file match does not.
+func TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks(t *testing.T) {
+	tests := []struct {
+		name        string
+		sourceRoots []string
+		exclude     []string
+		ignore      string
+		wantPaths   []string
+		wantError   bool
+	}{
+		{
+			name:        "plain source root",
+			sourceRoots: []string{"src"},
+			wantPaths:   []string{"src/generated/gen.gd", "src/hidden.gd", "src/keep.gd", "src/nested/keep.gd"},
+		},
+		{name: "source root written with a leading dot", sourceRoots: []string{"./src"},
+			wantPaths: []string{"src/generated/gen.gd", "src/hidden.gd", "src/keep.gd", "src/nested/keep.gd"}},
+		{name: "source root written with a trailing slash", sourceRoots: []string{"src/"},
+			wantPaths: []string{"src/generated/gen.gd", "src/hidden.gd", "src/keep.gd", "src/nested/keep.gd"}},
+		{name: "source root that does not exist", sourceRoots: []string{"nope"}, wantError: true},
+		{name: "source root that is a file", sourceRoots: []string{"src/keep.gd"}, wantError: true},
+		{
+			name:        "recursive exclude",
+			sourceRoots: []string{"."},
+			exclude:     []string{"**/generated/**", "addons/**"},
+			wantPaths:   []string{"src/hidden.gd", "src/keep.gd", "src/nested/keep.gd", "tools/outside.gd"},
+		},
+		{
+			name:        "exclude naming a directory",
+			sourceRoots: []string{"."},
+			exclude:     []string{"src/generated"},
+			wantPaths: []string{
+				"addons/vendor.gd", "src/hidden.gd", "src/keep.gd",
+				"src/nested/keep.gd", "tools/outside.gd",
+			},
+		},
+		{
+			name:        "exclude naming a directory with a trailing slash",
+			sourceRoots: []string{"."},
+			exclude:     []string{"src/generated/"},
+			wantPaths: []string{
+				"addons/vendor.gd", "src/hidden.gd", "src/keep.gd",
+				"src/nested/keep.gd", "tools/outside.gd",
+			},
+		},
+		{
+			name:        "exclude matching one segment",
+			sourceRoots: []string{"."},
+			exclude:     []string{"src/*"},
+			wantPaths:   []string{"addons/vendor.gd", "tools/outside.gd"},
+		},
+		{
+			name:        "ignore file naming a directory",
+			sourceRoots: []string{"."},
+			ignore:      "src/generated/\n",
+			wantPaths: []string{
+				"addons/vendor.gd", "src/hidden.gd", "src/keep.gd",
+				"src/nested/keep.gd", "tools/outside.gd",
+			},
+		},
+		{
+			// The walk visits the source root itself, so a pattern matching the
+			// root prunes everything under it -- under every root, since each
+			// root's own walk starts by matching it.
+			name:        "exclude matching the source root itself",
+			sourceRoots: []string{"src", "src/nested"},
+			exclude:     []string{"src/nested"},
+			wantPaths:   []string{"src/generated/gen.gd", "src/hidden.gd", "src/keep.gd"},
+		},
+		{
+			name:        "all three filters together",
+			sourceRoots: []string{"src"},
+			exclude:     []string{"**/generated/**"},
+			ignore:      "src/hidden.gd\n",
+			wantPaths:   []string{"src/keep.gd", "src/nested/keep.gd"},
+		},
+	}
+	// Every file outside the selected set is still a dependency the broad load
+	// walks and parses, which is the whole point of moving the filters.
+	universe := []string{
+		"addons/vendor.gd", "src/generated/gen.gd", "src/hidden.gd",
+		"src/keep.gd", "src/nested/keep.gd", "tools/outside.gd",
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFiles(t, root, map[string]string{
+				"src/keep.gd":          "class_name Keep\n",
+				"src/nested/keep.gd":   "class_name NestedKeep\n",
+				"src/generated/gen.gd": "class_name Gen\n",
+				"src/hidden.gd":        "class_name Hidden\n",
+				"tools/outside.gd":     "class_name Outside\n",
+				"addons/vendor.gd":     "class_name Vendor\n",
+			})
+			if test.ignore != "" {
+				writeFiles(t, root, map[string]string{IgnoreFileName: test.ignore})
+			}
+
+			filtered, filteredErr := Load(Config{
+				Root:            root,
+				SourceRoots:     test.sourceRoots,
+				Exclude:         test.exclude,
+				HonorIgnoreFile: true,
+			})
+			broad, broadErr := Load(Config{
+				Root: root,
+				Selection: &Selection{
+					SourceRoots:     test.sourceRoots,
+					Exclude:         test.exclude,
+					HonorIgnoreFile: true,
+				},
+			})
+			if test.wantError {
+				if filteredErr == nil || broadErr == nil {
+					t.Fatalf("filtered err = %v, broad err = %v, want both to fail", filteredErr, broadErr)
+				}
+				if filteredErr.Error() != broadErr.Error() {
+					t.Fatalf("broad err = %q, want the filtered err %q", broadErr, filteredErr)
+				}
+				return
+			}
+			if filteredErr != nil || broadErr != nil {
+				t.Fatalf("filtered err = %v, broad err = %v", filteredErr, broadErr)
+			}
+			if !slices.Equal(filtered.Paths, test.wantPaths) {
+				t.Fatalf("filtered Paths = %v, want %v", filtered.Paths, test.wantPaths)
+			}
+			if !slices.Equal(broad.Selected, filtered.Paths) {
+				t.Fatalf("broad Selected = %v, want filtered Paths %v", broad.Selected, filtered.Paths)
+			}
+			if !slices.Equal(broad.Paths, universe) {
+				t.Fatalf("broad Paths = %v, want the whole universe %v", broad.Paths, universe)
+			}
+		})
+	}
+}
+
+// TestSelectionDoesNotExcludeAboveTheSourceRoot is the other bound on matching
+// an exclude pattern against a path's directories: the walk starts at the
+// source root and never visits anything above it, so a pattern that matches an
+// ancestor of the root must prune nothing. Testing every directory from the
+// project root down would drop the whole tree here.
+func TestSelectionDoesNotExcludeAboveTheSourceRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"addons/mine/src/a.gd": "class_name A\n"})
+	sourceRoots := []string{"addons/mine/src"}
+	exclude := []string{"addons/*"}
+
+	filtered, err := Load(Config{
+		Root:            root,
+		SourceRoots:     sourceRoots,
+		Exclude:         exclude,
+		HonorIgnoreFile: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broad, err := Load(Config{
+		Root: root,
+		Selection: &Selection{
+			SourceRoots:     sourceRoots,
+			Exclude:         exclude,
+			HonorIgnoreFile: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(filtered.Paths, []string{"addons/mine/src/a.gd"}) {
+		t.Fatalf("filtered Paths = %v, want the script under the source root", filtered.Paths)
+	}
+	if !slices.Equal(broad.Selected, filtered.Paths) {
+		t.Fatalf("broad Selected = %v, want filtered Paths %v", broad.Selected, filtered.Paths)
+	}
+}

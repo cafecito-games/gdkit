@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -39,7 +40,18 @@ const (
 	corpusSceneNodeCategory       = "scene-node access (deferred to #53)"
 	corpusUnknownReasonLimit      = 10
 	corpusTimingSamples           = 3
+	// The pinned corpus excludes its one generated protocol declaration from
+	// lint findings while a selected codec constructs that class. It is the
+	// concrete case this universe/selection split exists for.
+	corpusExcludedDependency = "protocol/UzirNetcodeTransportV1EnvelopeJoinWorldRequest.pb.gd"
+	corpusExcludedClassName  = "UzirNetcodeTransportV1EnvelopeJoinWorldRequest"
+	corpusDependencyConsumer = "features/game/net/codec/envelope_codec.gd"
 )
+
+// corpusUnselectedRoots are the dependency roots the pinned corpus excludes
+// from lint actions. No diagnostic may name one, however broadly the universe
+// is walked.
+var corpusUnselectedRoots = []string{"protocol/", "addons/", "scripts/", "tools/", "script_templates/"}
 
 // corpusConfig is the default policy with the tool-managed directories that
 // hold duplicate checkouts of a project excluded, so a corpus rooted at a
@@ -118,7 +130,23 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	enabledConfig := corpusConfigWithEnabledRule(config, ruleRequireTypedCollection)
+	// The enabled collection rule needs semantic analysis, so this mirrors the
+	// CLI's broad load: the whole project is the dependency universe and the
+	// lint filters narrow only Selected. The two mirrors below run no semantic
+	// analysis, so their pinned counts and digest are the observable proof
+	// that Selected reproduces the filtered walk's Paths.
 	snapshot, err := project.Load(project.Config{
+		Root: root,
+		Selection: &project.Selection{
+			SourceRoots:     enabledConfig.SourceRoots,
+			Exclude:         enabledConfig.Exclude,
+			HonorIgnoreFile: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered, err := project.Load(project.Config{
 		Root:            root,
 		SourceRoots:     enabledConfig.SourceRoots,
 		Exclude:         enabledConfig.Exclude,
@@ -126,6 +154,26 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !slices.Equal(snapshot.Selected, filtered.Paths) {
+		t.Fatalf("broad Selected (%d) does not reproduce the filtered walk (%d)",
+			len(snapshot.Selected), len(filtered.Paths))
+	}
+	if len(snapshot.Paths) <= len(snapshot.Selected) {
+		t.Fatalf("broad Paths = %d, want more than Selected = %d", len(snapshot.Paths), len(snapshot.Selected))
+	}
+	if snapshot.Scripts[corpusExcludedDependency] == nil {
+		t.Fatalf("universe is missing the excluded dependency %s", corpusExcludedDependency)
+	}
+	if slices.Contains(snapshot.Selected, corpusExcludedDependency) {
+		t.Fatalf("%s is excluded from lint actions but appears in Selected", corpusExcludedDependency)
+	}
+	if !slices.Contains(snapshot.Selected, corpusDependencyConsumer) {
+		t.Fatalf("Selected is missing the consumer %s", corpusDependencyConsumer)
+	}
+	declared := semantic.BuildIndex(semanticsource.NewSnapshot(snapshot)).ClassByName(corpusExcludedClassName)
+	if declared == nil || declared.Path != corpusExcludedDependency {
+		t.Fatalf("ClassByName(%q) = %+v, want the excluded declaration", corpusExcludedClassName, declared)
 	}
 
 	legacy, err := newLinterForProject(root, enabledConfig, corpusPreChangeRules())
@@ -213,6 +261,16 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 		t.Fatalf("two fresh analyzers produced different receipts:\nfirst=%s\nsecond=%s", firstReceiptJSON, secondReceiptJSON)
 	}
 
+	for name, report := range map[string]Report{"pre-change": before, "issue80 base": baseReport, "enabled": after} {
+		for _, diagnostic := range report.Diagnostics {
+			for _, prefix := range corpusUnselectedRoots {
+				if strings.HasPrefix(diagnostic.Path, prefix) {
+					t.Fatalf("%s mirror reported on unselected dependency: %+v", name, diagnostic)
+				}
+			}
+		}
+	}
+
 	beforeTuples := corpusDiagnosticTuples(beforeCollection)
 	afterTuples := corpusDiagnosticTuples(afterCollection)
 	added, removed, changed := corpusDiagnosticChanges(baseTuples, afterTuples)
@@ -238,6 +296,7 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 		Exclude:                            append([]string(nil), enabledConfig.Exclude...),
 		EngineSchema:                       after.EngineSchema,
 		Files:                              len(snapshot.Paths),
+		SelectedFiles:                      len(snapshot.Selected),
 		Expressions:                        firstReceipt.Expressions,
 		Resolved:                           firstReceipt.Resolved,
 		Variant:                            firstReceipt.Variant,
@@ -948,6 +1007,7 @@ type corpusSemanticReceipt struct {
 	Exclude                            []string                 `json:"exclude"`
 	EngineSchema                       *engineschema.Provenance `json:"engine_schema"`
 	Files                              int                      `json:"files"`
+	SelectedFiles                      int                      `json:"selected_files"`
 	Expressions                        int                      `json:"expressions"`
 	Resolved                           int                      `json:"resolved"`
 	Variant                            int                      `json:"variant"`
@@ -1050,5 +1110,80 @@ func TestCorpusDiagnosticDigestCanonical(t *testing.T) {
 	const wantDigest = "1ff607347b379f868a195bad2a461f62707737fa5e53f931322cd55132a8af65"
 	if got := corpusDiagnosticDigest(tuples); got != wantDigest {
 		t.Fatalf("canonical tuple digest = %s, want %s", got, wantDigest)
+	}
+}
+
+// BenchmarkCorpusSemanticLoadAndLint measures what the universe/selection
+// split costs end to end on the pinned corpus. Each iteration starts from
+// configuration and includes the project load, so the broad walk and parse are
+// inside the measurement rather than amortised across iterations. It is a
+// measurement receipt, not a threshold: a second load or a second analyzer is
+// prevented structurally and by the focused tests, not by a time budget. It
+// publishes no artifact and writes nothing to the corpus.
+func BenchmarkCorpusSemanticLoadAndLint(b *testing.B) {
+	root := os.Getenv("GDKIT_CORPUS")
+	if root == "" {
+		b.Skip("GDKIT_CORPUS is not set")
+	}
+	baseConfig, err := LoadConfig(root, "")
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, bench := range []struct {
+		name   string
+		config Config
+	}{
+		{name: "nonsemantic_filtered", config: corpusConfigWithDisabledRule(baseConfig, ruleRequireTypedCollection)},
+		{name: "semantic_universe_selected", config: corpusConfigWithEnabledRule(baseConfig, ruleRequireTypedCollection)},
+	} {
+		b.Run(bench.name, func(b *testing.B) {
+			// One untimed run states the shape being measured, so a reader of
+			// the receipt knows which universe and action set it describes.
+			linter, err := NewForProject(root, bench.config)
+			if err != nil {
+				b.Fatal(err)
+			}
+			snapshot, err := project.Load(benchmarkLoadConfig(root, bench.config, linter))
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.Logf("%s: semantic=%t paths=%d selected=%d",
+				bench.name, linter.NeedsSemanticAnalysis(), len(snapshot.Paths), len(snapshot.Selected))
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				linter, err := NewForProject(root, bench.config)
+				if err != nil {
+					b.Fatal(err)
+				}
+				snapshot, err := project.Load(benchmarkLoadConfig(root, bench.config, linter))
+				if err != nil {
+					b.Fatal(err)
+				}
+				if report := linter.Lint(snapshot); report.Diagnostics == nil {
+					b.Fatal("lint produced no diagnostic slice")
+				}
+			}
+		})
+	}
+}
+
+// benchmarkLoadConfig is the CLI's load decision, duplicated here rather than
+// reached through a test helper so the benchmark measures exactly the two
+// configurations cmd/gdkit chooses between.
+func benchmarkLoadConfig(root string, config Config, linter *Linter) project.Config {
+	if linter.NeedsSemanticAnalysis() {
+		return project.Config{Root: root, Selection: &project.Selection{
+			SourceRoots:     config.SourceRoots,
+			Exclude:         config.Exclude,
+			HonorIgnoreFile: true,
+		}}
+	}
+	return project.Config{
+		Root:            root,
+		SourceRoots:     config.SourceRoots,
+		Exclude:         config.Exclude,
+		HonorIgnoreFile: true,
 	}
 }

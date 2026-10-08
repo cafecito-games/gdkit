@@ -270,6 +270,41 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// lintProjectLoad is project.Load behind a seam, so a test can pin that lint
+// performs exactly one load and with which configuration.
+var lintProjectLoad = project.Load
+
+// lintProjectConfig chooses how one resolved linter loads the project.
+//
+// A run whose enabled rules need semantic analysis must see every project
+// script, because a selected file's class, enum, signature, or return type can
+// be declared in a file the project excluded from lint findings. Its lint
+// filters therefore move to Selection: the universe is walked and parsed while
+// Snapshot.Selected stays exactly the set lint reports on, which is the set
+// the filtered discovery below would have walked.
+//
+// A run that needs no semantic analysis keeps the filters on discovery, so an
+// excluded file is never read or parsed and nothing pays for a universe no
+// rule consults.
+func lintProjectConfig(root string, config lint.Config, needsSemanticAnalysis bool) project.Config {
+	if needsSemanticAnalysis {
+		return project.Config{
+			Root: root,
+			Selection: &project.Selection{
+				SourceRoots:     config.SourceRoots,
+				Exclude:         config.Exclude,
+				HonorIgnoreFile: true,
+			},
+		}
+	}
+	return project.Config{
+		Root:            root,
+		SourceRoots:     config.SourceRoots,
+		Exclude:         config.Exclude,
+		HonorIgnoreFile: true,
+	}
+}
+
 func runLintCheck(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("lint check", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -325,7 +360,7 @@ func runLintCheck(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return reportFailure(stderr, outputFormat, failure.ConfigInvalid, err)
 	}
-	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude, HonorIgnoreFile: true})
+	snapshot, err := lintProjectLoad(lintProjectConfig(root, config, linter.NeedsSemanticAnalysis()))
 	if err != nil {
 		return reportFailure(stderr, outputFormat, failure.ProjectLoad, err)
 	}
