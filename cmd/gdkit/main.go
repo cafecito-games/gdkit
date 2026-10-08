@@ -290,6 +290,13 @@ func lintProjectConfig(root string, config lint.Config, needsSemanticAnalysis bo
 	if needsSemanticAnalysis {
 		return project.Config{
 			Root: root,
+			// A project can mount a shared addon with a repository-managed
+			// directory symlink, and Godot loads what the mount names. A
+			// semantic run is read-only and needs that dependency in its
+			// universe, so it is the one caller that opts in; every writer
+			// keeps the zero value so no rewrite can reach an external
+			// checkout through a mount.
+			FollowDirectorySymlinks: true,
 			Selection: &project.Selection{
 				SourceRoots:     config.SourceRoots,
 				Exclude:         config.Exclude,
