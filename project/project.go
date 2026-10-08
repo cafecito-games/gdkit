@@ -39,12 +39,19 @@ const maxResourceLine = 64 * 1024
 // Selection narrows which parsed scripts a tool acts on. Scripts outside it
 // are still walked, parsed, and present in the snapshot.
 //
-// It exists for a tool that must index more than it writes. generate resolves
+// It exists for a tool that must index more than it acts on. generate resolves
 // a class's equals against the whole inheritance graph, so a file hidden by
 // .gdkitignore has to keep its class_name and its extends edge in the index
-// even though generate will never rewrite it. Putting those filters on Config
-// instead would drop the file from the snapshot, and absence from the index is
-// indistinguishable from a type generate knows nothing about.
+// even though generate will never rewrite it. lint passes one too when an
+// enabled rule needs whole-project semantic analysis, for the same reason: a
+// selected script's types can be declared in an excluded one. Putting those
+// filters on Config instead would drop the file from the snapshot, and absence
+// from the index is indistinguishable from a type the tool knows nothing about.
+//
+// The filters here mean exactly what the same filters mean on Config, errors
+// included: a root that does not exist fails the load rather than quietly
+// selecting nothing, and an exclude pattern that names a directory excludes
+// what is under it.
 type Selection struct {
 	SourceRoots     []string
 	Exclude         []string
@@ -61,8 +68,9 @@ type Config struct {
 	// negated ignore pattern cannot bring back an excluded path.
 	HonorIgnoreFile bool
 	// Selection, when non-nil, narrows what the caller acts on without
-	// narrowing the universe that is walked and parsed. A nil Selection, which
-	// every tool but generate passes, selects everything discovered.
+	// narrowing the universe that is walked and parsed. generate always passes
+	// one and lint passes one in a semantic run; a nil Selection, which the
+	// other three tools pass, selects everything discovered.
 	Selection *Selection
 	// Identities populates Snapshot.Claims and Snapshot.References: every
 	// declaration of a uid:// identity and every use of one. It reads every
@@ -655,8 +663,8 @@ func loadAutoloads(root string) (map[string]string, error) {
 }
 
 // selectPaths returns the subset of paths that selection admits, sorted. A nil
-// selection admits everything, which is what every tool that does not need to
-// index more than it acts on passes.
+// selection admits everything, which is what a tool that does not need to index
+// more than it acts on passes.
 func selectPaths(root string, selection *Selection, paths []string) ([]string, error) {
 	if selection == nil {
 		return paths, nil
@@ -669,12 +677,21 @@ func selectPaths(root string, selection *Selection, paths []string) ([]string, e
 		}
 		ignored = matcher
 	}
+	// Selection must admit exactly what a filtered walk of the same three
+	// filters would have discovered, because a tool that indexes more than it
+	// acts on reports on the selected set. So the roots are resolved and
+	// checked the way Load checks Config.SourceRoots, and an exclude pattern
+	// prunes a directory here as it does there.
+	roots, err := selectionRoots(root, selection.SourceRoots)
+	if err != nil {
+		return nil, err
+	}
 	selected := make([]string, 0, len(paths))
 	for _, path := range paths {
-		if !underAnyRoot(path, selection.SourceRoots) {
+		if !underAnyRoot(path, roots) {
 			continue
 		}
-		if glob.MatchAny(selection.Exclude, path) {
+		if excluded(selection.Exclude, path) {
 			continue
 		}
 		if ignored.Ignored(path, false) {
@@ -683,6 +700,52 @@ func selectPaths(root string, selection *Selection, paths []string) ([]string, e
 		selected = append(selected, path)
 	}
 	return selected, nil
+}
+
+// selectionRoots resolves each configured root to a project-relative,
+// slash-separated path and applies the same outside-root, existence, and
+// directory checks Load applies while walking. Without the resolution a
+// spelling the configuration accepts, such as "./src", selects nothing; without
+// the checks a root that does not exist selects nothing where the filtered walk
+// would have failed, and a tool would report a clean run on a typo.
+func selectionRoots(root string, sourceRoots []string) ([]string, error) {
+	resolved := make([]string, 0, len(sourceRoots))
+	for _, sourceRoot := range sourceRoots {
+		absolute := filepath.Join(root, filepath.FromSlash(sourceRoot))
+		relative, relErr := filepath.Rel(root, absolute)
+		if relErr != nil || relative == ".." || strings.HasPrefix(filepath.ToSlash(relative), "../") {
+			return nil, fmt.Errorf("source root %q is outside the project root", sourceRoot)
+		}
+		info, statErr := os.Stat(absolute)
+		if statErr != nil {
+			return nil, fmt.Errorf("source root %q: %w", sourceRoot, statErr)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("source root %q: not a directory", sourceRoot)
+		}
+		resolved = append(resolved, filepath.ToSlash(relative))
+	}
+	return resolved, nil
+}
+
+// excluded reports whether patterns cover path or any directory above it. The
+// walk prunes a directory that matches either as "dir" or as "dir/", so a
+// pattern naming a directory rather than the files beneath it, such as
+// "generated" or "addons/*", has to exclude its contents here as well.
+func excluded(patterns []string, path string) bool {
+	if glob.MatchAny(patterns, path) {
+		return true
+	}
+	for index, character := range path {
+		if character != '/' {
+			continue
+		}
+		directory := path[:index]
+		if glob.MatchAny(patterns, directory) || glob.MatchAny(patterns, directory+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // underAnyRoot reports whether path sits under one of roots. No roots, or a

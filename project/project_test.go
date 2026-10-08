@@ -879,60 +879,138 @@ func TestLoadWithNoManifestHasNoAutoloads(t *testing.T) {
 // TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks pins the equality lint
 // depends on when it moves its source_roots, exclude, and .gdkitignore filters
 // from discovery into Selection so the semantic analyzer can see every script:
-// the broad load's Selected must be the filtered load's Paths. A divergence
-// means the move dropped or widened one of the three filters, and the broad
-// run would then report on a different set of files than lint reports on today.
+// the broad load's Selected must be the filtered load's Paths, and a
+// configuration the filtered load rejects must be rejected identically. A
+// divergence means a tool that indexes more than it acts on would report on a
+// different set of files than the filtered walk admits -- or, worse, report a
+// clean run on a configuration the filtered walk would have failed.
+//
+// The spellings matter. The configuration layers accept a root written "./src"
+// and an exclude pattern that names a directory rather than the files under it,
+// and the walk prunes those while a naive per-file match does not.
 func TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks(t *testing.T) {
-	root := t.TempDir()
-	writeFiles(t, root, map[string]string{
-		"src/keep.gd":          "class_name Keep\n",
-		"src/nested/keep.gd":   "class_name NestedKeep\n",
-		"src/generated/gen.gd": "class_name Gen\n",
-		"src/hidden.gd":        "class_name Hidden\n",
-		"tools/outside.gd":     "class_name Outside\n",
-		"addons/vendor.gd":     "class_name Vendor\n",
-		IgnoreFileName:         "src/hidden.gd\n",
-	})
-	sourceRoots := []string{"src"}
-	exclude := []string{"**/generated/**", "addons/**"}
-
-	filtered, err := Load(Config{
-		Root:            root,
-		SourceRoots:     sourceRoots,
-		Exclude:         exclude,
-		HonorIgnoreFile: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	broad, err := Load(Config{
-		Root: root,
-		Selection: &Selection{
-			SourceRoots:     sourceRoots,
-			Exclude:         exclude,
-			HonorIgnoreFile: true,
+	tests := []struct {
+		name        string
+		sourceRoots []string
+		exclude     []string
+		ignore      string
+		wantPaths   []string
+		wantError   bool
+	}{
+		{
+			name:        "plain source root",
+			sourceRoots: []string{"src"},
+			wantPaths:   []string{"src/generated/gen.gd", "src/hidden.gd", "src/keep.gd", "src/nested/keep.gd"},
 		},
-	})
-	if err != nil {
-		t.Fatal(err)
+		{name: "source root written with a leading dot", sourceRoots: []string{"./src"},
+			wantPaths: []string{"src/generated/gen.gd", "src/hidden.gd", "src/keep.gd", "src/nested/keep.gd"}},
+		{name: "source root written with a trailing slash", sourceRoots: []string{"src/"},
+			wantPaths: []string{"src/generated/gen.gd", "src/hidden.gd", "src/keep.gd", "src/nested/keep.gd"}},
+		{name: "source root that does not exist", sourceRoots: []string{"nope"}, wantError: true},
+		{name: "source root that is a file", sourceRoots: []string{"src/keep.gd"}, wantError: true},
+		{
+			name:        "recursive exclude",
+			sourceRoots: []string{"."},
+			exclude:     []string{"**/generated/**", "addons/**"},
+			wantPaths:   []string{"src/hidden.gd", "src/keep.gd", "src/nested/keep.gd", "tools/outside.gd"},
+		},
+		{
+			name:        "exclude naming a directory",
+			sourceRoots: []string{"."},
+			exclude:     []string{"src/generated"},
+			wantPaths: []string{
+				"addons/vendor.gd", "src/hidden.gd", "src/keep.gd",
+				"src/nested/keep.gd", "tools/outside.gd",
+			},
+		},
+		{
+			name:        "exclude naming a directory with a trailing slash",
+			sourceRoots: []string{"."},
+			exclude:     []string{"src/generated/"},
+			wantPaths: []string{
+				"addons/vendor.gd", "src/hidden.gd", "src/keep.gd",
+				"src/nested/keep.gd", "tools/outside.gd",
+			},
+		},
+		{
+			name:        "exclude matching one segment",
+			sourceRoots: []string{"."},
+			exclude:     []string{"src/*"},
+			wantPaths:   []string{"addons/vendor.gd", "tools/outside.gd"},
+		},
+		{
+			name:        "ignore file naming a directory",
+			sourceRoots: []string{"."},
+			ignore:      "src/generated/\n",
+			wantPaths: []string{
+				"addons/vendor.gd", "src/hidden.gd", "src/keep.gd",
+				"src/nested/keep.gd", "tools/outside.gd",
+			},
+		},
+		{
+			name:        "all three filters together",
+			sourceRoots: []string{"src"},
+			exclude:     []string{"**/generated/**"},
+			ignore:      "src/hidden.gd\n",
+			wantPaths:   []string{"src/keep.gd", "src/nested/keep.gd"},
+		},
 	}
+	// Every file outside the selected set is still a dependency the broad load
+	// walks and parses, which is the whole point of moving the filters.
+	universe := []string{
+		"addons/vendor.gd", "src/generated/gen.gd", "src/hidden.gd",
+		"src/keep.gd", "src/nested/keep.gd", "tools/outside.gd",
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFiles(t, root, map[string]string{
+				"src/keep.gd":          "class_name Keep\n",
+				"src/nested/keep.gd":   "class_name NestedKeep\n",
+				"src/generated/gen.gd": "class_name Gen\n",
+				"src/hidden.gd":        "class_name Hidden\n",
+				"tools/outside.gd":     "class_name Outside\n",
+				"addons/vendor.gd":     "class_name Vendor\n",
+			})
+			if test.ignore != "" {
+				writeFiles(t, root, map[string]string{IgnoreFileName: test.ignore})
+			}
 
-	if !slices.Equal(broad.Selected, filtered.Paths) {
-		t.Fatalf("broad Selected = %v, want filtered Paths %v", broad.Selected, filtered.Paths)
-	}
-	if len(filtered.Paths) == 0 {
-		t.Fatal("the fixture must admit at least one script, or the equality is vacuous")
-	}
-	// The whole point of the move: the universe is strictly larger, and every
-	// excluded, ignored, and out-of-root script is still parsed and indexed.
-	for _, path := range []string{
-		"src/generated/gen.gd", "src/hidden.gd", "tools/outside.gd", "addons/vendor.gd",
-	} {
-		if broad.Scripts[path] == nil {
-			t.Errorf("broad Paths is missing dependency %s", path)
-		}
-		if filtered.Scripts[path] != nil {
-			t.Errorf("filtered discovery unexpectedly walked %s", path)
-		}
+			filtered, filteredErr := Load(Config{
+				Root:            root,
+				SourceRoots:     test.sourceRoots,
+				Exclude:         test.exclude,
+				HonorIgnoreFile: true,
+			})
+			broad, broadErr := Load(Config{
+				Root: root,
+				Selection: &Selection{
+					SourceRoots:     test.sourceRoots,
+					Exclude:         test.exclude,
+					HonorIgnoreFile: true,
+				},
+			})
+			if test.wantError {
+				if filteredErr == nil || broadErr == nil {
+					t.Fatalf("filtered err = %v, broad err = %v, want both to fail", filteredErr, broadErr)
+				}
+				if filteredErr.Error() != broadErr.Error() {
+					t.Fatalf("broad err = %q, want the filtered err %q", broadErr, filteredErr)
+				}
+				return
+			}
+			if filteredErr != nil || broadErr != nil {
+				t.Fatalf("filtered err = %v, broad err = %v", filteredErr, broadErr)
+			}
+			if !slices.Equal(filtered.Paths, test.wantPaths) {
+				t.Fatalf("filtered Paths = %v, want %v", filtered.Paths, test.wantPaths)
+			}
+			if !slices.Equal(broad.Selected, filtered.Paths) {
+				t.Fatalf("broad Selected = %v, want filtered Paths %v", broad.Selected, filtered.Paths)
+			}
+			if !slices.Equal(broad.Paths, universe) {
+				t.Fatalf("broad Paths = %v, want the whole universe %v", broad.Paths, universe)
+			}
+		})
 	}
 }

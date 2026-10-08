@@ -360,12 +360,16 @@ filters narrow only the set of files that may produce a diagnostic. A selected
 script can then resolve a `class_name`, an enum member, a method signature, or
 a return type declared in a generated or vendored script the project excluded,
 which is what Godot itself does, while no rule, suppression, `unknown-ignore`,
-or `source-parse` finding is ever emitted for an excluded path. Two consequences
-follow, both deliberate: an excluded script that does not parse makes project
-global resolution incomplete, so dependent answers become a reasoned `Unknown`
-and the rule stays silent rather than guessing; and a `class_name` declared in
-both a selected and an excluded script stays ambiguous, because neither
-selection nor walk order may pick a winner. With every semantic rule disabled
+or `source-parse` finding is ever emitted for an excluded path. Three
+consequences follow, all deliberate: an excluded script that does not parse
+makes project global resolution incomplete, so dependent answers become a
+reasoned `Unknown` and the rule stays silent rather than guessing; a
+`class_name` declared in both a selected and an excluded script stays
+ambiguous, because neither selection nor walk order may pick a winner; and an
+excluded script that cannot be *read* at all fails the run with exit `2` and a
+`project.load` failure, because a dependency gdkit cannot read is not a
+dependency it may guess about. (`.git` and `.godot` are never walked, in either
+mode.) With every semantic rule disabled
 or still inert, nothing changes: the filters stay on discovery and an excluded
 file is neither read nor parsed.
 
