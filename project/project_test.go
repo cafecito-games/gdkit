@@ -1368,11 +1368,19 @@ func TestFollowDirectorySymlinksRespectsPruningBeforeResolution(t *testing.T) {
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{
 		"own.gd":          "var own := 1\n",
-		".gdkitignore":    "hidden/\n",
+		".gdkitignore":    "hidden/\nignored_mount/\n",
 		"hidden/keep.gd":  "var keep := 1\n",
 		"present/here.gd": "var here := 1\n",
 	})
-	for _, mount := range []string{"vendor/broken", ".godot/broken", "hidden/broken"} {
+	// Two shapes have to hold. A link inside a directory the walk prunes is
+	// never reached at all, and a link that is *itself* the pruned path is
+	// reached and must be skipped before it is resolved — that second one is
+	// the only case the walk's own prune gate decides, so without it a broken
+	// link a project already excluded would fail a load that passes today.
+	for _, mount := range []string{
+		"vendor/broken", ".godot/broken", "hidden/broken",
+		"addons/worldmap_runtime", "ignored_mount",
+	} {
 		absolute := filepath.Join(root, filepath.FromSlash(mount))
 		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
 			t.Fatal(err)
@@ -1386,7 +1394,7 @@ func TestFollowDirectorySymlinksRespectsPruningBeforeResolution(t *testing.T) {
 		Root:                    root,
 		FollowDirectorySymlinks: true,
 		HonorIgnoreFile:         true,
-		Exclude:                 []string{"vendor/**"},
+		Exclude:                 []string{"vendor/**", "addons/worldmap_runtime/**"},
 	})
 	if err != nil {
 		t.Fatalf("a pruned broken link must not fail the load: %v", err)
