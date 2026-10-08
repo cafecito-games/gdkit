@@ -149,6 +149,74 @@ the default branch.
   `TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks` pins the equality lint
   depends on: `Selected` under a `Selection` equals `Paths` under the same three
   filters applied to discovery.
+  `Config.FollowDirectorySymlinks` is the fifth option, and only a semantic
+  `lint` run sets it. It replaces `filepath.WalkDir` with `symlinkWalk`, which
+  exists because `WalkDir` reports a directory symlink below the walked root as
+  a non-regular, non-directory entry and skips it — and also Lstats the walked
+  root, so a source root that is *itself* a link silently discovers nothing
+  even though `Load`'s `os.Stat` check passed. That second gap is why
+  `walkRoot` resolves the root. The capability is what closes the asymmetry
+  the semantic load created: a filtered walk resolves an intermediate mount
+  through its own root path, while a universe walk from the project root meets
+  the same mount as an ordinary entry below it.
+  Three invariants hold the walk together. The logical path is threaded
+  alongside the path being opened and is the only identity published or named
+  in an error, so no resolved host path can reach a snapshot. Physical
+  evidence — the resolved target, the stat proving it a directory, the handle
+  its entries are read through — is validation that is discarded, and
+  `readDirectory` compares the opened handle against that stat with
+  `os.SameFile` so a target retargeted after acceptance fails rather than
+  substituting its contents. And cycles terminate on the *current recursion
+  ancestry*, pushed before descending and popped on return: a global visited
+  set is forbidden because it would collapse one target intentionally mounted
+  at two logical paths into one logical source, and both claimants have to stay
+  visible to the existing duplicate handling. Each frame carries the stat of
+  the object `readDirectory` read its entries from, and a back-edge is decided
+  with `os.SameFile` rather than by comparing resolved path text —
+  `filepath.EvalSymlinks` does not fold case, so on a case-insensitive
+  filesystem a differently-cased link to an ancestor would slip past a string
+  check and the walk would re-read the tree until the kernel refused the path.
+  That is the same identity test `readDirectory` and `verifyMounts` use, so all
+  three agree about when two paths are one directory; the frame's other half is
+  a logical path, so a cycle error names the ancestor without naming a host
+  directory.
+  `prunesDirectory` is shared by the callback and the walk so a link the walk
+  would never have entered is never resolved. What it prunes is the caller's
+  `Config` filters, which for a semantic run are empty — that run moves them to
+  `Selection` so an excluded script stays a dependency — so for the one caller
+  that follows mounts it prunes only `.git` and `.godot`. A link anywhere else
+  is resolved, and an unresolvable one fails the load even under a directory
+  lint excludes from findings. That is the contract and not an oversight: the
+  pinned corpus's one mount sits under its own `addons/**` exclusion, so an
+  exclusion that stopped the walk entering a mount would defeat the capability
+  for the project it exists for, and skipping an unresolvable link would be the
+  guess the fail-closed table forbids. Narrowing the universe itself is #90's
+  question, not this one's.
+  Following mounts is also the one thing that can make the universe walk and a
+  filtered walk disagree, so `filteredWalkReaches` resolves the disagreement
+  inside `admitted` rather than letting it reach `Selected`. A mount strictly
+  above a source root is transparent to both walks, because the kernel resolves
+  it when `WalkDir` stats the root it was handed, so what it holds stays
+  selectable — that is the layout the capability had to keep working. A mount
+  at or below a source root is reached only by the universe walk, so what it
+  holds is a dependency and never an action. A source root that is *itself* a
+  link is a mount too, recorded by `walkRoot`: `WalkDir` lstats the root it is
+  handed, so a filtered walk of one discovers nothing, while `Load`'s own
+  `os.Stat` check passes by following it and so notices nothing. The project
+  root can be that mount, which is why `pathWithinDirectory` and
+  `strictlyBelowDirectory` spell `"."` out rather than relying on prefix
+  arithmetic. Without that, enabling one
+  semantic rule would make every *other* rule start reporting findings in an
+  external checkout a run with the rule off never reads, which is precisely
+  what the universe/selection split exists to prevent; `walk.mountPaths` is the
+  only part of the walk's physical evidence that outlives it, and it carries
+  logical paths only.
+  Everything else fails closed: an unresolvable or unstattable link is an error
+  naming its logical path and is never guessed to have been one of the file
+  symlinks the capability leaves alone. `loaderHooks` is the unexported,
+  instance-scoped seam `load` takes and `Load` always passes empty; it fires
+  after a target is accepted as a directory and before a discovered file is
+  opened, which is how the race tests substitute an object with no sleep.
   `Snapshot.Autoloads` holds the manifest's `[autoload]` table, because Godot
   resolves an autoload identifier as a project global while analysing a base
   class, so `extends SomeAutoload` is a real inheritance edge. `Snapshot.UIDs` resolves an identifier to one path and covers every

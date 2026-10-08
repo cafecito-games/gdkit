@@ -86,6 +86,55 @@ type Config struct {
 	// every mode. A reference inside an ignored path is not recorded at all,
 	// because nothing reports or rewrites one.
 	Identities bool
+	// FollowDirectorySymlinks enters a directory symlink found under a source
+	// root and indexes what it names under the link's own project-logical
+	// path. It is read-only discovery and its zero value is the behavior every
+	// tool had before it existed: filepath.WalkDir reports such a link as a
+	// non-regular, non-directory entry and the walk skips it.
+	//
+	// A project can mount a shared addon with a repository-managed directory
+	// link, which is how Uzir shares one Godot addon between two projects:
+	//
+	//	client/addons/worldmap_runtime -> ../../common/godot-addons/worldmap_runtime
+	//
+	// Godot loads res://addons/worldmap_runtime/plugin.cfg and the mounted
+	// scripts declare class names the project's own scripts use, so a semantic
+	// analysis that cannot see them disagrees with the engine: every answer
+	// that depends on the mounted class degrades to a reasoned Unknown.
+	//
+	// Following every symlink unconditionally would not be safe, so this is an
+	// explicit capability and the only authority for it. There is no
+	// environment variable, no global switch, and no suffix heuristic. Only a
+	// read-only caller sets it: a semantic lint run needs the mounted
+	// dependency in its universe, while format, generate, and uid stay on the
+	// zero value so no write can reach an external checkout through a mount.
+	//
+	// It belongs here rather than on Selection because it governs what the
+	// universe walk enters, and Selection narrows actions without narrowing
+	// the universe.
+	//
+	// The walk fails the whole load rather than guessing whenever target
+	// evidence cannot be established: an unresolvable or unstattable link is
+	// an error naming its logical path, never an assumption that it was one of
+	// the file symlinks this capability leaves alone. A link that closes a
+	// directory cycle is the same kind of error. A link proven to name a
+	// regular file or a special node keeps the pre-capability behavior and is
+	// skipped unread.
+	FollowDirectorySymlinks bool
+}
+
+// loaderHooks is the test seam for the two filesystem boundaries at which an
+// accepted fact can stop being true: after a symlink target has been proven a
+// directory but before its entries are read, and after a file has been
+// discovered but before its bytes are opened. A test uses them to remove,
+// retarget, or retype the object at exactly that instant and assert the load
+// fails closed, with no sleep and no dependence on the scheduler.
+//
+// It is unexported and passed by value into one load, not held in a package
+// variable, so two concurrent loads cannot observe each other's seam.
+type loaderHooks struct {
+	afterDirectoryAccepted func(logicalPath string)
+	beforeFileRead         func(logicalPath string)
 }
 
 // Script is one discovered GDScript file.
@@ -248,6 +297,12 @@ type Snapshot struct {
 // A file that fails to parse is still present in the snapshot, carrying its
 // ParseError; only I/O and configuration problems return an error.
 func Load(config Config) (*Snapshot, error) {
+	return load(config, loaderHooks{})
+}
+
+// load is Load with the test seam exposed. Public Load always passes an empty
+// one, so every production load runs the real filesystem operations.
+func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 	root, err := filepath.Abs(config.Root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project root: %w", err)
@@ -274,6 +329,50 @@ func Load(config Config) (*Snapshot, error) {
 	declared := make(map[string]string)
 	var sidecars []Sidecar
 	table := identities{}
+	// prunesDirectory is the one decision about whether the walk enters a
+	// logical directory. The callback below asks it, and so does the
+	// symlink-following walk before it resolves a link: a link the walk would
+	// never have entered must not be able to fail the load by being broken,
+	// and the two must not be able to disagree about which directories those
+	// are.
+	//
+	// What it prunes is the caller's filters, which is not the same as the
+	// caller's lint configuration. A semantic lint run moves its filters to
+	// Selection and leaves Exclude empty and HonorIgnoreFile off, because an
+	// excluded script has to stay a dependency, so for that run this prunes
+	// only .git and .godot. A link anywhere else is resolved and an
+	// unresolvable one fails the load — including a link under a directory
+	// lint excludes from findings. That is deliberate, not an oversight: the
+	// one mount the pinned Uzir corpus declares sits under its own
+	// "addons/**" exclusion, so an exclusion that stopped the walk entering a
+	// mount would defeat the capability for the project it exists for, and one
+	// that skipped an unresolvable link would be the guess this contract
+	// forbids. Narrowing the universe itself is a separate question.
+	prunesDirectory := func(relative string) bool {
+		// Godot's cache and Git's administrative directory do not belong
+		// to the project identity universe. In particular, .godot/imported
+		// contains binary resource cache entries with internal UIDs that must
+		// not make project claimant evidence ambiguous or incomplete.
+		if identityMetadataPath(relative) {
+			return true
+		}
+		if glob.MatchAny(config.Exclude, relative) || glob.MatchAny(config.Exclude, relative+"/") {
+			return true
+		}
+		// A negated pattern can re-include something below an ignored
+		// directory, so the directory is only pruned when there is none.
+		// Apart from generated metadata above, Identities prunes no
+		// ignored directory: a hidden file still owns its uid://
+		// identity, and the walk has to reach it to record the claim.
+		return !config.Identities && !ignored.HasNegation() && ignored.Ignored(relative, true)
+	}
+	// One walk across every source root, so the mount evidence it must
+	// re-verify before publication covers the whole load. Its cycle ancestry
+	// is empty between roots, because every frame pops on return.
+	var walk *symlinkWalk
+	if config.FollowDirectorySymlinks {
+		walk = &symlinkWalk{root: root, prunes: prunesDirectory, hooks: hooks}
+	}
 	for _, sourceRoot := range sourceRoots {
 		absolute := filepath.Join(root, filepath.FromSlash(sourceRoot))
 		relativeRoot, relErr := filepath.Rel(root, absolute)
@@ -287,7 +386,7 @@ func Load(config Config) (*Snapshot, error) {
 		if !info.IsDir() {
 			return nil, fmt.Errorf("source root %q: not a directory", sourceRoot)
 		}
-		walkErr := filepath.WalkDir(absolute, func(name string, entry fs.DirEntry, err error) error {
+		visit := func(name string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
@@ -299,28 +398,13 @@ func Load(config Config) (*Snapshot, error) {
 			if relative == "." {
 				return nil
 			}
-			// Godot's cache and Git's administrative directory do not belong
-			// to the project identity universe. In particular, .godot/imported
-			// contains binary resource cache entries with internal UIDs that must
-			// not make project claimant evidence ambiguous or incomplete.
-			if entry.IsDir() && identityMetadataPath(relative) {
-				return filepath.SkipDir
-			}
-			if glob.MatchAny(config.Exclude, relative) || entry.IsDir() && glob.MatchAny(config.Exclude, relative+"/") {
-				if entry.IsDir() {
+			if entry.IsDir() {
+				if prunesDirectory(relative) {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if entry.IsDir() {
-				// A negated pattern can re-include something below an ignored
-				// directory, so the directory is only pruned when there is none.
-				// Apart from generated metadata above, Identities prunes no
-				// ignored directory: a hidden file still owns its uid://
-				// identity, and the walk has to reach it to record the claim.
-				if !config.Identities && !ignored.HasNegation() && ignored.Ignored(relative, true) {
-					return filepath.SkipDir
-				}
+			if glob.MatchAny(config.Exclude, relative) {
 				return nil
 			}
 			entryType := entry.Type()
@@ -445,7 +529,19 @@ func Load(config Config) (*Snapshot, error) {
 				}
 			}
 			return nil
-		})
+		}
+		// filepath.WalkDir cannot follow a mount, and when the capability is
+		// off its behavior is exactly what is wanted, so it stays the walk
+		// every caller but a semantic lint run uses.
+		var walkErr error
+		if walk != nil {
+			// visit closes over this source root's loop state, so it is bound
+			// per root rather than when the walk was built.
+			walk.visit = visit
+			walkErr = walk.walkRoot(absolute, filepath.ToSlash(relativeRoot))
+		} else {
+			walkErr = filepath.WalkDir(absolute, visit)
+		}
 		if walkErr != nil {
 			return nil, fmt.Errorf("discover GDScript in %q: %w", sourceRoot, walkErr)
 		}
@@ -467,7 +563,13 @@ func Load(config Config) (*Snapshot, error) {
 
 	scripts := make(map[string]*Script, len(paths))
 	for _, name := range paths {
-		source, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+		// The file has been discovered but not yet opened. A test substitutes
+		// it at exactly this instant; the load must fail closed rather than
+		// publish a snapshot built from something else.
+		if hooks.beforeFileRead != nil {
+			hooks.beforeFileRead(name)
+		}
+		source, readErr := readDiscoveredFile(filepath.Join(root, filepath.FromSlash(name)))
 		if readErr != nil {
 			return nil, fmt.Errorf("read %s: %w", name, readErr)
 		}
@@ -486,7 +588,16 @@ func Load(config Config) (*Snapshot, error) {
 		}
 		table.sort()
 	}
-	selected, err := selectPaths(root, config.Selection, paths)
+	if walk != nil {
+		if err := walk.verifyMounts(root); err != nil {
+			return nil, err
+		}
+	}
+	var mounts []string
+	if walk != nil {
+		mounts = walk.mountPaths()
+	}
+	selected, err := selectPaths(root, config.Selection, mounts, paths)
 	if err != nil {
 		return nil, err
 	}
@@ -665,7 +776,7 @@ func loadAutoloads(root string) (map[string]string, error) {
 // selectPaths returns the subset of paths that selection admits, sorted. A nil
 // selection admits everything, which is what a tool that does not need to index
 // more than it acts on passes.
-func selectPaths(root string, selection *Selection, paths []string) ([]string, error) {
+func selectPaths(root string, selection *Selection, mounts []string, paths []string) ([]string, error) {
 	if selection == nil {
 		return paths, nil
 	}
@@ -691,7 +802,7 @@ func selectPaths(root string, selection *Selection, paths []string) ([]string, e
 		if ignored.Ignored(path, false) {
 			continue
 		}
-		if !admitted(selection.Exclude, roots, path) {
+		if !admitted(selection.Exclude, roots, mounts, path) {
 			continue
 		}
 		selected = append(selected, path)
@@ -729,19 +840,90 @@ func selectionRoots(root string, sourceRoots []string) ([]string, error) {
 // excluding it, which is what the walk discovers: each root is walked
 // separately, so a path pruned under one root is still discovered under another
 // that admits it.
-func admitted(patterns []string, roots []string, path string) bool {
+func admitted(patterns []string, roots []string, mounts []string, path string) bool {
 	if len(roots) == 0 {
 		// Load defaults an empty source-root list to the project root.
-		return !excludedUnder(patterns, ".", path)
+		return filteredWalkReaches(mounts, ".", path) && !excludedUnder(patterns, ".", path)
 	}
 	for _, root := range roots {
 		if root == "" || root == "." || path == root || strings.HasPrefix(path, root+"/") {
-			if !excludedUnder(patterns, root, path) {
+			if filteredWalkReaches(mounts, root, path) && !excludedUnder(patterns, root, path) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// filteredWalkReaches reports whether a filtered walk rooted at root would have
+// discovered path, given the directory mounts the universe walk followed to
+// reach it. It answers true for every path when no mount was followed, which is
+// every load but a semantic lint run.
+//
+// Following mounts is the one thing that can make the two walks disagree, and
+// the disagreement has to be resolved here or the selection equality this
+// package promises stops holding. A filtered walk is capability-off, and
+// filepath.WalkDir resolves the symlinks *inside* the path of the root it is
+// handed — the kernel does, when it stats it — while skipping any link it meets
+// below that root. So a mount strictly above a source root is transparent to
+// both walks, and what it holds is selectable: that is the layout of a project
+// whose whole source tree is mounted, and the case this capability had to keep
+// working. A mount at or below a source root is reached only by the universe
+// walk, so what it holds stays a read-only dependency.
+//
+// Without this, enabling one semantic rule would make every *other* rule start
+// reporting on an external checkout that a run with the rule off never reads —
+// a project would see new findings in files it does not own from turning on an
+// unrelated rule, which is exactly what the universe/selection split exists to
+// prevent.
+func filteredWalkReaches(mounts []string, root, path string) bool {
+	for _, mount := range mounts {
+		if !pathWithinDirectory(mount, path) {
+			continue
+		}
+		// A root strictly below the mount is a path whose symlink the kernel
+		// resolves for the filtered walk too. Anything else — including a root
+		// that is itself the mount, which WalkDir lstats and never enters — is
+		// not reachable without this capability.
+		if !strictlyBelowDirectory(mount, root) {
+			return false
+		}
+	}
+	return true
+}
+
+// pathWithinDirectory reports whether path is directory itself or lies inside
+// it, with "." standing for the project root and so containing everything. The
+// project root is a directory the walk can mount, because a source root may be
+// the project root and may itself be a link.
+func pathWithinDirectory(directory, path string) bool {
+	if directory == "." || directory == "" {
+		return true
+	}
+	return path == directory || strings.HasPrefix(path, directory+"/")
+}
+
+// strictlyBelowDirectory reports whether path lies inside directory and is not
+// directory itself. The distinction is the whole rule: a filtered walk handed a
+// root strictly inside a mount has the link resolved for it by the kernel,
+// while one handed the mount itself lstats a symlink and walks nothing.
+func strictlyBelowDirectory(directory, path string) bool {
+	if directory == "." || directory == "" {
+		return path != "." && path != ""
+	}
+	return strings.HasPrefix(path, directory+"/")
+}
+
+// mountPaths returns the logical path of every directory symlink this walk
+// followed, sorted. It is the only part of the walk's physical evidence that
+// outlives it, and it carries no resolved path.
+func (w *symlinkWalk) mountPaths() []string {
+	logical := make([]string, 0, len(w.mounts))
+	for _, mount := range w.mounts {
+		logical = append(logical, mount.logical)
+	}
+	sort.Strings(logical)
+	return logical
 }
 
 // excludedUnder reports whether patterns cover path or any directory between
@@ -821,4 +1003,284 @@ func quotedUID(line string) string {
 		return ""
 	}
 	return rest[:end]
+}
+
+// symlinkWalk is the read-only directory walk Config.FollowDirectorySymlinks
+// selects. filepath.WalkDir cannot do this job: it reports a directory symlink
+// below the walked root as a non-regular, non-directory entry, so an explicitly
+// mounted addon never enters the universe at all. It also Lstats the walked
+// root, so a source root that is itself a link discovers nothing rather than
+// the directory it names.
+//
+// The walk carries three things WalkDir does not.
+//
+// It threads the logical, project-relative path alongside the path it opens,
+// and that logical path is the only identity it hands the callback or names in
+// an error. A mounted script is published as
+// addons/worldmap_runtime/pack_manifest.gd and never as the host directory it
+// happens to live in. The logical path is built by appending entry names, so
+// no resolved path can reach a snapshot or a diagnostic even if a resolution
+// goes wrong.
+//
+// Physical evidence — the resolved target, the stat that proved it a
+// directory, and the handle its entries are read through — is validation only
+// and is discarded here. Nothing downstream performs canonical-target I/O.
+//
+// And the canonical directories on the *current recursion ancestry* are what
+// terminate cycles. A global visited set is deliberately not used: it would
+// collapse one target intentionally mounted at two logical paths into a single
+// logical source, and two logical mounts must stay two logical sources so the
+// existing duplicate-class and duplicate-identity handling can see both
+// claimants.
+type symlinkWalk struct {
+	root  string
+	visit fs.WalkDirFunc
+	// prunes is Load's single decision about entering a logical directory. A
+	// pruned link is left exactly as the capability-off walk leaves it, so
+	// resolving a broken link the project already excluded cannot fail a load
+	// that would otherwise have succeeded.
+	prunes func(logicalPath string) bool
+	hooks  loaderHooks
+	// mounts is every followed link, kept until the load has finished reading
+	// through all of them. See verifyMounts.
+	mounts []mountEvidence
+	// ancestry holds one frame per directory on the stack below.
+	// Pushed before descending and popped on return, so it is per-load state
+	// held in a value the caller owns and two concurrent loads share nothing.
+	ancestry []ancestorFrame
+}
+
+// walkRoot walks one configured source root, which Load has already checked is
+// inside the project and is a directory.
+func (w *symlinkWalk) walkRoot(absolute, logical string) error {
+	if _, err := filepath.EvalSymlinks(absolute); err != nil {
+		return fmt.Errorf("resolve %s: %w", logical, err)
+	}
+	info, err := os.Stat(absolute)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", logical, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s: not a directory", logical)
+	}
+	// A source root that is itself a link is a mount like any other, and has
+	// to be recorded as one. filepath.WalkDir lstats the root it is handed, so
+	// a filtered walk of this root discovers nothing at all; without the
+	// record, selection would not know that and would admit the whole tree.
+	// Load's own os.Stat check passes either way, because it follows the link,
+	// which is why nothing above here notices.
+	if lstat, lstatErr := os.Lstat(absolute); lstatErr == nil && lstat.Mode()&fs.ModeSymlink != 0 {
+		w.mounts = append(w.mounts, mountEvidence{logical: logical, target: info})
+	}
+	// WalkDir reports the walked root to the callback, and an exclude pattern
+	// naming a source root prunes it there, so the root is reported here too.
+	return w.walkDirectory(absolute, logical, fs.FileInfoToDirEntry(info), nil)
+}
+
+// walkDirectory reports one directory to the callback and, unless the callback
+// prunes it, reads and walks its entries. validated is the stat that proved a
+// followed symlink target was a directory, or nil for a directory the walk
+// reached without resolving a link.
+func (w *symlinkWalk) walkDirectory(absolute, logical string, entry fs.DirEntry, validated fs.FileInfo) error {
+	if err := w.visit(absolute, entry, nil); err != nil {
+		if errors.Is(err, filepath.SkipDir) {
+			return nil
+		}
+		return err
+	}
+	// The target has been accepted as a directory but nothing has been read
+	// from it yet. A test substitutes the object at exactly this instant.
+	if w.hooks.afterDirectoryAccepted != nil {
+		w.hooks.afterDirectoryAccepted(logical)
+	}
+	entries, opened, err := w.readDirectory(absolute, logical, validated)
+	if err != nil {
+		return err
+	}
+	// The ancestry frame carries the identity of the object whose entries are
+	// about to be walked, which is the one readDirectory just read from.
+	w.ancestry = append(w.ancestry, ancestorFrame{logical: logical, directory: opened})
+	defer func() { w.ancestry = w.ancestry[:len(w.ancestry)-1] }()
+	for _, child := range entries {
+		childLogical := child.Name()
+		if logical != "." {
+			childLogical = logical + "/" + child.Name()
+		}
+		err := w.walkEntry(filepath.Join(absolute, child.Name()), childLogical, child)
+		if errors.Is(err, filepath.SkipDir) {
+			// WalkDir's contract: SkipDir from a non-directory entry skips the
+			// remaining entries of the containing directory. Load's callback
+			// never returns it for one, but the walk keeps the meaning so the
+			// two walks cannot diverge on it.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readDirectory reads one directory's entries through a handle it stats, so the
+// entries come from the same object the walk accepted. A target that was
+// removed, retargeted, or replaced by a file after acceptance fails the load by
+// its logical path rather than contributing some other directory's contents,
+// and there is no retry against the new target within one load.
+func (w *symlinkWalk) readDirectory(absolute, logical string, validated fs.FileInfo) ([]fs.DirEntry, fs.FileInfo, error) {
+	handle, err := os.Open(absolute)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read directory %s: %w", logical, err)
+	}
+	defer handle.Close()
+	opened, err := handle.Stat()
+	if err != nil {
+		return nil, nil, fmt.Errorf("read directory %s: %w", logical, err)
+	}
+	if !opened.IsDir() {
+		return nil, nil, fmt.Errorf("read directory %s: no longer a directory", logical)
+	}
+	if validated != nil && !os.SameFile(validated, opened) {
+		return nil, nil, fmt.Errorf("read directory %s: target changed during the load", logical)
+	}
+	entries, err := handle.ReadDir(-1)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read directory %s: %w", logical, err)
+	}
+	// ReadDir on a handle returns entries in directory order. Sorting them is
+	// what makes two loads over the same bytes produce identical snapshots.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, opened, nil
+}
+
+// walkEntry walks one directory entry.
+func (w *symlinkWalk) walkEntry(absolute, logical string, entry fs.DirEntry) error {
+	if entry.Type()&fs.ModeSymlink == 0 {
+		if !entry.IsDir() {
+			return w.visit(absolute, entry, nil)
+		}
+		// An ordinary directory is strictly below everything on the ancestry,
+		// so it cannot close a cycle and needs no resolution of its own.
+		return w.walkDirectory(absolute, logical, entry, nil)
+	}
+	if w.prunes(logical) {
+		// The walk would never enter this directory, so whether its target
+		// resolves is not evidence this load needs. Reporting the link as the
+		// capability-off walk would is what keeps the two in agreement,
+		// including about the identity evidence a skipped entry marks.
+		return w.visit(absolute, entry, nil)
+	}
+	// This is where WalkDir gives up. Resolve the link before anything can
+	// treat its type as known: the fail-closed rule is that an unresolvable
+	// link is an error, never a guess that it was one of the file symlinks this
+	// capability leaves alone.
+	if _, err := filepath.EvalSymlinks(absolute); err != nil {
+		return fmt.Errorf("resolve symlink %s: %w", logical, err)
+	}
+	target, err := os.Stat(absolute)
+	if err != nil {
+		return fmt.Errorf("resolve symlink %s: %w", logical, err)
+	}
+	if !target.IsDir() {
+		// Positively established as a regular file or a special node. Those
+		// are out of scope, so the pre-capability behavior for a non-regular
+		// entry is preserved exactly, including the identity evidence it marks
+		// incomplete.
+		return w.visit(absolute, entry, nil)
+	}
+	// Cycles are decided on file identity, not on the text of a resolved path.
+	// filepath.EvalSymlinks does not fold case, so on a case-insensitive
+	// filesystem — the default on macOS, and the norm on Windows — a link to an
+	// ancestor spelled with different case resolves to a string that does not
+	// match it. Comparing strings would let that cycle through and the walk
+	// would re-read the same tree until the kernel refused the path, failing
+	// with a name-too-long error instead of this one. os.SameFile is the same
+	// identity test readDirectory and verifyMounts use, so all three agree
+	// about when two paths are one directory.
+	for _, ancestor := range w.ancestry {
+		if os.SameFile(ancestor.directory, target) {
+			return fmt.Errorf("symlink %s closes a directory cycle back to %s", logical, ancestor.logical)
+		}
+	}
+	// A nested link may resolve outside the project root. That is allowed, and
+	// only because the capability is on and the link was reached during the
+	// authorized walk; the external location is not another res:// root, and
+	// the same validation and cycle policy applies below it.
+	w.mounts = append(w.mounts, mountEvidence{logical: logical, target: target})
+	return w.walkDirectory(absolute, logical, mountedDirEntry{name: entry.Name(), info: target}, target)
+}
+
+// ancestorFrame is one directory on the walk's current recursion stack: the
+// identity of the object its entries were read from, and the logical path to
+// name in a cycle error. Only the logical half can ever be reported.
+type ancestorFrame struct {
+	logical   string
+	directory fs.FileInfo
+}
+
+// mountEvidence is one followed directory symlink and the object its contents
+// were attributed to. It is validation evidence, discarded before publication.
+type mountEvidence struct {
+	logical string
+	target  fs.FileInfo
+}
+
+// verifyMounts re-checks every followed mount after the load has finished
+// reading through it.
+//
+// Every file is read by its logical path, which is what keeps the logical
+// identity primary and is how the loader has always read a file. But it also
+// means the kernel resolves the link again at read time, so a mount retargeted
+// mid-load could substitute content under a logical path the walk had
+// validated against a different object. Target validation and the reads it
+// authorizes are tied together here instead: no snapshot is published unless
+// every mount is still the object its contents were attributed to, and a
+// mismatch is an error rather than a retry against the new target.
+func (w *symlinkWalk) verifyMounts(root string) error {
+	for _, mount := range w.mounts {
+		current, err := os.Stat(filepath.Join(root, filepath.FromSlash(mount.logical)))
+		if err != nil {
+			return fmt.Errorf("verify mount %s: %w", mount.logical, err)
+		}
+		if !current.IsDir() {
+			return fmt.Errorf("verify mount %s: no longer a directory", mount.logical)
+		}
+		if !os.SameFile(mount.target, current) {
+			return fmt.Errorf("verify mount %s: target changed during the load", mount.logical)
+		}
+	}
+	return nil
+}
+
+// mountedDirEntry presents a followed directory symlink to the walk callback as
+// the directory it names, under the link's own name. The callback's exclude,
+// ignore, and metadata rules all ask whether an entry is a directory, and a
+// mount has to answer the way the directory it stands for would.
+type mountedDirEntry struct {
+	name string
+	info fs.FileInfo
+}
+
+func (e mountedDirEntry) Name() string               { return e.name }
+func (e mountedDirEntry) IsDir() bool                { return true }
+func (e mountedDirEntry) Type() fs.FileMode          { return fs.ModeDir }
+func (e mountedDirEntry) Info() (fs.FileInfo, error) { return e.info, nil }
+
+// readDiscoveredFile reads a file the walk discovered, through a handle it
+// stats. A file that was removed, replaced by a directory, or replaced by a
+// special node between discovery and publication fails the load instead of
+// contributing bytes from something that is not a script.
+func readDiscoveredFile(absolute string) ([]byte, error) {
+	handle, err := os.Open(absolute)
+	if err != nil {
+		return nil, err
+	}
+	defer handle.Close()
+	info, err := handle.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("not a regular file")
+	}
+	return io.ReadAll(handle)
 }

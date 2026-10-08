@@ -502,3 +502,85 @@ func TestSnapshotCopiesProviderCollections(t *testing.T) {
 		t.Errorf("UID claim copy = state=%s kind=%s path=%q reason=%q", got.State(), got.Kind(), got.Path(), got.Reason())
 	}
 }
+
+// TestSnapshotExposesAClassMountedThroughADirectorySymlink is the adapter half
+// of the mounted-addon case. project.Load's opt-in capability puts the mounted
+// scripts in Snapshot.Paths under the logical mount path, and the SourceSet
+// exposes them by that path and no other: this package never reparses a file
+// or consults the filesystem, so the logical identity the loader published is
+// the only one semantic analysis can resolve the class through.
+func TestSnapshotExposesAClassMountedThroughADirectorySymlink(t *testing.T) {
+	root := t.TempDir()
+	external := t.TempDir()
+	for name, contents := range map[string]string{
+		"pack_manifest.gd":     "class_name PackManifest\nextends RefCounted\n",
+		"nested/pack_entry.gd": "class_name PackEntry\n",
+	} {
+		absolute := filepath.Join(external, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "pack_view.gd"), []byte("class_name PackView\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "addons"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, "addons", "worldmap_runtime")); err != nil {
+		t.Skipf("symlinks are unavailable in this test environment: %v", err)
+	}
+
+	loaded, err := project.Load(project.Config{
+		Root:                    root,
+		FollowDirectorySymlinks: true,
+		Selection:               &project.Selection{SourceRoots: []string{"."}, Exclude: []string{"addons/**"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := NewSnapshot(loaded)
+	logical := "addons/worldmap_runtime/pack_manifest.gd"
+	paths := source.Paths()
+	if !slices.Contains(paths, logical) || !slices.Contains(paths, "addons/worldmap_runtime/nested/pack_entry.gd") {
+		t.Fatalf("SourceSet paths = %v, want the mount's scripts under their logical paths", paths)
+	}
+	// The mount is excluded from lint actions, so it must be a dependency and
+	// not an action: in the universe, out of Selected.
+	if slices.Contains(loaded.Selected, logical) {
+		t.Errorf("an excluded mounted dependency entered Selected: %v", loaded.Selected)
+	}
+	if source.File(logical) == nil {
+		t.Fatalf("File(%q) = nil", logical)
+	}
+	// This is the acceptance case: semantic analysis resolves the mounted
+	// class, and resolves it to the logical mount path Godot loads it by.
+	index := semantic.BuildIndex(source)
+	declared := index.ClassByName("PackManifest")
+	if declared == nil {
+		t.Fatal("PackManifest did not resolve out of the mounted addon")
+	}
+	if declared.Path != logical {
+		t.Fatalf("PackManifest resolved to %q, want the logical mount path %q", declared.Path, logical)
+	}
+	if nested := index.ClassByName("PackEntry"); nested == nil ||
+		nested.Path != "addons/worldmap_runtime/nested/pack_entry.gd" {
+		t.Fatalf("PackEntry resolved to %+v, want the nested logical path", nested)
+	}
+	// The external host directory is validation evidence the loader discarded.
+	// Nothing the adapter exposes may name it.
+	for _, path := range paths {
+		if strings.Contains(path, external) {
+			t.Fatalf("SourceSet path leaked the canonical host path: %q", path)
+		}
+		if source.File(path) == nil {
+			t.Errorf("File(%q) = nil for a published path", path)
+		}
+	}
+	if source.File(filepath.Join(external, "pack_manifest.gd")) != nil {
+		t.Error("the canonical host path resolved as a SourceSet key")
+	}
+}

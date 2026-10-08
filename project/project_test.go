@@ -1062,3 +1062,948 @@ func TestSelectionDoesNotExcludeAboveTheSourceRoot(t *testing.T) {
 		t.Fatalf("broad Selected = %v, want filtered Paths %v", broad.Selected, filtered.Paths)
 	}
 }
+
+// mountExternal builds the layout Uzir uses to share a Godot addon: a
+// directory outside the project, and a directory symlink inside it pointing at
+// that directory by a relative path. It returns the external directory.
+func mountExternal(t *testing.T, root, logicalMount string, files map[string]string) string {
+	t.Helper()
+	external := t.TempDir()
+	writeFiles(t, external, files)
+	absolute := filepath.Join(root, filepath.FromSlash(logicalMount))
+	if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, absolute); err != nil {
+		t.Skipf("this platform cannot create a directory symlink: %v", err)
+	}
+	return external
+}
+
+// TestFollowDirectorySymlinksIndexesTheMountUnderItsLogicalPath is the
+// capability's reason to exist: a repository-managed addon mount enters the
+// universe under the path Godot loads it by, and nothing in the snapshot names
+// the host directory it actually lives in.
+func TestFollowDirectorySymlinksIndexesTheMountUnderItsLogicalPath(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"features/pack_view.gd": "var manifest: PackManifest\n"})
+	external := mountExternal(t, root, "addons/worldmap_runtime", map[string]string{
+		"pack_manifest.gd":     "class_name PackManifest\n",
+		"nested/helper.gd":     "class_name PackHelper\n",
+		"worldmap.tscn":        "[gd_scene load_steps=1 format=3 uid=\"uid://mount01\"]\n",
+		"pack_manifest.gd.uid": "uid://mount02\n",
+	})
+
+	off, err := Load(Config{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(off.Paths, "addons/worldmap_runtime/pack_manifest.gd") {
+		t.Fatalf("the capability is off but the mount was walked: %v", off.Paths)
+	}
+
+	snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"addons/worldmap_runtime/nested/helper.gd",
+		"addons/worldmap_runtime/pack_manifest.gd",
+		"features/pack_view.gd",
+	}
+	if !slices.Equal(snapshot.Paths, want) {
+		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
+	}
+	script := snapshot.Scripts["addons/worldmap_runtime/pack_manifest.gd"]
+	if script == nil || script.ParseError != nil || script.Path != "addons/worldmap_runtime/pack_manifest.gd" {
+		t.Fatalf("mounted script = %#v", script)
+	}
+	if string(script.Source) != "class_name PackManifest\n" {
+		t.Errorf("Source = %q", script.Source)
+	}
+	if snapshot.UIDs["uid://mount01"] != "addons/worldmap_runtime/worldmap.tscn" {
+		t.Errorf("scene identity = %v", snapshot.UIDs)
+	}
+	if snapshot.UIDs["uid://mount02"] != "addons/worldmap_runtime/pack_manifest.gd" {
+		t.Errorf("sidecar identity = %v", snapshot.UIDs)
+	}
+	// Logical paths are the only public identity. The external directory is
+	// validation evidence and must appear nowhere.
+	for _, path := range snapshot.Paths {
+		if strings.Contains(path, external) {
+			t.Fatalf("Paths leaked the canonical host path: %q", path)
+		}
+	}
+	for _, resource := range snapshot.Resources {
+		if strings.Contains(resource.Path, external) {
+			t.Fatalf("Resources leaked the canonical host path: %q", resource.Path)
+		}
+	}
+	for identifier, owner := range snapshot.UIDs {
+		if strings.Contains(owner, external) {
+			t.Fatalf("UIDs[%q] leaked the canonical host path: %q", identifier, owner)
+		}
+	}
+}
+
+// TestFollowDirectorySymlinksFollowsNestedMounts covers a mount that itself
+// mounts another external directory. The nested link is authorized by the same
+// capability and the walk that reached it, and the deeper target's host
+// location must stay as invisible as the first one's.
+func TestFollowDirectorySymlinksFollowsNestedMounts(t *testing.T) {
+	root := t.TempDir()
+	outer := mountExternal(t, root, "addons/outer", map[string]string{"outer.gd": "class_name Outer\n"})
+	inner := mountExternal(t, outer, "inner", map[string]string{"deep/inner.gd": "class_name Inner\n"})
+
+	snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"addons/outer/inner/deep/inner.gd", "addons/outer/outer.gd"}
+	if !slices.Equal(snapshot.Paths, want) {
+		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
+	}
+	for _, path := range snapshot.Paths {
+		if strings.Contains(path, outer) || strings.Contains(path, inner) {
+			t.Fatalf("Paths leaked a canonical host path: %q", path)
+		}
+	}
+}
+
+// TestFollowDirectorySymlinksKeepsTwoLogicalMountsOfOneTarget is why cycle
+// detection is ancestry-scoped rather than a global visited set. Mounting one
+// shared addon at two logical paths is a layout Godot loads twice, so both
+// logical sources must survive and let the existing duplicate handling see two
+// claimants.
+func TestFollowDirectorySymlinksKeepsTwoLogicalMountsOfOneTarget(t *testing.T) {
+	root := t.TempDir()
+	external := t.TempDir()
+	writeFiles(t, external, map[string]string{
+		"shared.gd":     "class_name Shared\n",
+		"shared.gd.uid": "uid://shared1\n",
+	})
+	for _, mount := range []string{"addons/first", "addons/second"} {
+		absolute := filepath.Join(root, filepath.FromSlash(mount))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(external, absolute); err != nil {
+			t.Skipf("this platform cannot create a directory symlink: %v", err)
+		}
+	}
+
+	snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"addons/first/shared.gd", "addons/second/shared.gd"}
+	if !slices.Equal(snapshot.Paths, want) {
+		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
+	}
+	owners := []string{}
+	for _, sidecar := range snapshot.Sidecars {
+		owners = append(owners, sidecar.Owner)
+	}
+	if !slices.Equal(owners, want) {
+		t.Fatalf("Sidecars owners = %v, want both logical claimants %v", owners, want)
+	}
+}
+
+// TestFollowDirectorySymlinksFailsClosedOnUnprovableTargets pins every row of
+// the fail-closed contract that cannot establish target evidence. None of them
+// may publish a snapshot, and each error must name the logical link path and
+// nothing else.
+func TestFollowDirectorySymlinksFailsClosedOnUnprovableTargets(t *testing.T) {
+	cases := []struct {
+		name  string
+		build func(t *testing.T, root string)
+		want  string
+		// composed marks an error the loader writes itself rather than
+		// wrapping one from the OS. Those must carry the logical path and
+		// nothing else; a wrapped OS error keeps the path it reports, which is
+		// the convention the rest of the loader already follows.
+		composed bool
+	}{
+		{
+			name: "broken link",
+			build: func(t *testing.T, root string) {
+				if err := os.Symlink(filepath.Join(root, "absent"), filepath.Join(root, "mount")); err != nil {
+					t.Skipf("this platform cannot create a symlink: %v", err)
+				}
+			},
+			want: "resolve symlink mount",
+		},
+		{
+			name: "relative link with no target",
+			build: func(t *testing.T, root string) {
+				if err := os.Symlink("../../common/godot-addons/worldmap_runtime", filepath.Join(root, "mount")); err != nil {
+					t.Skipf("this platform cannot create a symlink: %v", err)
+				}
+			},
+			want: "resolve symlink mount",
+		},
+		{
+			name: "target type cannot be proven",
+			build: func(t *testing.T, root string) {
+				vault := t.TempDir()
+				writeFiles(t, vault, map[string]string{"hidden/hidden.gd": "var x := 1\n"})
+				if err := os.Symlink(filepath.Join(vault, "hidden"), filepath.Join(root, "mount")); err != nil {
+					t.Skipf("this platform cannot create a symlink: %v", err)
+				}
+				if err := os.Chmod(vault, 0o000); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(vault, 0o755) })
+			},
+			want: "resolve symlink mount",
+		},
+		{
+			name: "proven directory cannot be read",
+			build: func(t *testing.T, root string) {
+				external := t.TempDir()
+				writeFiles(t, external, map[string]string{"sealed/sealed.gd": "var x := 1\n"})
+				sealed := filepath.Join(external, "sealed")
+				if err := os.Symlink(sealed, filepath.Join(root, "mount")); err != nil {
+					t.Skipf("this platform cannot create a symlink: %v", err)
+				}
+				if err := os.Chmod(sealed, 0o000); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(sealed, 0o755) })
+			},
+			want: "read directory mount",
+		},
+		{
+			name: "direct cycle",
+			build: func(t *testing.T, root string) {
+				if err := os.Symlink(root, filepath.Join(root, "mount")); err != nil {
+					t.Skipf("this platform cannot create a symlink: %v", err)
+				}
+			},
+			// The message names the ancestor the back-edge closes on, which
+			// is the frame the detection actually matched. Both halves are
+			// logical paths: a cycle error can no more name a host directory
+			// than a snapshot can.
+			want:     "symlink mount closes a directory cycle back to .",
+			composed: true,
+		},
+		{
+			name: "cycle through a nested mount",
+			build: func(t *testing.T, root string) {
+				external := t.TempDir()
+				writeFiles(t, external, map[string]string{"here.gd": "var x := 1\n"})
+				if err := os.Symlink(external, filepath.Join(root, "mount")); err != nil {
+					t.Skipf("this platform cannot create a symlink: %v", err)
+				}
+				if err := os.Symlink(external, filepath.Join(external, "again")); err != nil {
+					t.Skipf("this platform cannot create a symlink: %v", err)
+				}
+			},
+			want:     "symlink mount/again closes a directory cycle back to mount",
+			composed: true,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFiles(t, root, map[string]string{"own.gd": "var own := 1\n"})
+			testCase.build(t, root)
+
+			off, err := Load(Config{Root: root})
+			if err != nil {
+				t.Fatalf("the capability is off, so the load must be unaffected: %v", err)
+			}
+			if !slices.Equal(off.Paths, []string{"own.gd"}) {
+				t.Fatalf("capability-off Paths = %v", off.Paths)
+			}
+
+			snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true})
+			if snapshot != nil {
+				t.Fatalf("a failed load published a snapshot with Paths = %v", snapshot.Paths)
+			}
+			if err == nil {
+				t.Fatal("want a project-load error")
+			}
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error = %q, want it to name %q", err, testCase.want)
+			}
+			if testCase.composed && strings.Contains(err.Error(), root) {
+				t.Fatalf("a composed error leaked an absolute path: %q", err)
+			}
+		})
+	}
+}
+
+// TestFollowDirectorySymlinksLeavesProvenNonDirectoriesAlone covers the rows
+// the capability deliberately does not widen. A link proven to name a regular
+// file or a special node keeps the pre-capability behavior exactly, including
+// the identity evidence a skipped entry marks incomplete.
+func TestFollowDirectorySymlinksLeavesProvenNonDirectoriesAlone(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"own.gd": "var own := 1\n"})
+	external := t.TempDir()
+	writeFiles(t, external, map[string]string{"outside.gd": "class_name Outside\n"})
+	if err := os.Symlink(filepath.Join(external, "outside.gd"), filepath.Join(root, "linked.gd")); err != nil {
+		t.Skipf("this platform cannot create a symlink: %v", err)
+	}
+	if err := os.Symlink("/dev/null", filepath.Join(root, "device.gd")); err != nil {
+		t.Skipf("this platform cannot create a symlink: %v", err)
+	}
+
+	for _, identities := range []bool{false, true} {
+		snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true, Identities: identities})
+		if err != nil {
+			t.Fatalf("Identities=%v: %v", identities, err)
+		}
+		if !slices.Equal(snapshot.Paths, []string{"own.gd"}) {
+			t.Fatalf("Identities=%v: Paths = %v, want only the project's own script", identities, snapshot.Paths)
+		}
+		if identities && !snapshot.IdentityIncomplete {
+			t.Error("a skipped symlink must keep identity evidence from calling itself exhaustive")
+		}
+	}
+}
+
+// TestFollowDirectorySymlinksRespectsPruningBeforeResolution pins the walk
+// against the caller's own Config filters: a broken link inside a directory
+// those filters prune, or inside generated metadata, is never resolved, because
+// the walk would not have entered the directory it names.
+//
+// This is the caller's Config, not a project's lint configuration. A semantic
+// run leaves Exclude empty and HonorIgnoreFile off, so for that run only .git
+// and .godot prune and an unresolvable link anywhere else fails the load —
+// deliberately, since the pinned corpus's one mount sits under that project's
+// own "addons/**" exclusion and still has to be entered.
+func TestFollowDirectorySymlinksRespectsPruningBeforeResolution(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"own.gd":          "var own := 1\n",
+		".gdkitignore":    "hidden/\nignored_mount/\n",
+		"hidden/keep.gd":  "var keep := 1\n",
+		"present/here.gd": "var here := 1\n",
+	})
+	// Two shapes have to hold. A link inside a directory the walk prunes is
+	// never reached at all, and a link that is *itself* the pruned path is
+	// reached and must be skipped before it is resolved — that second one is
+	// the only case the walk's own prune gate decides, so without it a broken
+	// link a project already excluded would fail a load that passes today.
+	for _, mount := range []string{
+		"vendor/broken", ".godot/broken", "hidden/broken",
+		"addons/worldmap_runtime", "ignored_mount",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(mount))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(root, "absent"), absolute); err != nil {
+			t.Skipf("this platform cannot create a symlink: %v", err)
+		}
+	}
+
+	snapshot, err := Load(Config{
+		Root:                    root,
+		FollowDirectorySymlinks: true,
+		HonorIgnoreFile:         true,
+		Exclude:                 []string{"vendor/**", "addons/worldmap_runtime/**"},
+	})
+	if err != nil {
+		t.Fatalf("a pruned broken link must not fail the load: %v", err)
+	}
+	want := []string{"own.gd", "present/here.gd"}
+	if !slices.Equal(snapshot.Paths, want) {
+		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
+	}
+}
+
+// TestFollowDirectorySymlinksDiscoversASourceRootReachedThroughALink closes
+// the asymmetry #81 found. A semantic run moves lint's roots into Selection and
+// walks the project root, so an intermediate mount that a filtered walk
+// resolves through its own root path is an ordinary entry below the walked
+// root. With the capability on both shapes discover the same tree, and
+// Selected still equals the filtered Paths for that layout.
+func TestFollowDirectorySymlinksDiscoversASourceRootReachedThroughALink(t *testing.T) {
+	root := t.TempDir()
+	mountExternal(t, root, "mounted", map[string]string{
+		"src/player.gd":     "class_name Player\n",
+		"src/skip/other.gd": "class_name Other\n",
+		"docs/notes.gd":     "class_name Notes\n",
+	})
+	selection := &Selection{SourceRoots: []string{"mounted/src"}, Exclude: []string{"**/skip/**"}}
+
+	filtered, err := Load(Config{
+		Root:        root,
+		SourceRoots: selection.SourceRoots,
+		Exclude:     selection.Exclude,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(filtered.Paths, []string{"mounted/src/player.gd"}) {
+		t.Fatalf("the filtered walk through the mount discovered %v", filtered.Paths)
+	}
+
+	off, err := Load(Config{Root: root, Selection: selection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(off.Selected) != 0 {
+		t.Fatalf("capability-off Selected = %v, want the documented pre-change emptiness", off.Selected)
+	}
+
+	broad, err := Load(Config{Root: root, FollowDirectorySymlinks: true, Selection: selection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(broad.Selected, filtered.Paths) {
+		t.Fatalf("Selected = %v, want the filtered walk's Paths %v", broad.Selected, filtered.Paths)
+	}
+	if !slices.Contains(broad.Paths, "mounted/src/skip/other.gd") {
+		t.Errorf("the excluded dependency left the universe: %v", broad.Paths)
+	}
+	if slices.Contains(broad.Selected, "mounted/src/skip/other.gd") {
+		t.Errorf("an excluded path entered Selected: %v", broad.Selected)
+	}
+}
+
+// TestFollowDirectorySymlinksWalksASourceRootThatIsItselfALink records a second
+// gap the capability closes. filepath.WalkDir Lstats the walked root, so a
+// source root that is itself a link is reported as a non-directory entry and
+// its target is never read: the load silently discovers nothing, even though
+// Load's own os.Stat check passed. Resolving the root is part of the walk.
+func TestFollowDirectorySymlinksWalksASourceRootThatIsItselfALink(t *testing.T) {
+	root := t.TempDir()
+	mountExternal(t, root, "src", map[string]string{"player.gd": "class_name Player\n"})
+
+	off, err := Load(Config{Root: root, SourceRoots: []string{"src"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(off.Paths) != 0 {
+		t.Fatalf("capability-off Paths = %v, want the documented pre-change emptiness", off.Paths)
+	}
+
+	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"src"}, FollowDirectorySymlinks: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(snapshot.Paths, []string{"src/player.gd"}) {
+		t.Fatalf("Paths = %v", snapshot.Paths)
+	}
+	// A nil Selection selects everything discovered, which is what the other
+	// four tools pass. Under a Selection naming the same root, the link is a
+	// mount the filtered walk could not have entered, so what it holds is a
+	// dependency only.
+	selected, err := Load(Config{
+		Root:                    root,
+		FollowDirectorySymlinks: true,
+		Selection:               &Selection{SourceRoots: []string{"src"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected.Selected) != 0 {
+		t.Fatalf("Selected = %v, want nothing the filtered walk could not reach", selected.Selected)
+	}
+	if !slices.Equal(selected.Paths, []string{"src/player.gd"}) {
+		t.Fatalf("Paths = %v, want the mount as a dependency", selected.Paths)
+	}
+}
+
+// TestFollowDirectorySymlinksIsDeterministic pins the idempotency the snapshot
+// promises: the same bytes and the same symlink graph produce the same
+// snapshot, however many times they are loaded and however many loads run at
+// once. The concurrent half is what proves the walk's ancestry and seam are
+// per-load state rather than anything shared.
+func TestFollowDirectorySymlinksIsDeterministic(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"own.gd": "var own := 1\n"})
+	external := mountExternal(t, root, "addons/mount", map[string]string{
+		"b.gd":       "class_name B\n",
+		"a.gd":       "class_name A\n",
+		"sub/c.gd":   "class_name C\n",
+		"scene.tscn": "[gd_scene format=3 uid=\"uid://det001\"]\n",
+	})
+	if err := os.Symlink(external, filepath.Join(root, "addons", "twin")); err != nil {
+		t.Skipf("this platform cannot create a directory symlink: %v", err)
+	}
+	config := Config{Root: root, FollowDirectorySymlinks: true, Identities: true}
+
+	first, err := Load(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		again, err := Load(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(first.Paths, again.Paths) {
+			t.Fatalf("Paths differed between loads: %v vs %v", first.Paths, again.Paths)
+		}
+		if !maps.Equal(first.UIDs, again.UIDs) {
+			t.Fatalf("UIDs differed between loads: %v vs %v", first.UIDs, again.UIDs)
+		}
+		if !slices.Equal(first.Resources, again.Resources) {
+			t.Fatalf("Resources differed between loads")
+		}
+		if !slices.Equal(first.Claims, again.Claims) {
+			t.Fatalf("Claims differed between loads")
+		}
+	}
+
+	results := make([][]string, 4)
+	errs := make([]error, len(results))
+	done := make(chan int, len(results))
+	for index := range results {
+		go func() {
+			snapshot, err := Load(config)
+			if err == nil {
+				results[index] = snapshot.Paths
+			}
+			errs[index] = err
+			done <- index
+		}()
+	}
+	for range results {
+		<-done
+	}
+	for index := range results {
+		if errs[index] != nil {
+			t.Fatalf("concurrent load %d: %v", index, errs[index])
+		}
+		if !slices.Equal(results[index], first.Paths) {
+			t.Fatalf("concurrent load %d produced %v, want %v", index, results[index], first.Paths)
+		}
+	}
+}
+
+// TestLoadFailsClosedWhenAnAcceptedObjectChangesUnderTheWalk drives the two
+// boundaries at which the loader has accepted a fact but not yet read the
+// bytes it implies. Each case substitutes the object at exactly that instant
+// through the instance-scoped seam, so there is no sleep and no dependence on
+// the scheduler, and asserts no partial snapshot escapes.
+func TestLoadFailsClosedWhenAnAcceptedObjectChangesUnderTheWalk(t *testing.T) {
+	cases := []struct {
+		name  string
+		hooks func(root, external string) loaderHooks
+		want  string
+	}{
+		{
+			name: "the accepted target is removed",
+			hooks: func(root, external string) loaderHooks {
+				return loaderHooks{afterDirectoryAccepted: func(logical string) {
+					if logical == "addons/mount" {
+						if err := os.RemoveAll(external); err != nil {
+							panic(err)
+						}
+					}
+				}}
+			},
+			want: "read directory addons/mount",
+		},
+		{
+			name: "the accepted target becomes a file",
+			hooks: func(root, external string) loaderHooks {
+				return loaderHooks{afterDirectoryAccepted: func(logical string) {
+					if logical != "addons/mount" {
+						return
+					}
+					if err := os.RemoveAll(external); err != nil {
+						panic(err)
+					}
+					if err := os.WriteFile(external, []byte("not a directory\n"), 0o644); err != nil {
+						panic(err)
+					}
+				}}
+			},
+			want: "read directory addons/mount",
+		},
+		{
+			name: "the link is retargeted after its target was accepted",
+			hooks: func(root, external string) loaderHooks {
+				return loaderHooks{afterDirectoryAccepted: func(logical string) {
+					if logical != "addons/mount" {
+						return
+					}
+					other, err := os.MkdirTemp("", "retarget")
+					if err != nil {
+						panic(err)
+					}
+					mount := filepath.Join(root, "addons", "mount")
+					if err := os.Remove(mount); err != nil {
+						panic(err)
+					}
+					if err := os.Symlink(other, mount); err != nil {
+						panic(err)
+					}
+				}}
+			},
+			want: "read directory addons/mount: target changed during the load",
+		},
+		{
+			// Every file is read by its logical path, so the kernel resolves
+			// the mount again at read time. A retarget after the mounted file
+			// was read would otherwise leave a snapshot whose paths were
+			// attributed to one object and whose bytes came from another.
+			name: "the link is retargeted after the load read through it",
+			hooks: func(root, external string) loaderHooks {
+				return loaderHooks{beforeFileRead: func(logical string) {
+					if logical != "own.gd" {
+						return
+					}
+					other, err := os.MkdirTemp("", "retarget")
+					if err != nil {
+						panic(err)
+					}
+					mount := filepath.Join(root, "addons", "mount")
+					if err := os.Remove(mount); err != nil {
+						panic(err)
+					}
+					if err := os.Symlink(other, mount); err != nil {
+						panic(err)
+					}
+				}}
+			},
+			want: "verify mount addons/mount: target changed during the load",
+		},
+		{
+			name: "the mount disappears after the load read through it",
+			hooks: func(root, external string) loaderHooks {
+				return loaderHooks{beforeFileRead: func(logical string) {
+					if logical != "own.gd" {
+						return
+					}
+					if err := os.Remove(filepath.Join(root, "addons", "mount")); err != nil {
+						panic(err)
+					}
+				}}
+			},
+			want: "verify mount addons/mount",
+		},
+		{
+			name: "a discovered script is removed before it is read",
+			hooks: func(root, external string) loaderHooks {
+				return loaderHooks{beforeFileRead: func(logical string) {
+					if logical == "addons/mount/mounted.gd" {
+						if err := os.Remove(filepath.Join(external, "mounted.gd")); err != nil {
+							panic(err)
+						}
+					}
+				}}
+			},
+			want: "read addons/mount/mounted.gd",
+		},
+		{
+			name: "a discovered script becomes a directory before it is read",
+			hooks: func(root, external string) loaderHooks {
+				return loaderHooks{beforeFileRead: func(logical string) {
+					if logical != "addons/mount/mounted.gd" {
+						return
+					}
+					target := filepath.Join(external, "mounted.gd")
+					if err := os.Remove(target); err != nil {
+						panic(err)
+					}
+					if err := os.Mkdir(target, 0o755); err != nil {
+						panic(err)
+					}
+				}}
+			},
+			want: "read addons/mount/mounted.gd",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFiles(t, root, map[string]string{"own.gd": "var own := 1\n"})
+			external := mountExternal(t, root, "addons/mount", map[string]string{
+				"mounted.gd": "class_name Mounted\n",
+			})
+
+			snapshot, err := load(
+				Config{Root: root, FollowDirectorySymlinks: true},
+				testCase.hooks(root, external),
+			)
+			if snapshot != nil {
+				t.Fatalf("a failed load published a snapshot with Paths = %v", snapshot.Paths)
+			}
+			if err == nil {
+				t.Fatal("want a project-load error")
+			}
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error = %q, want it to name %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+// TestLoadHooksDoNotAffectAnUnaffectedLoad keeps the seam honest: it changes
+// when a load observes the filesystem, not what a load that nothing disturbs
+// produces.
+func TestLoadHooksDoNotAffectAnUnaffectedLoad(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"own.gd": "var own := 1\n"})
+	mountExternal(t, root, "addons/mount", map[string]string{"mounted.gd": "class_name Mounted\n"})
+	config := Config{Root: root, FollowDirectorySymlinks: true}
+
+	var directories, files []string
+	seamed, err := load(config, loaderHooks{
+		afterDirectoryAccepted: func(logical string) { directories = append(directories, logical) },
+		beforeFileRead:         func(logical string) { files = append(files, logical) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := Load(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(seamed.Paths, plain.Paths) {
+		t.Fatalf("Paths = %v, want %v", seamed.Paths, plain.Paths)
+	}
+	if !slices.Contains(directories, "addons/mount") {
+		t.Errorf("the directory boundary did not report the mount: %v", directories)
+	}
+	if !slices.Equal(files, plain.Paths) {
+		t.Errorf("the file boundary reported %v, want every published path %v", files, plain.Paths)
+	}
+}
+
+// TestFollowDirectorySymlinksKeepsANestedMountOutOfSelected is the bound the
+// capability must not cross. A mount below a source root is reached only by the
+// capability-on universe walk, so what it holds is a read-only dependency: it
+// belongs in Paths, where semantic analysis can resolve it, and must stay out
+// of Selected, where it would become something the caller acts on.
+//
+// The equality this package promises is the reason. Selected has to equal what
+// a filtered walk of the same three filters discovers, and a filtered walk is
+// capability-off and skips the link. Without that, turning on one semantic lint
+// rule would make every other rule start reporting findings in an external
+// checkout the project does not own.
+func TestFollowDirectorySymlinksKeepsANestedMountOutOfSelected(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"features/pack_view.gd": "var manifest: PackManifest\n"})
+	mountExternal(t, root, "features/shared_runtime", map[string]string{
+		"pack_manifest.gd": "class_name PackManifest\n",
+	})
+	// Nothing excludes the mount: the only thing keeping it out of Selected is
+	// that a filtered walk could not have reached it.
+	selection := &Selection{SourceRoots: []string{"."}}
+
+	filtered, err := Load(Config{Root: root, SourceRoots: selection.SourceRoots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(filtered.Paths, []string{"features/pack_view.gd"}) {
+		t.Fatalf("the filtered walk discovered %v", filtered.Paths)
+	}
+
+	broad, err := Load(Config{Root: root, FollowDirectorySymlinks: true, Selection: selection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mounted := "features/shared_runtime/pack_manifest.gd"
+	if !slices.Contains(broad.Paths, mounted) {
+		t.Fatalf("the mount did not enter the universe: %v", broad.Paths)
+	}
+	if !slices.Equal(broad.Selected, filtered.Paths) {
+		t.Fatalf("Selected = %v, want exactly the filtered walk's Paths %v", broad.Selected, filtered.Paths)
+	}
+}
+
+// TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForEveryMountShape
+// is the whole rule in one table. For each layout, Selected under a
+// capability-on Selection must equal Paths under a capability-off filtered
+// walk of the same filters — the only difference being that a mount strictly
+// above a source root is transparent to both walks, because the kernel
+// resolves it when the filtered walk stats the root it was handed.
+func TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForEveryMountShape(t *testing.T) {
+	cases := []struct {
+		name        string
+		mount       string
+		sourceRoots []string
+		exclude     []string
+		// wantSelected is what both walks must agree on.
+		wantSelected []string
+	}{
+		{
+			name:         "a mount above the source root is transparent to both walks",
+			mount:        "mounted",
+			sourceRoots:  []string{"mounted/src"},
+			wantSelected: []string{"mounted/src/mounted.gd"},
+		},
+		{
+			name:         "a mount below the source root is a dependency only",
+			mount:        "features/shared",
+			sourceRoots:  []string{"features"},
+			wantSelected: []string{"features/own.gd"},
+		},
+		{
+			name:         "a mount at the project root is a dependency only",
+			mount:        "shared",
+			sourceRoots:  []string{"."},
+			wantSelected: []string{"features/own.gd"},
+		},
+		{
+			name:         "a mount that is itself the source root is reached by neither",
+			mount:        "src",
+			sourceRoots:  []string{"src"},
+			wantSelected: nil,
+		},
+		{
+			name:         "an excluded mount above the source root is excluded by both",
+			mount:        "mounted",
+			sourceRoots:  []string{"mounted/src"},
+			exclude:      []string{"mounted/src/**"},
+			wantSelected: nil,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFiles(t, root, map[string]string{"features/own.gd": "var own := 1\n"})
+			mountExternal(t, root, testCase.mount, map[string]string{
+				"mounted.gd":     "class_name Mounted\n",
+				"src/mounted.gd": "class_name MountedSource\n",
+			})
+
+			filtered, err := Load(Config{
+				Root:        root,
+				SourceRoots: testCase.sourceRoots,
+				Exclude:     testCase.exclude,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(filtered.Paths, testCase.wantSelected) {
+				t.Fatalf("the filtered walk discovered %v, want %v", filtered.Paths, testCase.wantSelected)
+			}
+
+			broad, err := Load(Config{
+				Root:                    root,
+				FollowDirectorySymlinks: true,
+				Selection: &Selection{
+					SourceRoots: testCase.sourceRoots,
+					Exclude:     testCase.exclude,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(broad.Selected, filtered.Paths) {
+				t.Fatalf("Selected = %v, want the filtered walk's Paths %v", broad.Selected, filtered.Paths)
+			}
+		})
+	}
+}
+
+// TestFollowDirectorySymlinksDecidesCyclesOnFileIdentity pins what the cycle
+// check compares. The walk holds each ancestor's stat and asks os.SameFile,
+// which is the same identity test readDirectory and verifyMounts use, rather
+// than comparing the text of a resolved path.
+//
+// The text would be wrong on a case-insensitive filesystem, which is the
+// default on macOS and the norm on Windows: filepath.EvalSymlinks does not fold
+// case, so a link to an ancestor spelled with different case resolves to a
+// string that does not match the ancestor's. The walk would then re-read the
+// same tree until the kernel refused the path and fail with a name-too-long
+// error instead of a cycle error. That divergence cannot be built on a
+// case-sensitive filesystem, so this test pins the two things that are
+// observable here: the detection reports the ancestor frame it matched, and it
+// holds for an ancestor the walk reached by a different route than the link
+// spells.
+func TestFollowDirectorySymlinksDecidesCyclesOnFileIdentity(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"features/deep/own.gd": "var own := 1\n"})
+	// The link spells its target relatively, through a parent traversal, while
+	// the walk reached that same directory by descending into it.
+	if err := os.Symlink("../../features", filepath.Join(root, "features", "deep", "back")); err != nil {
+		t.Skipf("this platform cannot create a symlink: %v", err)
+	}
+
+	snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true})
+	if snapshot != nil {
+		t.Fatalf("a failed load published a snapshot with Paths = %v", snapshot.Paths)
+	}
+	if err == nil {
+		t.Fatal("want a cycle error")
+	}
+	want := "symlink features/deep/back closes a directory cycle back to features"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to contain %q", err, want)
+	}
+	if strings.Contains(err.Error(), root) {
+		t.Fatalf("the cycle error named a host path: %q", err)
+	}
+}
+
+// TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForASymlinkedRoot
+// is the mount shape the project root itself can be. A caller may name the
+// project through a link — "gdkit lint check /path/to/link" — and Load keeps
+// that spelling, because filepath.Abs does not resolve it and the os.Stat root
+// check passes either way by following it.
+//
+// filepath.WalkDir lstats the root it is handed, so a filtered walk of a
+// symlinked project root discovers nothing at all, while the capability-on walk
+// resolves it and discovers everything. Recording the root link as a mount is
+// what keeps selection in step with that: a source root strictly inside the
+// link is reached by both walks, because the kernel resolves the link for the
+// filtered walk too, and the link itself is reached by neither.
+func TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForASymlinkedRoot(t *testing.T) {
+	cases := []struct {
+		name         string
+		sourceRoots  []string
+		wantSelected []string
+	}{
+		{
+			name:         "the source root is the symlinked project root",
+			sourceRoots:  []string{"."},
+			wantSelected: nil,
+		},
+		{
+			name:         "the source root is inside the symlinked project root",
+			sourceRoots:  []string{"features"},
+			wantSelected: []string{"features/own.gd"},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			base := t.TempDir()
+			real := filepath.Join(base, "real")
+			writeFiles(t, real, map[string]string{
+				"features/own.gd": "var own := 1\n",
+				"top.gd":          "var top := 1\n",
+			})
+			linked := filepath.Join(base, "link")
+			if err := os.Symlink(real, linked); err != nil {
+				t.Skipf("this platform cannot create a directory symlink: %v", err)
+			}
+
+			filtered, err := Load(Config{Root: linked, SourceRoots: testCase.sourceRoots})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(filtered.Paths, testCase.wantSelected) {
+				t.Fatalf("the filtered walk discovered %v, want %v", filtered.Paths, testCase.wantSelected)
+			}
+
+			broad, err := Load(Config{
+				Root:                    linked,
+				FollowDirectorySymlinks: true,
+				Selection:               &Selection{SourceRoots: testCase.sourceRoots},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(broad.Selected, filtered.Paths) {
+				t.Fatalf("Selected = %v, want the filtered walk's Paths %v", broad.Selected, filtered.Paths)
+			}
+			// The universe is still the whole resolved tree, which is the
+			// point: a dependency stays resolvable even when nothing under the
+			// mounted root may be acted on.
+			if !slices.Contains(broad.Paths, "features/own.gd") || !slices.Contains(broad.Paths, "top.gd") {
+				t.Fatalf("the resolved root did not enter the universe: %v", broad.Paths)
+			}
+		})
+	}
+}

@@ -1187,3 +1187,78 @@ func benchmarkLoadConfig(root string, config Config, linter *Linter) project.Con
 		HonorIgnoreFile: true,
 	}
 }
+
+// corpusDanglingMount is the pinned corpus's shared-addon mount. The sparse
+// clone contains only client/ and omits common/godot-addons/, so the link
+// exists and does not resolve. That makes the corpus real-producer evidence
+// for the capability's "resolution fails" row rather than for its happy path:
+// the resolving case is owned by the synthetic fixtures in project,
+// internal/semanticsource, and cmd/gdkit.
+const corpusDanglingMount = "addons/worldmap_runtime"
+
+// TestCorpusFailsClosedOnItsDanglingAddonMount loads the pinned corpus the way
+// a semantic lint run does, with the directory-symlink capability on. The one
+// mount the corpus declares cannot be resolved, so the load must fail naming
+// the logical path and publish no snapshot at all. A partial universe is the
+// outcome this capability exists to prevent: it would silently drop whatever
+// the addon declares and turn every answer that depends on it into a reasoned
+// Unknown, with nothing saying why.
+//
+// TestCorpusSemanticReceipt keeps the capability off, which is why this
+// assertion lives in its own test: enabling it there would turn a passing
+// receipt into a load failure and move constants that must not move. Nothing
+// here writes to the corpus.
+func TestCorpusFailsClosedOnItsDanglingAddonMount(t *testing.T) {
+	root := os.Getenv("GDKIT_CORPUS")
+	if root == "" {
+		t.Skip("GDKIT_CORPUS is not set")
+	}
+	if revision := gitAt(t, root, "rev-parse", "HEAD"); revision != corpusRevision {
+		t.Fatalf("corpus revision = %s, want %s", revision, corpusRevision)
+	}
+	if status := gitAt(t, root, "status", "--porcelain=v1"); status != "" {
+		t.Fatalf("corpus is not clean: %s", status)
+	}
+	link, err := os.Readlink(filepath.Join(root, filepath.FromSlash(corpusDanglingMount)))
+	if err != nil {
+		t.Fatalf("the corpus no longer declares %s as a symlink: %v", corpusDanglingMount, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(corpusDanglingMount))); err == nil {
+		t.Fatalf("%s -> %s now resolves; this test's premise is the sparse clone that omits it",
+			corpusDanglingMount, link)
+	}
+
+	config := corpusConfig()
+	// Exactly the shape cmd/gdkit's lintProjectConfig builds for a semantic
+	// run: an unfiltered universe that follows the mount, with lint's filters
+	// narrowing actions only.
+	snapshot, err := project.Load(project.Config{
+		Root:                    root,
+		FollowDirectorySymlinks: true,
+		Selection: &project.Selection{
+			SourceRoots:     config.SourceRoots,
+			Exclude:         config.Exclude,
+			HonorIgnoreFile: true,
+		},
+	})
+	if snapshot != nil {
+		t.Fatalf("a failed load published a snapshot with %d paths", len(snapshot.Paths))
+	}
+	if err == nil {
+		t.Fatal("want a project-load error for the dangling mount")
+	}
+	if !strings.Contains(err.Error(), corpusDanglingMount) {
+		t.Fatalf("error = %q, want it to name %q", err, corpusDanglingMount)
+	}
+	t.Logf("capability-on load of the pinned corpus failed closed: %v", err)
+
+	// The capability-off load every other corpus test uses is unaffected, so
+	// the pinned receipt still measures what it measured.
+	if _, err := project.Load(project.Config{
+		Root:        root,
+		SourceRoots: config.SourceRoots,
+		Exclude:     config.Exclude,
+	}); err != nil {
+		t.Fatalf("the capability-off load must be unaffected: %v", err)
+	}
+}
