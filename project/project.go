@@ -11,7 +11,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 
@@ -1010,17 +1009,16 @@ type symlinkWalk struct {
 	// mounts is every followed link, kept until the load has finished reading
 	// through all of them. See verifyMounts.
 	mounts []mountEvidence
-	// ancestry holds one canonical directory per frame on the stack below.
+	// ancestry holds one frame per directory on the stack below.
 	// Pushed before descending and popped on return, so it is per-load state
 	// held in a value the caller owns and two concurrent loads share nothing.
-	ancestry []string
+	ancestry []ancestorFrame
 }
 
 // walkRoot walks one configured source root, which Load has already checked is
 // inside the project and is a directory.
 func (w *symlinkWalk) walkRoot(absolute, logical string) error {
-	canonical, err := filepath.EvalSymlinks(absolute)
-	if err != nil {
+	if _, err := filepath.EvalSymlinks(absolute); err != nil {
 		return fmt.Errorf("resolve %s: %w", logical, err)
 	}
 	info, err := os.Stat(absolute)
@@ -1032,14 +1030,14 @@ func (w *symlinkWalk) walkRoot(absolute, logical string) error {
 	}
 	// WalkDir reports the walked root to the callback, and an exclude pattern
 	// naming a source root prunes it there, so the root is reported here too.
-	return w.walkDirectory(absolute, logical, canonical, fs.FileInfoToDirEntry(info), nil)
+	return w.walkDirectory(absolute, logical, fs.FileInfoToDirEntry(info), nil)
 }
 
 // walkDirectory reports one directory to the callback and, unless the callback
 // prunes it, reads and walks its entries. validated is the stat that proved a
 // followed symlink target was a directory, or nil for a directory the walk
 // reached without resolving a link.
-func (w *symlinkWalk) walkDirectory(absolute, logical, canonical string, entry fs.DirEntry, validated fs.FileInfo) error {
+func (w *symlinkWalk) walkDirectory(absolute, logical string, entry fs.DirEntry, validated fs.FileInfo) error {
 	if err := w.visit(absolute, entry, nil); err != nil {
 		if errors.Is(err, filepath.SkipDir) {
 			return nil
@@ -1051,18 +1049,20 @@ func (w *symlinkWalk) walkDirectory(absolute, logical, canonical string, entry f
 	if w.hooks.afterDirectoryAccepted != nil {
 		w.hooks.afterDirectoryAccepted(logical)
 	}
-	entries, err := w.readDirectory(absolute, logical, validated)
+	entries, opened, err := w.readDirectory(absolute, logical, validated)
 	if err != nil {
 		return err
 	}
-	w.ancestry = append(w.ancestry, canonical)
+	// The ancestry frame carries the identity of the object whose entries are
+	// about to be walked, which is the one readDirectory just read from.
+	w.ancestry = append(w.ancestry, ancestorFrame{logical: logical, directory: opened})
 	defer func() { w.ancestry = w.ancestry[:len(w.ancestry)-1] }()
 	for _, child := range entries {
 		childLogical := child.Name()
 		if logical != "." {
 			childLogical = logical + "/" + child.Name()
 		}
-		err := w.walkEntry(filepath.Join(absolute, child.Name()), childLogical, canonical, child)
+		err := w.walkEntry(filepath.Join(absolute, child.Name()), childLogical, child)
 		if errors.Is(err, filepath.SkipDir) {
 			// WalkDir's contract: SkipDir from a non-directory entry skips the
 			// remaining entries of the containing directory. Load's callback
@@ -1082,42 +1082,41 @@ func (w *symlinkWalk) walkDirectory(absolute, logical, canonical string, entry f
 // removed, retargeted, or replaced by a file after acceptance fails the load by
 // its logical path rather than contributing some other directory's contents,
 // and there is no retry against the new target within one load.
-func (w *symlinkWalk) readDirectory(absolute, logical string, validated fs.FileInfo) ([]fs.DirEntry, error) {
+func (w *symlinkWalk) readDirectory(absolute, logical string, validated fs.FileInfo) ([]fs.DirEntry, fs.FileInfo, error) {
 	handle, err := os.Open(absolute)
 	if err != nil {
-		return nil, fmt.Errorf("read directory %s: %w", logical, err)
+		return nil, nil, fmt.Errorf("read directory %s: %w", logical, err)
 	}
 	defer handle.Close()
 	opened, err := handle.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("read directory %s: %w", logical, err)
+		return nil, nil, fmt.Errorf("read directory %s: %w", logical, err)
 	}
 	if !opened.IsDir() {
-		return nil, fmt.Errorf("read directory %s: no longer a directory", logical)
+		return nil, nil, fmt.Errorf("read directory %s: no longer a directory", logical)
 	}
 	if validated != nil && !os.SameFile(validated, opened) {
-		return nil, fmt.Errorf("read directory %s: target changed during the load", logical)
+		return nil, nil, fmt.Errorf("read directory %s: target changed during the load", logical)
 	}
 	entries, err := handle.ReadDir(-1)
 	if err != nil {
-		return nil, fmt.Errorf("read directory %s: %w", logical, err)
+		return nil, nil, fmt.Errorf("read directory %s: %w", logical, err)
 	}
 	// ReadDir on a handle returns entries in directory order. Sorting them is
 	// what makes two loads over the same bytes produce identical snapshots.
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	return entries, nil
+	return entries, opened, nil
 }
 
-// walkEntry walks one directory entry. parentCanonical is the resolved,
-// symlink-free directory the entry was read from.
-func (w *symlinkWalk) walkEntry(absolute, logical, parentCanonical string, entry fs.DirEntry) error {
+// walkEntry walks one directory entry.
+func (w *symlinkWalk) walkEntry(absolute, logical string, entry fs.DirEntry) error {
 	if entry.Type()&fs.ModeSymlink == 0 {
 		if !entry.IsDir() {
 			return w.visit(absolute, entry, nil)
 		}
-		// The parent's canonical path is symlink-free and this entry is a real
-		// directory in it, so appending the name resolves it without a syscall.
-		return w.walkDirectory(absolute, logical, filepath.Join(parentCanonical, entry.Name()), entry, nil)
+		// An ordinary directory is strictly below everything on the ancestry,
+		// so it cannot close a cycle and needs no resolution of its own.
+		return w.walkDirectory(absolute, logical, entry, nil)
 	}
 	if w.prunes(logical) {
 		// The walk would never enter this directory, so whether its target
@@ -1130,8 +1129,7 @@ func (w *symlinkWalk) walkEntry(absolute, logical, parentCanonical string, entry
 	// treat its type as known: the fail-closed rule is that an unresolvable
 	// link is an error, never a guess that it was one of the file symlinks this
 	// capability leaves alone.
-	canonical, err := filepath.EvalSymlinks(absolute)
-	if err != nil {
+	if _, err := filepath.EvalSymlinks(absolute); err != nil {
 		return fmt.Errorf("resolve symlink %s: %w", logical, err)
 	}
 	target, err := os.Stat(absolute)
@@ -1145,15 +1143,34 @@ func (w *symlinkWalk) walkEntry(absolute, logical, parentCanonical string, entry
 		// incomplete.
 		return w.visit(absolute, entry, nil)
 	}
-	if slices.Contains(w.ancestry, canonical) {
-		return fmt.Errorf("symlink %s closes a directory cycle", logical)
+	// Cycles are decided on file identity, not on the text of a resolved path.
+	// filepath.EvalSymlinks does not fold case, so on a case-insensitive
+	// filesystem — the default on macOS, and the norm on Windows — a link to an
+	// ancestor spelled with different case resolves to a string that does not
+	// match it. Comparing strings would let that cycle through and the walk
+	// would re-read the same tree until the kernel refused the path, failing
+	// with a name-too-long error instead of this one. os.SameFile is the same
+	// identity test readDirectory and verifyMounts use, so all three agree
+	// about when two paths are one directory.
+	for _, ancestor := range w.ancestry {
+		if os.SameFile(ancestor.directory, target) {
+			return fmt.Errorf("symlink %s closes a directory cycle back to %s", logical, ancestor.logical)
+		}
 	}
 	// A nested link may resolve outside the project root. That is allowed, and
 	// only because the capability is on and the link was reached during the
 	// authorized walk; the external location is not another res:// root, and
 	// the same validation and cycle policy applies below it.
 	w.mounts = append(w.mounts, mountEvidence{logical: logical, target: target})
-	return w.walkDirectory(absolute, logical, canonical, mountedDirEntry{name: entry.Name(), info: target}, target)
+	return w.walkDirectory(absolute, logical, mountedDirEntry{name: entry.Name(), info: target}, target)
+}
+
+// ancestorFrame is one directory on the walk's current recursion stack: the
+// identity of the object its entries were read from, and the logical path to
+// name in a cycle error. Only the logical half can ever be reported.
+type ancestorFrame struct {
+	logical   string
+	directory fs.FileInfo
 }
 
 // mountEvidence is one followed directory symlink and the object its contents

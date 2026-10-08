@@ -1280,7 +1280,11 @@ func TestFollowDirectorySymlinksFailsClosedOnUnprovableTargets(t *testing.T) {
 					t.Skipf("this platform cannot create a symlink: %v", err)
 				}
 			},
-			want:     "symlink mount closes a directory cycle",
+			// The message names the ancestor the back-edge closes on, which
+			// is the frame the detection actually matched. Both halves are
+			// logical paths: a cycle error can no more name a host directory
+			// than a snapshot can.
+			want:     "symlink mount closes a directory cycle back to .",
 			composed: true,
 		},
 		{
@@ -1295,7 +1299,7 @@ func TestFollowDirectorySymlinksFailsClosedOnUnprovableTargets(t *testing.T) {
 					t.Skipf("this platform cannot create a symlink: %v", err)
 				}
 			},
-			want:     "symlink mount/again closes a directory cycle",
+			want:     "symlink mount/again closes a directory cycle back to mount",
 			composed: true,
 		},
 	}
@@ -1866,5 +1870,45 @@ func TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForEveryMountShap
 				t.Fatalf("Selected = %v, want the filtered walk's Paths %v", broad.Selected, filtered.Paths)
 			}
 		})
+	}
+}
+
+// TestFollowDirectorySymlinksDecidesCyclesOnFileIdentity pins what the cycle
+// check compares. The walk holds each ancestor's stat and asks os.SameFile,
+// which is the same identity test readDirectory and verifyMounts use, rather
+// than comparing the text of a resolved path.
+//
+// The text would be wrong on a case-insensitive filesystem, which is the
+// default on macOS and the norm on Windows: filepath.EvalSymlinks does not fold
+// case, so a link to an ancestor spelled with different case resolves to a
+// string that does not match the ancestor's. The walk would then re-read the
+// same tree until the kernel refused the path and fail with a name-too-long
+// error instead of a cycle error. That divergence cannot be built on a
+// case-sensitive filesystem, so this test pins the two things that are
+// observable here: the detection reports the ancestor frame it matched, and it
+// holds for an ancestor the walk reached by a different route than the link
+// spells.
+func TestFollowDirectorySymlinksDecidesCyclesOnFileIdentity(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"features/deep/own.gd": "var own := 1\n"})
+	// The link spells its target relatively, through a parent traversal, while
+	// the walk reached that same directory by descending into it.
+	if err := os.Symlink("../../features", filepath.Join(root, "features", "deep", "back")); err != nil {
+		t.Skipf("this platform cannot create a symlink: %v", err)
+	}
+
+	snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true})
+	if snapshot != nil {
+		t.Fatalf("a failed load published a snapshot with Paths = %v", snapshot.Paths)
+	}
+	if err == nil {
+		t.Fatal("want a cycle error")
+	}
+	want := "symlink features/deep/back closes a directory cycle back to features"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to contain %q", err, want)
+	}
+	if strings.Contains(err.Error(), root) {
+		t.Fatalf("the cycle error named a host path: %q", err)
 	}
 }

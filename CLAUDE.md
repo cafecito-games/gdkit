@@ -166,11 +166,20 @@ the default branch.
   its entries are read through — is validation that is discarded, and
   `readDirectory` compares the opened handle against that stat with
   `os.SameFile` so a target retargeted after acceptance fails rather than
-  substituting its contents. And cycles terminate on the canonical directories
-  of the *current recursion ancestry*, pushed before descending and popped on
-  return: a global visited set is forbidden because it would collapse one
-  target intentionally mounted at two logical paths into one logical source,
-  and both claimants have to stay visible to the existing duplicate handling.
+  substituting its contents. And cycles terminate on the *current recursion
+  ancestry*, pushed before descending and popped on return: a global visited
+  set is forbidden because it would collapse one target intentionally mounted
+  at two logical paths into one logical source, and both claimants have to stay
+  visible to the existing duplicate handling. Each frame carries the stat of
+  the object `readDirectory` read its entries from, and a back-edge is decided
+  with `os.SameFile` rather than by comparing resolved path text —
+  `filepath.EvalSymlinks` does not fold case, so on a case-insensitive
+  filesystem a differently-cased link to an ancestor would slip past a string
+  check and the walk would re-read the tree until the kernel refused the path.
+  That is the same identity test `readDirectory` and `verifyMounts` use, so all
+  three agree about when two paths are one directory; the frame's other half is
+  a logical path, so a cycle error names the ancestor without naming a host
+  directory.
   `prunesDirectory` is shared by the callback and the walk so a link the walk
   would never have entered is never resolved, and a broken link under an
   excluded or ignored directory cannot fail a load that used to pass.
