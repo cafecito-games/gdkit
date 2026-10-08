@@ -359,7 +359,7 @@ whole project is walked and parsed as the dependency universe, and the three
 filters narrow only the set of files that may produce a diagnostic. A selected
 script can then resolve a `class_name`, an enum member, a method signature, or
 a return type declared in a generated or vendored script the project excluded,
-which is what Godot itself does, while no rule, suppression, `unknown-ignore`,
+the way the running game resolves it, while no rule, suppression, `unknown-ignore`,
 or `source-parse` finding is ever emitted for an excluded path. Three
 consequences follow, all deliberate: an excluded script that does not parse
 makes project global resolution incomplete, so dependent answers become a
@@ -369,7 +369,13 @@ ambiguous, because neither selection nor walk order may pick a winner; and an
 excluded script that cannot be *read* at all fails the run with exit `2` and a
 `project.load` failure, because a dependency gdkit cannot read is not a
 dependency it may guess about. (`.git` and `.godot` are never walked, in either
-mode.) With every semantic rule disabled
+mode.) The universe is the whole project: `exclude` and `.gdkitignore` narrow
+only what lint reports on, and nothing narrows what a semantic run reads.
+gdkit honors neither Godot's `.gdignore` nor a nested `project.godot`, so a
+duplicate checkout of the project under the root — a worktree, a backup copy —
+declares every `class_name` twice, which keeps those names ambiguous and makes
+the rule go quiet rather than guess. Keep such copies outside the project root.
+With every semantic rule disabled
 or still inert, nothing changes: the filters stay on discovery and an excluded
 file is neither read nor parsed.
 

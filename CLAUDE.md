@@ -64,7 +64,14 @@ the default branch.
   nonsemantic run keeps the filters on discovery and reads no excluded file.
   Broad loading also means an excluded script that fails to parse now makes
   project globals incomplete, which is the intended fail-closed direction: a
-  dependent answer becomes a reasoned `Unknown` and the rule stays silent.
+  dependent answer becomes a reasoned `Unknown` and the rule stays silent, as
+  does one that cannot be read at all, which is an exit-2 `project.load`
+  failure. Nothing prunes the universe but the `.git`/`.godot` check, because
+  this issue does not redefine it: gdkit honors neither `.gdignore` nor a
+  nested `project.godot`, so a duplicate checkout of the project under the root
+  declares every `class_name` twice and keeps those names ambiguous. A
+  universe-level pruning boundary is a separate change, not a loosening of the
+  selection split.
   Rule names are a public contract; they appear in JSON output, in config, and in
   inline ignore comments, so renaming one breaks user projects. `godot_version`
   decides whether a typing rule's fix can be written at all, and a finding whose
