@@ -712,3 +712,46 @@ func snapshotTree(t *testing.T, root string) map[string]string {
 	}
 	return tree
 }
+
+// TestRunLintDoesNotReportInsideANestedMount is the end-to-end bound on the
+// capability. Enabling one semantic rule puts a mounted addon in the
+// dependency universe, which is the point — but it must not change what every
+// *other* rule reports on. A project would otherwise see new findings in an
+// external checkout it does not own from turning on an unrelated rule.
+func TestRunLintDoesNotReportInsideANestedMount(t *testing.T) {
+	root := t.TempDir()
+	// Nothing excludes the mount, and the mounted script carries a finding any
+	// default rule would report: the only thing keeping it quiet is that a
+	// nonsemantic run could never have reached it.
+	writeCLIFile(t, root, "features/pack_view.gd",
+		"func run() -> void:\n\tvar packs := [PackManifest.new()]\n\tprint(packs)\n")
+	mountCLIAddon(t, root, "features/shared_runtime", map[string]string{
+		"pack_manifest.gd": "class_name PackManifest\nextends RefCounted\n\n\nfunc BadName() -> void:\n\tpass\n",
+	})
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("nonsemantic exit %d, want 0: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("semantic exit %d, want 1: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var report lint.Report
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v (%s)", err, stdout.String())
+	}
+	// The mounted class resolved, which is what the universe walk is for.
+	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Path != "features/pack_view.gd" ||
+		report.Diagnostics[0].Rule != "require-typed-collection" {
+		t.Fatalf("diagnostics = %+v, want only the selected consumer's finding", report.Diagnostics)
+	}
+	for _, diagnostic := range report.Diagnostics {
+		if strings.HasPrefix(diagnostic.Path, "features/shared_runtime/") {
+			t.Errorf("a rule reported inside the mount: %+v", diagnostic)
+		}
+	}
+}

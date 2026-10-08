@@ -581,7 +581,11 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 			return nil, err
 		}
 	}
-	selected, err := selectPaths(root, config.Selection, paths)
+	var mounts []string
+	if walk != nil {
+		mounts = walk.mountPaths()
+	}
+	selected, err := selectPaths(root, config.Selection, mounts, paths)
 	if err != nil {
 		return nil, err
 	}
@@ -760,7 +764,7 @@ func loadAutoloads(root string) (map[string]string, error) {
 // selectPaths returns the subset of paths that selection admits, sorted. A nil
 // selection admits everything, which is what a tool that does not need to index
 // more than it acts on passes.
-func selectPaths(root string, selection *Selection, paths []string) ([]string, error) {
+func selectPaths(root string, selection *Selection, mounts []string, paths []string) ([]string, error) {
 	if selection == nil {
 		return paths, nil
 	}
@@ -786,7 +790,7 @@ func selectPaths(root string, selection *Selection, paths []string) ([]string, e
 		if ignored.Ignored(path, false) {
 			continue
 		}
-		if !admitted(selection.Exclude, roots, path) {
+		if !admitted(selection.Exclude, roots, mounts, path) {
 			continue
 		}
 		selected = append(selected, path)
@@ -824,19 +828,68 @@ func selectionRoots(root string, sourceRoots []string) ([]string, error) {
 // excluding it, which is what the walk discovers: each root is walked
 // separately, so a path pruned under one root is still discovered under another
 // that admits it.
-func admitted(patterns []string, roots []string, path string) bool {
+func admitted(patterns []string, roots []string, mounts []string, path string) bool {
 	if len(roots) == 0 {
 		// Load defaults an empty source-root list to the project root.
-		return !excludedUnder(patterns, ".", path)
+		return filteredWalkReaches(mounts, ".", path) && !excludedUnder(patterns, ".", path)
 	}
 	for _, root := range roots {
 		if root == "" || root == "." || path == root || strings.HasPrefix(path, root+"/") {
-			if !excludedUnder(patterns, root, path) {
+			if filteredWalkReaches(mounts, root, path) && !excludedUnder(patterns, root, path) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// filteredWalkReaches reports whether a filtered walk rooted at root would have
+// discovered path, given the directory mounts the universe walk followed to
+// reach it. It answers true for every path when no mount was followed, which is
+// every load but a semantic lint run.
+//
+// Following mounts is the one thing that can make the two walks disagree, and
+// the disagreement has to be resolved here or the selection equality this
+// package promises stops holding. A filtered walk is capability-off, and
+// filepath.WalkDir resolves the symlinks *inside* the path of the root it is
+// handed — the kernel does, when it stats it — while skipping any link it meets
+// below that root. So a mount strictly above a source root is transparent to
+// both walks, and what it holds is selectable: that is the layout of a project
+// whose whole source tree is mounted, and the case this capability had to keep
+// working. A mount at or below a source root is reached only by the universe
+// walk, so what it holds stays a read-only dependency.
+//
+// Without this, enabling one semantic rule would make every *other* rule start
+// reporting on an external checkout that a run with the rule off never reads —
+// a project would see new findings in files it does not own from turning on an
+// unrelated rule, which is exactly what the universe/selection split exists to
+// prevent.
+func filteredWalkReaches(mounts []string, root, path string) bool {
+	for _, mount := range mounts {
+		if path != mount && !strings.HasPrefix(path, mount+"/") {
+			continue
+		}
+		// A root strictly below the mount is a path whose symlink the kernel
+		// resolves for the filtered walk too. Anything else — including a root
+		// that is itself the mount, which WalkDir lstats and never enters — is
+		// not reachable without this capability.
+		if !strings.HasPrefix(root, mount+"/") {
+			return false
+		}
+	}
+	return true
+}
+
+// mountPaths returns the logical path of every directory symlink this walk
+// followed, sorted. It is the only part of the walk's physical evidence that
+// outlives it, and it carries no resolved path.
+func (w *symlinkWalk) mountPaths() []string {
+	logical := make([]string, 0, len(w.mounts))
+	for _, mount := range w.mounts {
+		logical = append(logical, mount.logical)
+	}
+	sort.Strings(logical)
+	return logical
 }
 
 // excludedUnder reports whether patterns cover path or any directory between

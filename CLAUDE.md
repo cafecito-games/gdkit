@@ -174,6 +174,19 @@ the default branch.
   `prunesDirectory` is shared by the callback and the walk so a link the walk
   would never have entered is never resolved, and a broken link under an
   excluded or ignored directory cannot fail a load that used to pass.
+  Following mounts is also the one thing that can make the universe walk and a
+  filtered walk disagree, so `filteredWalkReaches` resolves the disagreement
+  inside `admitted` rather than letting it reach `Selected`. A mount strictly
+  above a source root is transparent to both walks, because the kernel resolves
+  it when `WalkDir` stats the root it was handed, so what it holds stays
+  selectable — that is the layout the capability had to keep working. A mount
+  at or below a source root is reached only by the universe walk, so what it
+  holds is a dependency and never an action. Without that, enabling one
+  semantic rule would make every *other* rule start reporting findings in an
+  external checkout a run with the rule off never reads, which is precisely
+  what the universe/selection split exists to prevent; `walk.mountPaths` is the
+  only part of the walk's physical evidence that outlives it, and it carries
+  logical paths only.
   Everything else fails closed: an unresolvable or unstattable link is an error
   naming its logical path and is never guessed to have been one of the file
   symlinks the capability leaves alone. `loaderHooks` is the unexported,

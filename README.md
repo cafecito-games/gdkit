@@ -386,9 +386,18 @@ addons/worldmap_runtime -> ../../common/godot-addons/worldmap_runtime
 
 The mounted scripts enter the universe as `addons/worldmap_runtime/...`, which
 is the only path they are ever reported or resolved by; the directory they
-physically live in never appears. Following is read-only and limited to the
-semantic universe: `gdkit format`, `gdkit gen`, and `gdkit uid` do not enter a
-mount, so no gdkit write can reach a checkout outside the project. A link the
+physically live in never appears.
+
+A mount is a **dependency, not something lint reports on**. Enabling a semantic
+rule never changes what any other rule reports on, so no finding is emitted
+inside a mount that a run with the rule off could not have reached: a mount
+below a `source_roots` entry is read and resolved but never reported. The one
+exception is a mount *above* a `source_roots` entry — a project whose whole
+source tree is mounted — which a run with the rule off already reaches too,
+because the filesystem resolves the link when lint walks that root.
+
+Following is read-only: `gdkit format`, `gdkit gen`, and `gdkit uid` do not
+enter a mount, so no gdkit write can reach a checkout outside the project. A link the
 run cannot resolve or cannot prove to name a directory fails the run with exit
 `2` and a `project.load` failure naming the link's project path — a mount Godot
 would load but gdkit cannot read is not one it may guess about — and so does a

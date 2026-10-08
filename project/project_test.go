@@ -1740,3 +1740,131 @@ func TestLoadHooksDoNotAffectAnUnaffectedLoad(t *testing.T) {
 		t.Errorf("the file boundary reported %v, want every published path %v", files, plain.Paths)
 	}
 }
+
+// TestFollowDirectorySymlinksKeepsANestedMountOutOfSelected is the bound the
+// capability must not cross. A mount below a source root is reached only by the
+// capability-on universe walk, so what it holds is a read-only dependency: it
+// belongs in Paths, where semantic analysis can resolve it, and must stay out
+// of Selected, where it would become something the caller acts on.
+//
+// The equality this package promises is the reason. Selected has to equal what
+// a filtered walk of the same three filters discovers, and a filtered walk is
+// capability-off and skips the link. Without that, turning on one semantic lint
+// rule would make every other rule start reporting findings in an external
+// checkout the project does not own.
+func TestFollowDirectorySymlinksKeepsANestedMountOutOfSelected(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"features/pack_view.gd": "var manifest: PackManifest\n"})
+	mountExternal(t, root, "features/shared_runtime", map[string]string{
+		"pack_manifest.gd": "class_name PackManifest\n",
+	})
+	// Nothing excludes the mount: the only thing keeping it out of Selected is
+	// that a filtered walk could not have reached it.
+	selection := &Selection{SourceRoots: []string{"."}}
+
+	filtered, err := Load(Config{Root: root, SourceRoots: selection.SourceRoots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(filtered.Paths, []string{"features/pack_view.gd"}) {
+		t.Fatalf("the filtered walk discovered %v", filtered.Paths)
+	}
+
+	broad, err := Load(Config{Root: root, FollowDirectorySymlinks: true, Selection: selection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mounted := "features/shared_runtime/pack_manifest.gd"
+	if !slices.Contains(broad.Paths, mounted) {
+		t.Fatalf("the mount did not enter the universe: %v", broad.Paths)
+	}
+	if !slices.Equal(broad.Selected, filtered.Paths) {
+		t.Fatalf("Selected = %v, want exactly the filtered walk's Paths %v", broad.Selected, filtered.Paths)
+	}
+}
+
+// TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForEveryMountShape
+// is the whole rule in one table. For each layout, Selected under a
+// capability-on Selection must equal Paths under a capability-off filtered
+// walk of the same filters — the only difference being that a mount strictly
+// above a source root is transparent to both walks, because the kernel
+// resolves it when the filtered walk stats the root it was handed.
+func TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForEveryMountShape(t *testing.T) {
+	cases := []struct {
+		name        string
+		mount       string
+		sourceRoots []string
+		exclude     []string
+		// wantSelected is what both walks must agree on.
+		wantSelected []string
+	}{
+		{
+			name:         "a mount above the source root is transparent to both walks",
+			mount:        "mounted",
+			sourceRoots:  []string{"mounted/src"},
+			wantSelected: []string{"mounted/src/mounted.gd"},
+		},
+		{
+			name:         "a mount below the source root is a dependency only",
+			mount:        "features/shared",
+			sourceRoots:  []string{"features"},
+			wantSelected: []string{"features/own.gd"},
+		},
+		{
+			name:         "a mount at the project root is a dependency only",
+			mount:        "shared",
+			sourceRoots:  []string{"."},
+			wantSelected: []string{"features/own.gd"},
+		},
+		{
+			name:         "a mount that is itself the source root is reached by neither",
+			mount:        "src",
+			sourceRoots:  []string{"src"},
+			wantSelected: nil,
+		},
+		{
+			name:         "an excluded mount above the source root is excluded by both",
+			mount:        "mounted",
+			sourceRoots:  []string{"mounted/src"},
+			exclude:      []string{"mounted/src/**"},
+			wantSelected: nil,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFiles(t, root, map[string]string{"features/own.gd": "var own := 1\n"})
+			mountExternal(t, root, testCase.mount, map[string]string{
+				"mounted.gd":     "class_name Mounted\n",
+				"src/mounted.gd": "class_name MountedSource\n",
+			})
+
+			filtered, err := Load(Config{
+				Root:        root,
+				SourceRoots: testCase.sourceRoots,
+				Exclude:     testCase.exclude,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(filtered.Paths, testCase.wantSelected) {
+				t.Fatalf("the filtered walk discovered %v, want %v", filtered.Paths, testCase.wantSelected)
+			}
+
+			broad, err := Load(Config{
+				Root:                    root,
+				FollowDirectorySymlinks: true,
+				Selection: &Selection{
+					SourceRoots: testCase.sourceRoots,
+					Exclude:     testCase.exclude,
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(broad.Selected, filtered.Paths) {
+				t.Fatalf("Selected = %v, want the filtered walk's Paths %v", broad.Selected, filtered.Paths)
+			}
+		})
+	}
+}
