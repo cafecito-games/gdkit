@@ -948,6 +948,15 @@ func TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks(t *testing.T) {
 			},
 		},
 		{
+			// The walk visits the source root itself, so a pattern matching the
+			// root prunes everything under it -- under every root, since each
+			// root's own walk starts by matching it.
+			name:        "exclude matching the source root itself",
+			sourceRoots: []string{"src", "src/nested"},
+			exclude:     []string{"src/nested"},
+			wantPaths:   []string{"src/generated/gen.gd", "src/hidden.gd", "src/keep.gd"},
+		},
+		{
 			name:        "all three filters together",
 			sourceRoots: []string{"src"},
 			exclude:     []string{"**/generated/**"},
@@ -1012,5 +1021,44 @@ func TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks(t *testing.T) {
 				t.Fatalf("broad Paths = %v, want the whole universe %v", broad.Paths, universe)
 			}
 		})
+	}
+}
+
+// TestSelectionDoesNotExcludeAboveTheSourceRoot is the other bound on matching
+// an exclude pattern against a path's directories: the walk starts at the
+// source root and never visits anything above it, so a pattern that matches an
+// ancestor of the root must prune nothing. Testing every directory from the
+// project root down would drop the whole tree here.
+func TestSelectionDoesNotExcludeAboveTheSourceRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{"addons/mine/src/a.gd": "class_name A\n"})
+	sourceRoots := []string{"addons/mine/src"}
+	exclude := []string{"addons/*"}
+
+	filtered, err := Load(Config{
+		Root:            root,
+		SourceRoots:     sourceRoots,
+		Exclude:         exclude,
+		HonorIgnoreFile: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broad, err := Load(Config{
+		Root: root,
+		Selection: &Selection{
+			SourceRoots:     sourceRoots,
+			Exclude:         exclude,
+			HonorIgnoreFile: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(filtered.Paths, []string{"addons/mine/src/a.gd"}) {
+		t.Fatalf("filtered Paths = %v, want the script under the source root", filtered.Paths)
+	}
+	if !slices.Equal(broad.Selected, filtered.Paths) {
+		t.Fatalf("broad Selected = %v, want filtered Paths %v", broad.Selected, filtered.Paths)
 	}
 }

@@ -688,13 +688,10 @@ func selectPaths(root string, selection *Selection, paths []string) ([]string, e
 	}
 	selected := make([]string, 0, len(paths))
 	for _, path := range paths {
-		if !underAnyRoot(path, roots) {
-			continue
-		}
-		if excluded(selection.Exclude, path) {
-			continue
-		}
 		if ignored.Ignored(path, false) {
+			continue
+		}
+		if !admitted(selection.Exclude, roots, path) {
 			continue
 		}
 		selected = append(selected, path)
@@ -728,35 +725,52 @@ func selectionRoots(root string, sourceRoots []string) ([]string, error) {
 	return resolved, nil
 }
 
-// excluded reports whether patterns cover path or any directory above it. The
-// walk prunes a directory that matches either as "dir" or as "dir/", so a
-// pattern naming a directory rather than the files beneath it, such as
-// "generated" or "addons/*", has to exclude its contents here as well.
-func excluded(patterns []string, path string) bool {
-	if glob.MatchAny(patterns, path) {
-		return true
+// admitted reports whether one of roots admits path with none of patterns
+// excluding it, which is what the walk discovers: each root is walked
+// separately, so a path pruned under one root is still discovered under another
+// that admits it.
+func admitted(patterns []string, roots []string, path string) bool {
+	if len(roots) == 0 {
+		// Load defaults an empty source-root list to the project root.
+		return !excludedUnder(patterns, ".", path)
 	}
-	for index, character := range path {
-		if character != '/' {
-			continue
-		}
-		directory := path[:index]
-		if glob.MatchAny(patterns, directory) || glob.MatchAny(patterns, directory+"/") {
-			return true
+	for _, root := range roots {
+		if root == "" || root == "." || path == root || strings.HasPrefix(path, root+"/") {
+			if !excludedUnder(patterns, root, path) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// underAnyRoot reports whether path sits under one of roots. No roots, or a
-// root of "." , admits everything, matching how Load defaults SourceRoots.
-func underAnyRoot(path string, roots []string) bool {
-	if len(roots) == 0 {
+// excludedUnder reports whether patterns cover path or any directory between
+// root and path, matching each directory as both "dir" and "dir/" the way the
+// walk prunes one. Two bounds are load-bearing. A pattern naming a directory
+// rather than the files beneath it, such as "generated" or "addons/*", has to
+// exclude its contents, so every directory under root is tested. And the walk
+// starts at root and never visits anything above it, so a pattern that happens
+// to match an ancestor of root must not exclude what is inside it: with a root
+// of "addons/mine/src", "addons/*" prunes nothing.
+func excludedUnder(patterns []string, root, path string) bool {
+	if glob.MatchAny(patterns, path) {
 		return true
 	}
-	for _, root := range roots {
-		root = strings.TrimSuffix(filepath.ToSlash(root), "/")
-		if root == "" || root == "." || path == root || strings.HasPrefix(path, root+"/") {
+	// The walk skips the "." callback, so the project root itself is never
+	// matched; a named root is.
+	start := 0
+	if root != "" && root != "." {
+		if glob.MatchAny(patterns, root) || glob.MatchAny(patterns, root+"/") {
+			return true
+		}
+		start = len(root) + 1
+	}
+	for index := start; index < len(path); index++ {
+		if path[index] != '/' {
+			continue
+		}
+		directory := path[:index]
+		if glob.MatchAny(patterns, directory) || glob.MatchAny(patterns, directory+"/") {
 			return true
 		}
 	}
