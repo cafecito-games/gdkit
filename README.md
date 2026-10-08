@@ -393,8 +393,9 @@ rule never changes what any other rule reports on, so no finding is emitted
 inside a mount that a run with the rule off could not have reached: a mount
 below a `source_roots` entry is read and resolved but never reported. The one
 exception is a mount *above* a `source_roots` entry — a project whose whole
-source tree is mounted — which a run with the rule off already reaches too,
-because the filesystem resolves the link when lint walks that root.
+source tree is mounted, including one whose root path you name through a link —
+which a run with the rule off already reaches too, because the filesystem
+resolves the link when lint walks that root.
 
 Following is read-only: `gdkit format`, `gdkit gen`, and `gdkit uid` do not
 enter a mount, so no gdkit write can reach a checkout outside the project. A link the

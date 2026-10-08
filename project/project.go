@@ -865,18 +865,40 @@ func admitted(patterns []string, roots []string, mounts []string, path string) b
 // prevent.
 func filteredWalkReaches(mounts []string, root, path string) bool {
 	for _, mount := range mounts {
-		if path != mount && !strings.HasPrefix(path, mount+"/") {
+		if !pathWithinDirectory(mount, path) {
 			continue
 		}
 		// A root strictly below the mount is a path whose symlink the kernel
 		// resolves for the filtered walk too. Anything else — including a root
 		// that is itself the mount, which WalkDir lstats and never enters — is
 		// not reachable without this capability.
-		if !strings.HasPrefix(root, mount+"/") {
+		if !strictlyBelowDirectory(mount, root) {
 			return false
 		}
 	}
 	return true
+}
+
+// pathWithinDirectory reports whether path is directory itself or lies inside
+// it, with "." standing for the project root and so containing everything. The
+// project root is a directory the walk can mount, because a source root may be
+// the project root and may itself be a link.
+func pathWithinDirectory(directory, path string) bool {
+	if directory == "." || directory == "" {
+		return true
+	}
+	return path == directory || strings.HasPrefix(path, directory+"/")
+}
+
+// strictlyBelowDirectory reports whether path lies inside directory and is not
+// directory itself. The distinction is the whole rule: a filtered walk handed a
+// root strictly inside a mount has the link resolved for it by the kernel,
+// while one handed the mount itself lstats a symlink and walks nothing.
+func strictlyBelowDirectory(directory, path string) bool {
+	if directory == "." || directory == "" {
+		return path != "." && path != ""
+	}
+	return strings.HasPrefix(path, directory+"/")
 }
 
 // mountPaths returns the logical path of every directory symlink this walk
@@ -1027,6 +1049,15 @@ func (w *symlinkWalk) walkRoot(absolute, logical string) error {
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("%s: not a directory", logical)
+	}
+	// A source root that is itself a link is a mount like any other, and has
+	// to be recorded as one. filepath.WalkDir lstats the root it is handed, so
+	// a filtered walk of this root discovers nothing at all; without the
+	// record, selection would not know that and would admit the whole tree.
+	// Load's own os.Stat check passes either way, because it follows the link,
+	// which is why nothing above here notices.
+	if lstat, lstatErr := os.Lstat(absolute); lstatErr == nil && lstat.Mode()&fs.ModeSymlink != 0 {
+		w.mounts = append(w.mounts, mountEvidence{logical: logical, target: info})
 	}
 	// WalkDir reports the walked root to the callback, and an exclude pattern
 	// naming a source root prunes it there, so the root is reported here too.

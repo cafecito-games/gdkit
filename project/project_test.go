@@ -1483,6 +1483,24 @@ func TestFollowDirectorySymlinksWalksASourceRootThatIsItselfALink(t *testing.T) 
 	if !slices.Equal(snapshot.Paths, []string{"src/player.gd"}) {
 		t.Fatalf("Paths = %v", snapshot.Paths)
 	}
+	// A nil Selection selects everything discovered, which is what the other
+	// four tools pass. Under a Selection naming the same root, the link is a
+	// mount the filtered walk could not have entered, so what it holds is a
+	// dependency only.
+	selected, err := Load(Config{
+		Root:                    root,
+		FollowDirectorySymlinks: true,
+		Selection:               &Selection{SourceRoots: []string{"src"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected.Selected) != 0 {
+		t.Fatalf("Selected = %v, want nothing the filtered walk could not reach", selected.Selected)
+	}
+	if !slices.Equal(selected.Paths, []string{"src/player.gd"}) {
+		t.Fatalf("Paths = %v, want the mount as a dependency", selected.Paths)
+	}
 }
 
 // TestFollowDirectorySymlinksIsDeterministic pins the idempotency the snapshot
@@ -1910,5 +1928,76 @@ func TestFollowDirectorySymlinksDecidesCyclesOnFileIdentity(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), root) {
 		t.Fatalf("the cycle error named a host path: %q", err)
+	}
+}
+
+// TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForASymlinkedRoot
+// is the mount shape the project root itself can be. A caller may name the
+// project through a link — "gdkit lint check /path/to/link" — and Load keeps
+// that spelling, because filepath.Abs does not resolve it and the os.Stat root
+// check passes either way by following it.
+//
+// filepath.WalkDir lstats the root it is handed, so a filtered walk of a
+// symlinked project root discovers nothing at all, while the capability-on walk
+// resolves it and discovers everything. Recording the root link as a mount is
+// what keeps selection in step with that: a source root strictly inside the
+// link is reached by both walks, because the kernel resolves the link for the
+// filtered walk too, and the link itself is reached by neither.
+func TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForASymlinkedRoot(t *testing.T) {
+	cases := []struct {
+		name         string
+		sourceRoots  []string
+		wantSelected []string
+	}{
+		{
+			name:         "the source root is the symlinked project root",
+			sourceRoots:  []string{"."},
+			wantSelected: nil,
+		},
+		{
+			name:         "the source root is inside the symlinked project root",
+			sourceRoots:  []string{"features"},
+			wantSelected: []string{"features/own.gd"},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			base := t.TempDir()
+			real := filepath.Join(base, "real")
+			writeFiles(t, real, map[string]string{
+				"features/own.gd": "var own := 1\n",
+				"top.gd":          "var top := 1\n",
+			})
+			linked := filepath.Join(base, "link")
+			if err := os.Symlink(real, linked); err != nil {
+				t.Skipf("this platform cannot create a directory symlink: %v", err)
+			}
+
+			filtered, err := Load(Config{Root: linked, SourceRoots: testCase.sourceRoots})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(filtered.Paths, testCase.wantSelected) {
+				t.Fatalf("the filtered walk discovered %v, want %v", filtered.Paths, testCase.wantSelected)
+			}
+
+			broad, err := Load(Config{
+				Root:                    linked,
+				FollowDirectorySymlinks: true,
+				Selection:               &Selection{SourceRoots: testCase.sourceRoots},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(broad.Selected, filtered.Paths) {
+				t.Fatalf("Selected = %v, want the filtered walk's Paths %v", broad.Selected, filtered.Paths)
+			}
+			// The universe is still the whole resolved tree, which is the
+			// point: a dependency stays resolvable even when nothing under the
+			// mounted root may be acted on.
+			if !slices.Contains(broad.Paths, "features/own.gd") || !slices.Contains(broad.Paths, "top.gd") {
+				t.Fatalf("the resolved root did not enter the universe: %v", broad.Paths)
+			}
+		})
 	}
 }

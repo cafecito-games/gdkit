@@ -190,7 +190,13 @@ the default branch.
   it when `WalkDir` stats the root it was handed, so what it holds stays
   selectable — that is the layout the capability had to keep working. A mount
   at or below a source root is reached only by the universe walk, so what it
-  holds is a dependency and never an action. Without that, enabling one
+  holds is a dependency and never an action. A source root that is *itself* a
+  link is a mount too, recorded by `walkRoot`: `WalkDir` lstats the root it is
+  handed, so a filtered walk of one discovers nothing, while `Load`'s own
+  `os.Stat` check passes by following it and so notices nothing. The project
+  root can be that mount, which is why `pathWithinDirectory` and
+  `strictlyBelowDirectory` spell `"."` out rather than relying on prefix
+  arithmetic. Without that, enabling one
   semantic rule would make every *other* rule start reporting findings in an
   external checkout a run with the rule off never reads, which is precisely
   what the universe/selection split exists to prevent; `walk.mountPaths` is the
