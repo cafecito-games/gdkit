@@ -470,3 +470,54 @@ func runLintJSON(t *testing.T, root string, wantCode int, extra ...string) lint.
 	}
 	return report
 }
+
+// TestLintSemanticRunFailsOnAnUnreadableExcludedDependency pins the documented
+// consequence of loading a broad universe: a semantic run reads the scripts
+// `exclude` keeps out of its findings, so one it cannot read is an exit-2
+// project.load failure rather than a clean run. Failing closed is the contract
+// — a dependency gdkit cannot read is not one it may guess about — and the
+// nonsemantic run below shows the filtered walk still never opens it.
+func TestLintSemanticRunFailsOnAnUnreadableExcludedDependency(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads an unreadable directory anyway")
+	}
+	root := t.TempDir()
+	writeCLIFile(t, root, ".gdkit/lint.json", `{"version": 1, "exclude": ["generated/**"]}`)
+	writeCLIFile(t, root, "generated/proto.gd", "class_name Proto\n")
+	writeCLIFile(t, root, "a.gd", "var a := 1\n")
+	sealed := filepath.Join(root, "generated")
+	if err := os.Chmod(sealed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sealed, 0o755) })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root},
+		&stdout, &stderr); code != 2 {
+		t.Fatalf("semantic exit %d, want 2: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty so a consumer can tell no report from an empty one", stdout.String())
+	}
+	var envelope struct {
+		Error struct {
+			Kind    string `json:"kind"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(stderr.Bytes(), &envelope); err != nil {
+		t.Fatalf("stderr is not a JSON envelope: %v (%s)", err, stderr.String())
+	}
+	if envelope.Error.Kind != "project.load" {
+		t.Fatalf("failure kind = %q, want project.load (%s)", envelope.Error.Kind, stderr.String())
+	}
+	if !strings.Contains(envelope.Error.Message, "generated") {
+		t.Fatalf("failure message = %q, want the unreadable dependency named", envelope.Error.Message)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("nonsemantic exit %d, want 0: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
