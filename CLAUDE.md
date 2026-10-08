@@ -52,6 +52,19 @@ the default branch.
 - `architecture/` — the dependency analyzer: layer and feature boundaries, cycles,
   and engine purity (the substance of `gdkit arch`).
 - `lint/` — the linter: a registry of single-file rules over a `project.Snapshot`.
+  `Lint` acts on `Snapshot.Selected`, not `Snapshot.Paths`, while the run-local
+  semantic analyzer is built from the whole snapshot. That split is why
+  `Linter.NeedsSemanticAnalysis` is exported: `cmd/gdkit` has to choose the load
+  shape before `Lint` runs, and in a semantic run it moves lint's
+  `source_roots`, `exclude`, and `.gdkitignore` into `project.Config.Selection`
+  so an excluded generated or vendored script stays a read-only dependency
+  instead of disappearing from the semantic `SourceSet`. The method answers from
+  the same `rulesNeedSemanticAnalysis(l.enabled)` decision `Lint` consults, so
+  the load boundary cannot load one universe while `Lint` analyses another. A
+  nonsemantic run keeps the filters on discovery and reads no excluded file.
+  Broad loading also means an excluded script that fails to parse now makes
+  project globals incomplete, which is the intended fail-closed direction: a
+  dependent answer becomes a reasoned `Unknown` and the rule stays silent.
   Rule names are a public contract; they appear in JSON output, in config, and in
   inline ignore comments, so renaming one breaks user projects. `godot_version`
   decides whether a typing rule's fix can be written at all, and a finding whose
@@ -121,8 +134,14 @@ the default branch.
   leaves it off, because hiding a file would drop its `class_name` from the
   index. `Config.Selection` is the third option, for a tool that must index
   more than it writes: the universe is walked and parsed unfiltered while
-  `Snapshot.Selected` names the subset the caller acts on. `generate` uses it;
-  the other four pass `Selection: nil`, which selects everything.
+  `Snapshot.Selected` names the subset the caller acts on. `generate` uses it,
+  and so does `lint` in a semantic run; the other three pass `Selection: nil`,
+  which selects everything. A nil selection makes `Selected` be `Paths` itself,
+  which is what keeps a filtered load and a hand-built snapshot working — a
+  fixture that populates only `Paths` lints nothing.
+  `TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks` pins the equality lint
+  depends on: `Selected` under a `Selection` equals `Paths` under the same three
+  filters applied to discovery.
   `Snapshot.Autoloads` holds the manifest's `[autoload]` table, because Godot
   resolves an autoload identifier as a project global while analysing a base
   class, so `extends SomeAutoload` is a real inheritance edge. `Snapshot.UIDs` resolves an identifier to one path and covers every

@@ -875,3 +875,64 @@ func TestLoadWithNoManifestHasNoAutoloads(t *testing.T) {
 		t.Errorf("Autoloads = %v, want empty", snapshot.Autoloads)
 	}
 }
+
+// TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks pins the equality lint
+// depends on when it moves its source_roots, exclude, and .gdkitignore filters
+// from discovery into Selection so the semantic analyzer can see every script:
+// the broad load's Selected must be the filtered load's Paths. A divergence
+// means the move dropped or widened one of the three filters, and the broad
+// run would then report on a different set of files than lint reports on today.
+func TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks(t *testing.T) {
+	root := t.TempDir()
+	writeFiles(t, root, map[string]string{
+		"src/keep.gd":          "class_name Keep\n",
+		"src/nested/keep.gd":   "class_name NestedKeep\n",
+		"src/generated/gen.gd": "class_name Gen\n",
+		"src/hidden.gd":        "class_name Hidden\n",
+		"tools/outside.gd":     "class_name Outside\n",
+		"addons/vendor.gd":     "class_name Vendor\n",
+		IgnoreFileName:         "src/hidden.gd\n",
+	})
+	sourceRoots := []string{"src"}
+	exclude := []string{"**/generated/**", "addons/**"}
+
+	filtered, err := Load(Config{
+		Root:            root,
+		SourceRoots:     sourceRoots,
+		Exclude:         exclude,
+		HonorIgnoreFile: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broad, err := Load(Config{
+		Root: root,
+		Selection: &Selection{
+			SourceRoots:     sourceRoots,
+			Exclude:         exclude,
+			HonorIgnoreFile: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !slices.Equal(broad.Selected, filtered.Paths) {
+		t.Fatalf("broad Selected = %v, want filtered Paths %v", broad.Selected, filtered.Paths)
+	}
+	if len(filtered.Paths) == 0 {
+		t.Fatal("the fixture must admit at least one script, or the equality is vacuous")
+	}
+	// The whole point of the move: the universe is strictly larger, and every
+	// excluded, ignored, and out-of-root script is still parsed and indexed.
+	for _, path := range []string{
+		"src/generated/gen.gd", "src/hidden.gd", "tools/outside.gd", "addons/vendor.gd",
+	} {
+		if broad.Scripts[path] == nil {
+			t.Errorf("broad Paths is missing dependency %s", path)
+		}
+		if filtered.Scripts[path] != nil {
+			t.Errorf("filtered discovery unexpectedly walked %s", path)
+		}
+	}
+}

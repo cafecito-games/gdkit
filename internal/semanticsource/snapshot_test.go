@@ -23,7 +23,13 @@ func TestSnapshotUsesFullUniverseAndResolvesStaticScriptPaths(t *testing.T) {
 		"nested/sub.gd": "extends \"../base.gd\"\n",
 		"hidden.gd":     "class_name Hidden\n",
 		"broken.gd":     "func (((\n",
-		"project.godot": "[autoload]\nGameState=\"*res://base.gd\"\n",
+		// An excluded dependency: unselected by Selection.Exclude, yet still
+		// walked, parsed, and -- when it does not parse -- retained as
+		// failure evidence, which is what makes a dependent answer a reasoned
+		// Unknown rather than an absent one.
+		"generated/gen.gd":    "class_name Gen\n",
+		"generated/broken.gd": "func )))\n",
+		"project.godot":       "[autoload]\nGameState=\"*res://base.gd\"\n",
 	}
 	for name, contents := range files {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
@@ -34,20 +40,31 @@ func TestSnapshotUsesFullUniverseAndResolvesStaticScriptPaths(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	snapshot, err := project.Load(project.Config{Root: root, Selection: &project.Selection{SourceRoots: []string{"."}, HonorIgnoreFile: true}})
+	snapshot, err := project.Load(project.Config{Root: root, Selection: &project.Selection{
+		SourceRoots:     []string{"."},
+		Exclude:         []string{"generated/**"},
+		HonorIgnoreFile: true,
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slices.Contains(snapshot.Selected, "hidden.gd") {
-		t.Fatal("fixture did not exclude hidden.gd")
+	for _, unselected := range []string{"hidden.gd", "generated/gen.gd", "generated/broken.gd"} {
+		if slices.Contains(snapshot.Selected, unselected) {
+			t.Fatalf("fixture did not exclude %s from Selected", unselected)
+		}
 	}
 	source := NewSnapshot(snapshot)
-	if !slices.Contains(source.Paths(), "hidden.gd") {
-		t.Fatalf("Paths = %v, want ignored file in full universe", source.Paths())
+	for _, unselected := range []string{"hidden.gd", "generated/gen.gd"} {
+		if !slices.Contains(source.Paths(), unselected) {
+			t.Fatalf("Paths = %v, want unselected file %s in the full universe", source.Paths(), unselected)
+		}
 	}
 	index := semantic.BuildIndex(source)
 	if index.Classes["hidden.gd"] == nil {
 		t.Error("ignored class was dropped from semantic index")
+	}
+	if index.Classes["generated/gen.gd"] == nil {
+		t.Error("excluded class was dropped from semantic index")
 	}
 	for _, test := range []struct{ from, target, want string }{
 		{"nested/sub.gd", "../base.gd", "base.gd"},
@@ -67,7 +84,7 @@ func TestSnapshotUsesFullUniverseAndResolvesStaticScriptPaths(t *testing.T) {
 	if source.Autoloads()["GameState"] != "base.gd" {
 		t.Errorf("Autoloads = %v", source.Autoloads())
 	}
-	if !slices.Equal(source.ParseFailures(), []string{"broken.gd"}) {
+	if !slices.Equal(source.ParseFailures(), []string{"broken.gd", "generated/broken.gd"}) {
 		t.Errorf("ParseFailures = %v", source.ParseFailures())
 	}
 }

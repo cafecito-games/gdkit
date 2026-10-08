@@ -352,6 +352,23 @@ comma-separated list in addition to the file. `exclude` uses the same glob
 syntax as the architecture configuration. `gdkit lint check` also skips the
 paths listed in [`.gdkitignore`](#ignoring-files-with-gdkitignore).
 
+`source_roots`, `exclude`, and `.gdkitignore` always decide which files lint
+reports on. When an enabled rule needs whole-project semantic analysis — today
+only `require-typed-collection` — they stop deciding what lint *reads*: the
+whole project is walked and parsed as the dependency universe, and the three
+filters narrow only the set of files that may produce a diagnostic. A selected
+script can then resolve a `class_name`, an enum member, a method signature, or
+a return type declared in a generated or vendored script the project excluded,
+which is what Godot itself does, while no rule, suppression, `unknown-ignore`,
+or `source-parse` finding is ever emitted for an excluded path. Two consequences
+follow, both deliberate: an excluded script that does not parse makes project
+global resolution incomplete, so dependent answers become a reasoned `Unknown`
+and the rule stays silent rather than guessing; and a `class_name` declared in
+both a selected and an excluded script stays ambiguous, because neither
+selection nor walk order may pick a winner. With every semantic rule disabled
+or still inert, nothing changes: the filters stay on discovery and an excluded
+file is neither read nor parsed.
+
 `enable` and `enable_new_rules` turn on rules that ship inert; see
 [Rules that ship inert](#rules-that-ship-inert).
 

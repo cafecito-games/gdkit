@@ -279,7 +279,25 @@ func buildLinterWithSchemaLoader(root string, projectAware bool, config Config, 
 	return linter, nil
 }
 
-// Lint runs every enabled rule over every script in the snapshot.
+// NeedsSemanticAnalysis reports whether the resolved enabled rules require the
+// run-local semantic analyzer. It exists for the load boundary, which has to
+// decide between the filtered discovery and the broad universe before Lint is
+// called, and it answers from the same enabled-rule set Lint consults rather
+// than from parallel state, so a caller cannot load one universe while Lint
+// analyses another.
+func (l *Linter) NeedsSemanticAnalysis() bool {
+	return rulesNeedSemanticAnalysis(l.enabled)
+}
+
+// Lint runs every enabled rule over every selected script in the snapshot.
+//
+// The loop is Selected, not Paths: a semantic run is handed the whole project
+// so a selected file's types can be declared in an excluded one, and reporting
+// on Paths would then emit rule, suppression, unknown-ignore, and source-parse
+// diagnostics for the generated and vendored files the project excluded. The
+// analyzer below is still built from the whole snapshot. Selected is Paths
+// itself when the loader was given no Selection, so a filtered load is
+// unaffected.
 func (l *Linter) Lint(snapshot *project.Snapshot) Report {
 	report := Report{Diagnostics: make([]Diagnostic, 0)}
 	if l.engineSchema != nil {
@@ -292,8 +310,14 @@ func (l *Linter) Lint(snapshot *project.Snapshot) Report {
 		runContext.analyzer = l.newSemanticAnalyzer(snapshot, runContext.Engine())
 	}
 
-	for _, path := range snapshot.Paths {
+	for _, path := range snapshot.Selected {
 		script := snapshot.Scripts[path]
+		if script == nil {
+			// A Selected path naming no script violates the loader invariant.
+			// Skipping it fails closed; falling back to Paths would lint files
+			// the caller excluded.
+			continue
+		}
 		if script.ParseError != nil {
 			if !l.disabled["source-parse"] {
 				line, column, message := script.ParseFailure()

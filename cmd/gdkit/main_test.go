@@ -2,10 +2,15 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/cafecito-games/gdkit/lint"
+	"github.com/cafecito-games/gdkit/project"
 )
 
 func TestRunInitAndCleanCheck(t *testing.T) {
@@ -319,4 +324,149 @@ func TestLintCheckWarningsPassButAreReported(t *testing.T) {
 	if !strings.Contains(output, "1 warning)") {
 		t.Errorf("the summary should count one warning, singular: %q", output)
 	}
+}
+
+// TestLintProjectConfigFollowsSemanticCapability pins the two load shapes lint
+// chooses between. A semantic run must move its filters into Selection so the
+// excluded scripts stay in the universe; a nonsemantic run must keep them on
+// discovery so an excluded file is never read.
+func TestLintProjectConfigFollowsSemanticCapability(t *testing.T) {
+	config := lint.DefaultConfig()
+	config.SourceRoots = []string{"src"}
+	config.Exclude = []string{"generated/**"}
+
+	filtered := lintProjectConfig("root", config, false)
+	if filtered.Selection != nil {
+		t.Fatalf("nonsemantic Selection = %+v, want nil", filtered.Selection)
+	}
+	if !slices.Equal(filtered.SourceRoots, config.SourceRoots) ||
+		!slices.Equal(filtered.Exclude, config.Exclude) || !filtered.HonorIgnoreFile {
+		t.Fatalf("nonsemantic config = %+v, want the lint filters on discovery", filtered)
+	}
+
+	broad := lintProjectConfig("root", config, true)
+	if broad.SourceRoots != nil || broad.Exclude != nil {
+		t.Fatalf("semantic discovery = %+v, want an unfiltered universe", broad)
+	}
+	if broad.Selection == nil {
+		t.Fatal("semantic config carried no Selection")
+	}
+	if !slices.Equal(broad.Selection.SourceRoots, config.SourceRoots) ||
+		!slices.Equal(broad.Selection.Exclude, config.Exclude) || !broad.Selection.HonorIgnoreFile {
+		t.Fatalf("semantic Selection = %+v, want all three lint filters", broad.Selection)
+	}
+	if broad.Root != filtered.Root || broad.Identities != filtered.Identities {
+		t.Fatalf("the two shapes disagree beyond the filters: %+v vs %+v", broad, filtered)
+	}
+}
+
+// TestLintLoadsTheProjectExactlyOnce pins that the capability question costs no
+// second walk or parse, in either mode.
+func TestLintLoadsTheProjectExactlyOnce(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		args          []string
+		wantSelection bool
+	}{
+		{name: "nonsemantic", args: nil},
+		{name: "semantic", args: []string{"--enable", "require-typed-collection"}, wantSelection: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeCLIFile(t, root, "a.gd", "var a := 1\n")
+			var configs []project.Config
+			original := lintProjectLoad
+			lintProjectLoad = func(config project.Config) (*project.Snapshot, error) {
+				configs = append(configs, config)
+				return original(config)
+			}
+			defer func() { lintProjectLoad = original }()
+
+			var stdout, stderr bytes.Buffer
+			args := append(append([]string{"lint", "check"}, test.args...), root)
+			if code := run(args, &stdout, &stderr); code != 0 {
+				t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+			if len(configs) != 1 {
+				t.Fatalf("project loads = %d, want 1", len(configs))
+			}
+			if (configs[0].Selection != nil) != test.wantSelection {
+				t.Fatalf("Selection present = %t, want %t", configs[0].Selection != nil, test.wantSelection)
+			}
+		})
+	}
+}
+
+// TestLintSemanticRunResolvesExcludedDependency is the end-to-end contract: an
+// excluded generated script supplies the method signature and return type a
+// selected file needs, and no diagnostic path names the excluded directory
+// even though that file is now walked, parsed, and indexed.
+func TestLintSemanticRunResolvesExcludedDependency(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, ".gdkit/lint.json", `{"version": 1, "exclude": ["generated/**"]}`)
+	writeCLIFile(t, root, "generated/proto.gd",
+		"class_name Proto\nfunc label(value: int) -> String:\n\treturn \"x\"\n")
+	writeCLIFile(t, root, "a.gd", "func run() -> void:\n\tvar calls := [Proto.new().label(1)]\n")
+
+	report := runLintJSON(t, root, 1, "--enable", "require-typed-collection")
+	if report.EngineSchema == nil {
+		t.Fatal("semantic run published no engine provenance")
+	}
+	var messages []string
+	for _, diagnostic := range report.Diagnostics {
+		messages = append(messages, diagnostic.Path+": "+diagnostic.Message)
+	}
+	want := []string{"a.gd: Array has no element type; write Array[String]"}
+	if !slices.Equal(messages, want) {
+		t.Fatalf("diagnostics = %v, want %v", messages, want)
+	}
+}
+
+// TestLintSemanticRunReportsNothingForExcludedDependencies covers the other
+// half: an excluded script that would itself trip rules, carry an unknown
+// suppression, and fail to parse produces no diagnostic of any kind once it is
+// only a dependency.
+func TestLintSemanticRunReportsNothingForExcludedDependencies(t *testing.T) {
+	root := t.TempDir()
+	writeCLIFile(t, root, ".gdkit/lint.json", `{"version": 1, "exclude": ["generated/**"]}`)
+	writeCLIFile(t, root, ".gdkitignore", "hidden.gd\n")
+	writeCLIFile(t, root, "generated/noisy.gd",
+		"func label(value: int) -> String:\n\treturn \"x\"\n# gdkit:ignore = not-a-rule\n")
+	writeCLIFile(t, root, "generated/broken.gd", "func (((\n")
+	writeCLIFile(t, root, "hidden.gd", "func other(value: int) -> void:\n\tpass\n")
+	writeCLIFile(t, root, "a.gd", "var a := 1\n")
+
+	report := runLintJSON(t, root, 0, "--enable", "require-typed-collection")
+	if len(report.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %+v, want none for excluded or ignored dependencies", report.Diagnostics)
+	}
+	// The same project linted without the filters must be noisy, or the test
+	// above would pass on a project that had nothing to report.
+	bare := t.TempDir()
+	for _, name := range []string{"generated/noisy.gd", "generated/broken.gd", "hidden.gd", "a.gd"} {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeCLIFile(t, bare, name, string(data))
+	}
+	if noisy := runLintJSON(t, bare, 1, "--enable", "require-typed-collection"); len(noisy.Diagnostics) == 0 {
+		t.Fatal("the fixture reports nothing even unfiltered, so the exclusion proves nothing")
+	}
+}
+
+// runLintJSON runs lint check --format json and decodes the report, asserting
+// the exit code so a silent failure cannot pass as an empty report.
+func runLintJSON(t *testing.T, root string, wantCode int, extra ...string) lint.Report {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	args := append(append([]string{"lint", "check", "--format", "json"}, extra...), root)
+	if code := run(args, &stdout, &stderr); code != wantCode {
+		t.Fatalf("exit %d, want %d: stdout=%s stderr=%s", code, wantCode, stdout.String(), stderr.String())
+	}
+	var report lint.Report
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v (%s)", err, stdout.String())
+	}
+	return report
 }

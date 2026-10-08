@@ -276,7 +276,7 @@ func TestEnabledCollectionRuleUsesTheWholesaleOverrideAndPublishesProvenance(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude})
+	snapshot, err := project.Load(lintLoadConfig(root, config, linter))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,8 +588,16 @@ func writeEngineOverride(t *testing.T, root, name string, data []byte) {
 	}
 }
 
+// A hand-built snapshot must satisfy the loader invariant: Selected names the
+// scripts the caller acts on, and project.Load makes it Paths itself when it
+// was given no Selection. Lint acts on Selected, so a fixture that populated
+// only Paths would silently lint nothing.
 func emptySnapshot() *project.Snapshot {
-	return &project.Snapshot{Paths: []string{}, Scripts: map[string]*project.Script{}}
+	return &project.Snapshot{
+		Paths:    []string{},
+		Scripts:  map[string]*project.Script{},
+		Selected: []string{},
+	}
 }
 
 func snapshotWithOneScript() *project.Snapshot {
@@ -598,6 +606,7 @@ func snapshotWithOneScript() *project.Snapshot {
 		Scripts: map[string]*project.Script{
 			"empty.gd": {Path: "empty.gd"},
 		},
+		Selected: []string{"empty.gd"},
 	}
 }
 
