@@ -1364,10 +1364,16 @@ func TestFollowDirectorySymlinksLeavesProvenNonDirectoriesAlone(t *testing.T) {
 	}
 }
 
-// TestFollowDirectorySymlinksRespectsPruningBeforeResolution is what keeps the
-// capability from newly failing a load. A broken link the project already
-// excludes, or one inside generated metadata, is never resolved, because the
-// walk would not have entered the directory it names.
+// TestFollowDirectorySymlinksRespectsPruningBeforeResolution pins the walk
+// against the caller's own Config filters: a broken link inside a directory
+// those filters prune, or inside generated metadata, is never resolved, because
+// the walk would not have entered the directory it names.
+//
+// This is the caller's Config, not a project's lint configuration. A semantic
+// run leaves Exclude empty and HonorIgnoreFile off, so for that run only .git
+// and .godot prune and an unresolvable link anywhere else fails the load —
+// deliberately, since the pinned corpus's one mount sits under that project's
+// own "addons/**" exclusion and still has to be entered.
 func TestFollowDirectorySymlinksRespectsPruningBeforeResolution(t *testing.T) {
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{

@@ -612,6 +612,15 @@ func TestRunLintResolvesAClassMountedThroughADirectorySymlink(t *testing.T) {
 // corpus is real-producer evidence for: a semantic run over a project whose
 // addon mount does not resolve is an exit-2 project.load failure naming the
 // logical path, not a clean report over a universe missing the addon.
+//
+// The mount here sits under addons/, which the default lint config excludes
+// from findings, and that is the point rather than an accident. A semantic run
+// moves its filters to Selection and walks an unfiltered universe, so lint's
+// exclude does not stop the walk entering a mount — it must not, because the
+// corpus's one working-in-principle mount sits under exactly that exclusion.
+// So an unresolvable link fails the run even where lint reports nothing, which
+// is the fail-closed direction: a mount Godot would load but gdkit cannot read
+// is not one it may guess about.
 func TestRunLintFailsClosedOnAnUnresolvableMount(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "features/pack_view.gd", "func run() -> void:\n\tvar packs := []\n\tprint(packs)\n")
@@ -636,6 +645,25 @@ func TestRunLintFailsClosedOnAnUnresolvableMount(t *testing.T) {
 	}
 	if !strings.Contains(body.Message, "addons/worldmap_runtime") {
 		t.Fatalf("failure message = %q, want it to name the logical mount", body.Message)
+	}
+
+	// A cyclic mount under the same exclusion fails the same way, so neither
+	// kind of unprovable link can be reached through a project's filters.
+	if err := os.Remove(filepath.Join(root, "addons", "worldmap_runtime")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(root, filepath.Join(root, "addons", "worldmap_runtime")); err != nil {
+		t.Skipf("this platform cannot create a symlink: %v", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("nonsemantic exit %d, want 0: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	cyclic := runFailure(t, "lint", "check", "--format", "json", "--enable", "require-typed-collection", root)
+	if cyclic.Kind != "project.load" || !strings.Contains(cyclic.Message, "addons/worldmap_runtime") ||
+		!strings.Contains(cyclic.Message, "closes a directory cycle") {
+		t.Fatalf("cyclic failure = %+v, want a project.load cycle error naming the mount", cyclic)
 	}
 }
 

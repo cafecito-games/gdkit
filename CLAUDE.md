@@ -181,8 +181,17 @@ the default branch.
   a logical path, so a cycle error names the ancestor without naming a host
   directory.
   `prunesDirectory` is shared by the callback and the walk so a link the walk
-  would never have entered is never resolved, and a broken link under an
-  excluded or ignored directory cannot fail a load that used to pass.
+  would never have entered is never resolved. What it prunes is the caller's
+  `Config` filters, which for a semantic run are empty — that run moves them to
+  `Selection` so an excluded script stays a dependency — so for the one caller
+  that follows mounts it prunes only `.git` and `.godot`. A link anywhere else
+  is resolved, and an unresolvable one fails the load even under a directory
+  lint excludes from findings. That is the contract and not an oversight: the
+  pinned corpus's one mount sits under its own `addons/**` exclusion, so an
+  exclusion that stopped the walk entering a mount would defeat the capability
+  for the project it exists for, and skipping an unresolvable link would be the
+  guess the fail-closed table forbids. Narrowing the universe itself is #90's
+  question, not this one's.
   Following mounts is also the one thing that can make the universe walk and a
   filtered walk disagree, so `filteredWalkReaches` resolves the disagreement
   inside `admitted` rather than letting it reach `Selected`. A mount strictly

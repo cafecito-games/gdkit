@@ -335,6 +335,19 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 	// never have entered must not be able to fail the load by being broken,
 	// and the two must not be able to disagree about which directories those
 	// are.
+	//
+	// What it prunes is the caller's filters, which is not the same as the
+	// caller's lint configuration. A semantic lint run moves its filters to
+	// Selection and leaves Exclude empty and HonorIgnoreFile off, because an
+	// excluded script has to stay a dependency, so for that run this prunes
+	// only .git and .godot. A link anywhere else is resolved and an
+	// unresolvable one fails the load — including a link under a directory
+	// lint excludes from findings. That is deliberate, not an oversight: the
+	// one mount the pinned Uzir corpus declares sits under its own
+	// "addons/**" exclusion, so an exclusion that stopped the walk entering a
+	// mount would defeat the capability for the project it exists for, and one
+	// that skipped an unresolvable link would be the guess this contract
+	// forbids. Narrowing the universe itself is a separate question.
 	prunesDirectory := func(relative string) bool {
 		// Godot's cache and Git's administrative directory do not belong
 		// to the project identity universe. In particular, .godot/imported
