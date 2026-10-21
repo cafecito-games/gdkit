@@ -56,13 +56,19 @@ type semanticRule interface {
 	NeedsSemanticAnalysis() bool
 }
 
-// Context gives a rule the project and its resolved configuration.
+// Context gives a rule the project and its resolved configuration, plus a
+// run-local cache. The fourteen name rules share one collector and the six
+// typing rules share another; the cache lets each collector walk a file's
+// syntax tree once per run instead of once per rule name.
 type Context struct {
 	Config Config
 
 	compiled *compiledConfig
 	engine   *semantic.Engine
 	analyzer *semantic.Analyzer
+
+	names  map[*project.Script][]namedDeclaration
+	typing map[*project.Script][]typingSite
 }
 
 // Engine returns the selected immutable engine schema, or nil for a run whose

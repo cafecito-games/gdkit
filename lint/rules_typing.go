@@ -81,7 +81,7 @@ func (r typingRule) NeedsSemanticAnalysis() bool { return r.rule == ruleRequireT
 
 func (r typingRule) Check(context *Context, script *project.Script) []Diagnostic {
 	var found []Diagnostic
-	for _, site := range collectTypingSites(script) {
+	for _, site := range context.typingSitesFor(script) {
 		if site.rule != r.rule {
 			continue
 		}
@@ -149,6 +149,24 @@ func annotated(typeName string, inferred bool) bool {
 
 type typingCollector struct {
 	found []typingSite
+}
+
+// typingSitesFor returns the script's collected typing sites, cached on the
+// context so the six typing rules share one walk instead of each walking the
+// file.
+func (c *Context) typingSitesFor(script *project.Script) []typingSite {
+	if c == nil {
+		return collectTypingSites(script)
+	}
+	if c.typing == nil {
+		c.typing = make(map[*project.Script][]typingSite)
+	}
+	if sites, ok := c.typing[script]; ok {
+		return sites
+	}
+	sites := collectTypingSites(script)
+	c.typing[script] = sites
+	return sites
 }
 
 // collectTypingSites walks a file once and returns every declaration missing a

@@ -42,7 +42,7 @@ func (r nameRule) Name() string { return r.rule }
 func (r nameRule) Check(context *Context, script *project.Script) []Diagnostic {
 	pattern := context.Pattern(r.rule)
 	var found []Diagnostic
-	for _, declaration := range collectNames(script) {
+	for _, declaration := range context.declarationsFor(script) {
 		if declaration.rule != r.rule || pattern.MatchString(declaration.name) {
 			continue
 		}
@@ -81,6 +81,24 @@ func runeColumn(script *project.Script, position token.Position) int {
 type nameCollector struct {
 	script *project.Script
 	found  []namedDeclaration
+}
+
+// declarationsFor returns the script's collected name declarations, cached on
+// the context so the fourteen name rules share one walk instead of each walking
+// the file.
+func (c *Context) declarationsFor(script *project.Script) []namedDeclaration {
+	if c == nil {
+		return collectNames(script)
+	}
+	if c.names == nil {
+		c.names = make(map[*project.Script][]namedDeclaration)
+	}
+	if declarations, ok := c.names[script]; ok {
+		return declarations
+	}
+	declarations := collectNames(script)
+	c.names[script] = declarations
+	return declarations
 }
 
 // collectNames pairs every declared name with the rule that governs it. Class
