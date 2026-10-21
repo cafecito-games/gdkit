@@ -16,7 +16,7 @@ parse the same way, so every tool agrees on which files are in scope.
 | Tool | What it does |
 | --- | --- |
 | [`gdkit arch`](#architecture-checks) | Enforces layer, feature, and engine-purity boundaries, and finds dependency cycles |
-| [`gdkit lint`](#linting) | Reports 30 naming, structural, design, documentation, and formatting problems, and 7 more a project can opt in to |
+| [`gdkit lint`](#linting) | Reports 30 naming, structural, design, documentation, and formatting problems, and 8 more a project can opt in to |
 | [`gdkit format`](#formatting) | Rewrites GDScript into one canonical style, verifying every rewrite first |
 | [`gdkit uid`](#uid-identities) | Creates the `uid://` sidecars Godot would have created, and finds and repairs broken `uid://` references |
 | [`gdkit gen`](#code-generation) | Generates `_to_string`, `equals`, and `deep_equals` into the classes that opt in |
@@ -153,7 +153,7 @@ escape hatch is in [ADR-backed exceptions](#adr-backed-exceptions).
 ## Linting
 
 `gdkit lint` reports 30 naming, structural, design, documentation, and
-formatting problems in GDScript, with 7 further rules a project opts in to —
+formatting problems in GDScript, with 8 further rules a project opts in to —
 see [Rules that ship inert](#rules-that-ship-inert). Like the architecture
 analyzer, it works from the parsed AST and shares its project discovery, so
 both tools agree on which files are in scope.
