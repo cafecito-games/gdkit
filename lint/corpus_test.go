@@ -346,14 +346,41 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 	t.Logf("#53_gate_recommendation = %s", receipt.GateRecommendation)
 }
 
+// corpusPreChangeCollectionRule is the pre-#80 mirror: it renders only the
+// syntactic findings — bare annotations and empty literals — and drops every
+// populated-literal site, which #80 brought into scope. It reuses the
+// production collector but filters populated literals itself rather than
+// delegating to typingRule.Check, whose populated-literal handling this fix
+// changes, so the pinned count cannot drift with that refactor.
 type corpusPreChangeCollectionRule struct{}
 
 func (corpusPreChangeCollectionRule) Name() string         { return ruleRequireTypedCollection }
 func (corpusPreChangeCollectionRule) PendingSince() string { return "0.5.0" }
 func (corpusPreChangeCollectionRule) Check(context *Context, script *project.Script) []Diagnostic {
-	legacy := *context
-	legacy.analyzer = nil
-	return (typingRule{rule: ruleRequireTypedCollection}).Check(&legacy, script)
+	if context == nil || script == nil {
+		return nil
+	}
+	var found []Diagnostic
+	for _, site := range context.typingSitesFor(script) {
+		if site.rule != ruleRequireTypedCollection {
+			continue
+		}
+		if site.literal != nil {
+			continue
+		}
+		if !context.supports(site.floor) {
+			continue
+		}
+		if context.exempt(ruleRequireTypedCollection, site.enclosing) {
+			continue
+		}
+		start, end := site.span.Start, site.span.End
+		found = append(found, Diagnostic{
+			Message: site.message, Line: start.Line, Column: runeColumn(script, start),
+			EndLine: end.Line, EndColumn: runeColumn(script, end),
+		})
+	}
+	return found
 }
 
 func corpusPreChangeRules() []Rule {

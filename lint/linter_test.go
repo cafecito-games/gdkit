@@ -546,8 +546,9 @@ const protoDependency = "class_name Proto\n" +
 // is reported only when the declaration is visible: Array[String] needs
 // label's signature and return type, and the three Array[T] forms need the
 // class and the named enum to resolve to a known-but-unwritable type. A fact
-// the analyzer cannot reach is a reasoned Unknown, which this rule keeps
-// silent, so an unreachable dependency reports nothing at all.
+// the analyzer cannot reach is a reasoned Unknown, which degrades to the
+// generic Array[T] wording rather than an exact spelling, so an unreachable
+// dependency still reports the finding but cannot propose a precise type.
 const protoConsumer = "func run() -> void:\n" +
 	"\tvar classes := [Proto.new()]\n" +
 	"\tvar enums := [Proto.Kind.ONE]\n" +
@@ -576,17 +577,16 @@ func TestSelectedScriptResolvesDeclarationsOnlyInAnExcludedDependency(t *testing
 	}
 }
 
-// TestUnreachableDependencyLeavesTheConsumerSilent is the control for the test
-// above: the same consumer reports nothing when the declaration is not in the
-// universe, so those four findings are evidence of resolution rather than of
-// the rule firing anyway.
-func TestUnreachableDependencyLeavesTheConsumerSilent(t *testing.T) {
+// TestUnreachableDependencyFallsBackToGenericWording is the control for the
+// test above: when the declaration is not in the universe every element type is
+// an unreachable Unknown, so each finding degrades to the generic wording
+// instead of proposing an exact spelling. The fourth local is the discriminator:
+// it reports Array[T] here and Array[String] when the dependency resolves.
+func TestUnreachableDependencyFallsBackToGenericWording(t *testing.T) {
 	_, report := lintTree(t, collectionConfig(),
 		[]Rule{typingRule{rule: ruleRequireTypedCollection}},
 		map[string]string{"a.gd": protoConsumer})
-	if len(report.Diagnostics) != 0 {
-		t.Fatalf("diagnostics = %+v, want silence when the declaration is absent", report.Diagnostics)
-	}
+	assertGenericCollectionFallback(t, report)
 }
 
 func TestDuplicateDeclarationAcrossSelectionStaysAmbiguous(t *testing.T) {
@@ -598,11 +598,10 @@ func TestDuplicateDeclarationAcrossSelectionStaysAmbiguous(t *testing.T) {
 			"a.gd":               protoConsumer,
 		})
 	// Both claimants are preserved, so the class stays ambiguous and every
-	// dependent answer is Unknown. Picking by selection or by walk order would
-	// resolve Proto to the generated declaration and report here.
-	if len(report.Diagnostics) != 0 {
-		t.Fatalf("diagnostics = %+v, want silence on an ambiguous class", report.Diagnostics)
-	}
+	// dependent answer is Unknown; the rule degrades to generic wording rather
+	// than guessing. Picking by selection or by walk order would resolve Proto
+	// to the generated declaration and report Array[String] on the last line.
+	assertGenericCollectionFallback(t, report)
 }
 
 func TestParseFailedExcludedDependencyStaysSilentEvidence(t *testing.T) {
@@ -617,9 +616,27 @@ func TestParseFailedExcludedDependencyStaysSilentEvidence(t *testing.T) {
 		t.Fatal("the fixture dependency must be in the universe and must fail to parse")
 	}
 	// The failure is retained as evidence, so the consumer's answers are a
-	// reasoned Unknown. Nothing is reported for the unselected path, and
-	// nothing is guessed for the selected one.
-	if len(report.Diagnostics) != 0 {
-		t.Fatalf("diagnostics = %+v, want no finding for or from an unparseable dependency", report.Diagnostics)
+	// reasoned Unknown and the rule falls back to generic wording. Nothing is
+	// reported for the unselected path.
+	assertGenericCollectionFallback(t, report)
+}
+
+// assertGenericCollectionFallback pins the four populated literals in
+// protoConsumer to the generic Array[T] wording: every element type resolves to
+// an unreachable Unknown, so no exact spelling can be proposed.
+func assertGenericCollectionFallback(t *testing.T, report Report) {
+	t.Helper()
+	const generic = "Array has no element type; write Array[T]"
+	if len(report.Diagnostics) != 4 {
+		t.Fatalf("diagnostics = %+v, want four generic findings", report.Diagnostics)
+	}
+	for index, diagnostic := range report.Diagnostics {
+		if diagnostic.Path != "a.gd" {
+			t.Fatalf("diagnostic for unexpected path: %+v", diagnostic)
+		}
+		if diagnostic.Line != index+2 || diagnostic.Message != generic {
+			t.Errorf("diagnostic %d = %d: %q, want line %d generic wording",
+				index, diagnostic.Line, diagnostic.Message, index+2)
+		}
 	}
 }

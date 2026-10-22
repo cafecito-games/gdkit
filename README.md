@@ -305,10 +305,11 @@ Three limits are worth knowing before a project reads a clean run as proof:
   with a supported semantic engine, a populated direct literal is checked too:
   `var x := [1, 2, 3]` suggests `Array[int]`, and
   `var labels := {"a": 1}` suggests `Dictionary[String, int]`. This is a
-  suggestion, not an autofix. An inconclusive (`Unknown`) result is silent;
-  a known heterogeneous, untyped, unsafe-to-spell, or nested-collection result
-  keeps the generic `Array[T]` or `Dictionary[K, V]` wording rather than
-  suggesting syntax Godot cannot parse. Calls, references, and every other
+  suggestion, not an autofix. The exact spelling is an enrichment of a finding
+  that stands on its own: when the element type is unknown, heterogeneous,
+  untyped, unsafe-to-spell, or a nested collection, the rule keeps the generic
+  `Array[T]` or `Dictionary[K, V]` wording rather than suggesting syntax Godot
+  cannot parse — or falling silent. Calls, references, and every other
   non-literal initializer remain out of scope. A declaration that carries a
   written annotation is reported from the annotation alone, so
   `var x: Array = []` is one finding and not two.
@@ -376,7 +377,8 @@ the way the running game resolves it, while no rule, suppression, `unknown-ignor
 or `source-parse` finding is ever emitted for an excluded path. Three
 consequences follow, all deliberate: an excluded script that does not parse
 makes project global resolution incomplete, so dependent answers become a
-reasoned `Unknown` and the rule stays silent rather than guessing; a
+reasoned `Unknown` and the rule degrades to the generic wording rather than
+guessing an exact spelling; a
 `class_name` declared in both a selected and an excluded script stays
 ambiguous, because neither selection nor walk order may pick a winner; and an
 excluded script that cannot be *read* at all fails the run with exit `2` and a
