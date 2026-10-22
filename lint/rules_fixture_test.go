@@ -306,6 +306,26 @@ func TestReturnsFixtureDiagnostics(t *testing.T) {
 	checkFixtures(t, lintFixtures(t, "returns", inconsistentReturnConfig()), returnsFixtureExpectations)
 }
 
+// unusedFixtureExpectations is the complete set of diagnostics the files in
+// testdata/unused must produce once unused-private-member is enabled. The rule
+// ships inert, so it needs a fixture group of its own.
+var unusedFixtureExpectations = map[string][]fixtureFinding{
+	"unused.gd": {
+		// _DEAD and _dead are never referenced; _USED, _helper, and _ready are.
+		{4, "unused-private-member"},
+		{10, "unused-private-member"},
+	},
+	"used.gd": {},
+}
+
+// TestUnusedFixtureDiagnostics is TestFixtureDiagnostics for the fixtures that
+// only produce diagnostics once unused-private-member is enabled. It shares
+// unusedConfig with the per-rule test, so the two cannot drift into enabling
+// different sets.
+func TestUnusedFixtureDiagnostics(t *testing.T) {
+	checkFixtures(t, lintFixtures(t, "unused", unusedConfig()), unusedFixtureExpectations)
+}
+
 // TestTypingFixtureDiagnostics is TestFixtureDiagnostics for the fixtures that
 // only produce diagnostics once the typing rules are enabled. It shares
 // typingConfig with the per-rule tests, so the two cannot drift into enabling
@@ -356,7 +376,7 @@ func TestFixturesExerciseEveryRule(t *testing.T) {
 	for _, group := range []map[string][]fixtureFinding{
 		fixtureExpectations, docstringFixtureExpectations,
 		loggingFixtureExpectations, typingFixtureExpectations,
-		returnsFixtureExpectations,
+		returnsFixtureExpectations, unusedFixtureExpectations,
 	} {
 		for _, findings := range group {
 			for _, finding := range findings {

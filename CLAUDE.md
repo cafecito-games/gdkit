@@ -336,8 +336,9 @@ stricter" promise safe. `disable` wins over `enable`, and `enable` deliberately
 accepts any known rule name rather than only an inert one, so a config that
 opted in keeps working after the rule graduates to running by default.
 Pending-ness is an optional interface rather than a parallel registry map so a
-test can inject one through `newLinter`. Eight rules ship inert —
-`inconsistent-return-statements`, `no-engine-logging` and the six `require-*`
+test can inject one through `newLinter`. Nine rules ship inert —
+`inconsistent-return-statements`, `no-engine-logging`,
+`unused-private-member` and the six `require-*`
 typing rules — and `TestPendingRulesAreExactlyTheInertOnes` pins that set so a
 rule cannot start or stop shipping inert unnoticed. `missing-docstring` predates the
 mechanism and is inert through its own empty list, which only worked because

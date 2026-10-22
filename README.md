@@ -16,7 +16,7 @@ parse the same way, so every tool agrees on which files are in scope.
 | Tool | What it does |
 | --- | --- |
 | [`gdkit arch`](#architecture-checks) | Enforces layer, feature, and engine-purity boundaries, and finds dependency cycles |
-| [`gdkit lint`](#linting) | Reports 30 naming, structural, design, documentation, and formatting problems, and 8 more a project can opt in to |
+| [`gdkit lint`](#linting) | Reports 30 naming, structural, design, documentation, and formatting problems, and 9 more a project can opt in to |
 | [`gdkit format`](#formatting) | Rewrites GDScript into one canonical style, verifying every rewrite first |
 | [`gdkit uid`](#uid-identities) | Creates the `uid://` sidecars Godot would have created, and finds and repairs broken `uid://` references |
 | [`gdkit gen`](#code-generation) | Generates `_to_string`, `equals`, and `deep_equals` into the classes that opt in |
@@ -153,7 +153,7 @@ escape hatch is in [ADR-backed exceptions](#adr-backed-exceptions).
 ## Linting
 
 `gdkit lint` reports 30 naming, structural, design, documentation, and
-formatting problems in GDScript, with 8 further rules a project opts in to —
+formatting problems in GDScript, with 9 further rules a project opts in to —
 see [Rules that ship inert](#rules-that-ship-inert). Like the architecture
 analyzer, it works from the parsed AST and shares its project discovery, so
 both tools agree on which files are in scope.
@@ -193,6 +193,19 @@ Basic correctness rules:
 
 - `duplicated-load`, `expression-not-assigned`, `unnecessary-pass`,
   `unused-argument`, and `comparison-with-itself`.
+- `unused-private-member` reports a private function or constant — a name
+  beginning with an underscore — that is never referenced in its file. It
+  [ships inert](#rules-that-ship-inert), and covers the two dead-member kinds
+  Godot's own analyzer leaves unreported: an unused private *function* has no
+  Godot warning at all, and `unused_local_constant` covers a constant only
+  inside a function body, never one at class scope. Godot already warns on an
+  unused private class *variable* and an unused *signal*, so the rule does not
+  duplicate those. A member counts as used when its name appears anywhere else
+  in the file — as a reference or spelled inside any string literal, which is
+  how `call()`, `connect()`, `get()`, and `set()` reach a member by name. An
+  engine virtual such as `_ready`, and an `_on_...` editor signal handler, are
+  never reported, because the engine or a scene reaches them from outside the
+  file.
 
 Structure rules:
 
@@ -615,8 +628,8 @@ Widening what an existing rule reports is the same event as adding a rule, from
 a project's point of view, so it arrives the same way: as a new inert rule name
 rather than as a quiet change to the rule already running.
 
-Eight rules ship inert today: `inconsistent-return-statements`,
-`no-engine-logging`, and the six
+Nine rules ship inert today: `inconsistent-return-statements`,
+`no-engine-logging`, `unused-private-member`, and the six
 [static typing rules](#static-typing-rules) — `require-return-type`,
 `require-argument-type`, `require-variable-type`, `require-typed-collection`,
 `require-signal-argument-type`, and `require-typed-loop-variable`.
