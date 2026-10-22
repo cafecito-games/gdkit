@@ -118,6 +118,7 @@ func TestPendingRulesAreExactlyTheInertOnes(t *testing.T) {
 		"require-argument-type", "require-return-type",
 		"require-signal-argument-type", "require-typed-collection",
 		"require-typed-loop-variable", "require-variable-type",
+		"unused-private-member",
 	}
 	got := PendingRuleNames()
 	if !reflect.DeepEqual(got, want) {
