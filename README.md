@@ -388,8 +388,9 @@ mode.) The universe is the whole project: `exclude` and `.gdkitignore` narrow
 only what lint reports on, and nothing narrows what a semantic run reads.
 gdkit honors neither Godot's `.gdignore` nor a nested `project.godot`, so a
 duplicate checkout of the project under the root — a worktree, a backup copy —
-declares every `class_name` twice, which keeps those names ambiguous and makes
-the rule go quiet rather than guess. Keep such copies outside the project root.
+declares every `class_name` twice, which keeps those names ambiguous, so
+dependent answers degrade to the generic wording rather than an exact spelling.
+Keep such copies outside the project root.
 
 A semantic run also follows a **directory symlink** found under a source root
 and indexes what it names under the link's own project path, which is what lets
