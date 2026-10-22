@@ -451,15 +451,60 @@ var matrix := [[1], [2]]
 	}
 }
 
-func TestRequireTypedCollectionStaysSilentForUnknownLiteralComponents(t *testing.T) {
+func TestRequireTypedCollectionFallsBackToGenericForUnreducibleLiterals(t *testing.T) {
 	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
 func build() -> void:
 	var items := [not_declared]
 	var lookup := {"key": also_not_declared}
 	var nested := [[still_not_declared]]
 `)
-	if len(found) != 0 {
-		t.Fatalf("got %v, want no collection diagnostics for Unknown components", found)
+	want := []struct {
+		line    int
+		message string
+	}{
+		{line: 3, message: "Array has no element type; write Array[T]"},
+		{line: 4, message: "Dictionary has no element type; write Dictionary[K, V]"},
+		{line: 5, message: "Array has no element type; write Array[T]"},
+	}
+	if len(found) != len(want) {
+		t.Fatalf("got %v, want %d diagnostics", found, len(want))
+	}
+	for index, expected := range want {
+		if found[index].Line != expected.line || found[index].Message != expected.message {
+			t.Errorf("diagnostic %d = %+v, want line %d message %q", index, found[index], expected.line, expected.message)
+		}
+	}
+}
+
+// An inferred populated literal whose element type has no writable spelling
+// still reports the generic wording, exactly as the annotated form does: the
+// annotation only decides whether an exact spelling can be proposed, never
+// whether the collection is untyped.
+func TestRequireTypedCollectionFallsBackForEnumKeyedAndBuiltinValuedLiterals(t *testing.T) {
+	found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", `
+enum Mode { ALPHA, BETA }
+
+const ENUM_KEYED := {
+	Mode.ALPHA: "alpha",
+	Mode.BETA: "beta",
+}
+
+const BUILTIN_VALUE := { "origin": Vector2i(0, 0) }
+`)
+	want := []struct {
+		line    int
+		message string
+	}{
+		{line: 4, message: "Dictionary has no element type; write Dictionary[K, V]"},
+		{line: 9, message: "Dictionary has no element type; write Dictionary[K, V]"},
+	}
+	if len(found) != len(want) {
+		t.Fatalf("got %v, want %d diagnostics", found, len(want))
+	}
+	for index, expected := range want {
+		if found[index].Line != expected.line || found[index].Message != expected.message {
+			t.Errorf("diagnostic %d = %+v, want line %d message %q", index, found[index], expected.line, expected.message)
+		}
 	}
 }
 

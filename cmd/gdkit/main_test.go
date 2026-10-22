@@ -563,7 +563,8 @@ func mountCLIAddon(t *testing.T, root, logicalMount string, files map[string]str
 // The observable difference is the fail-closed one the loader exists to remove:
 // with the mount in the universe the analyzer resolves PackManifest under its
 // logical identity and the rule reports; with the mount gone the constructor's
-// type is a reasoned Unknown and the rule stays silent.
+// type is a reasoned Unknown and the rule degrades to the generic wording
+// rather than proposing an exact spelling.
 func TestRunLintResolvesAClassMountedThroughADirectorySymlink(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, ".gdkit/lint.json", `{"exclude":["addons/**"]}`)
@@ -596,15 +597,24 @@ func TestRunLintResolvesAClassMountedThroughADirectorySymlink(t *testing.T) {
 	}
 
 	// Removing the mount leaves the same selected script with an unresolvable
-	// constructor, and the rule falls silent rather than guessing.
+	// constructor. The literal is still an untyped collection, so the rule
+	// reports the generic wording instead of staying silent or guessing an
+	// exact spelling the analyzer cannot reach.
 	if err := os.Remove(filepath.Join(root, "addons", "worldmap_runtime")); err != nil {
 		t.Fatal(err)
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d, want 0 once the mounted class is unresolvable: stdout=%s stderr=%s",
+	code = run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit %d, want 1 once the mounted class is unresolvable: stdout=%s stderr=%s",
 			code, stdout.String(), stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v (%s)", err, stdout.String())
+	}
+	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Message != "Array has no element type; write Array[T]" {
+		t.Fatalf("diagnostics = %+v, want the generic Array[T] wording for an unresolvable element", report.Diagnostics)
 	}
 }
 

@@ -96,10 +96,11 @@ func (r typingRule) Check(context *Context, script *project.Script) []Diagnostic
 		}
 		message := site.message
 		if site.literal != nil {
-			var reported bool
-			message, reported = populatedCollectionMessage(context, site.declaration)
-			if !reported {
-				continue
+			// The exact spelling is an enrichment of a finding that already
+			// stands on its own generic wording: a literal the analyzer cannot
+			// reduce is still an untyped collection.
+			if exact, ok := populatedCollectionMessage(context, site.declaration); ok {
+				message = exact
 			}
 		}
 		start, end := site.span.Start, site.span.End
@@ -313,9 +314,10 @@ func (c *typingCollector) variable(declaration *ast.VariableDeclaration, enclosi
 // collectionLiteral records a declaration whose collection type comes directly
 // from a literal. Empty literals retain the existing syntactic diagnostic.
 // Populated literals carry their own span to the rule, which can ask the
-// run-local analyzer for exactly the outer literal and stay silent when it is
-// not conclusive. Calls, references, and all other initializers stay out of
-// scope: their result is not a literal the author can annotate directly.
+// run-local analyzer for an exact spelling; when the analyzer cannot reduce the
+// literal the rule falls back to the generic message. Calls, references, and all
+// other initializers stay out of scope: their result is not a literal the author
+// can annotate directly.
 func (c *typingCollector) collectionLiteral(declaration *ast.VariableDeclaration, enclosing string) {
 	if declaration == nil {
 		return
@@ -337,12 +339,13 @@ func (c *typingCollector) collectionLiteral(declaration *ast.VariableDeclaration
 }
 
 func (c *typingCollector) populatedCollection(typeName string, declaration *ast.VariableDeclaration, literal ast.Expression, span token.Span, enclosing string) {
-	floor, _, ok := collectionSuggestion(typeName)
+	floor, form, ok := collectionSuggestion(typeName)
 	if !ok {
 		return
 	}
 	c.add(typingSite{
 		rule:        ruleRequireTypedCollection,
+		message:     fmt.Sprintf("%s has no element type; write %s", typeName, form),
 		enclosing:   enclosing,
 		floor:       floor,
 		span:        span,
@@ -387,9 +390,9 @@ func collectionSuggestion(typeName string) (versiongate.Version, string, bool) {
 }
 
 // populatedCollectionMessage asks the run-local analyzer for the exact
-// declaration's closed binding lifetime. Unknown is deliberately silent: a
-// generic suggestion would conceal an unavailable initial semantic fact as
-// though the container were confidently known.
+// declaration's closed binding lifetime. When the analyzer is unavailable or
+// the lifetime is not reducible to a writable spelling it answers ok == false,
+// and the caller keeps the generic message the site already carries.
 func populatedCollectionMessage(context *Context, declaration *ast.VariableDeclaration) (string, bool) {
 	if context == nil || context.analyzer == nil {
 		return "", false
@@ -486,10 +489,10 @@ func sourceWritableType(engine *semantic.Engine, typeValue semantic.Type) (strin
 	}
 }
 
-// nestedUnknownType preserves the rule's silence contract even when the
-// unknown component lives below an unspellable nested collection. It only
-// classifies Type's immutable container vocabulary; it does not invent a
-// nested spelling.
+// nestedUnknownType reports whether an unspellable nested collection hides an
+// unknown component, so sourceWritableType classifies the outer element as
+// unknown rather than merely unwritable. It only classifies Type's immutable
+// container vocabulary; it does not invent a nested spelling.
 func nestedUnknownType(typeValue semantic.Type) bool {
 	switch typeValue.Kind() {
 	case semantic.KindUnknown:

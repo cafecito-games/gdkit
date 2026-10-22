@@ -64,7 +64,8 @@ the default branch.
   nonsemantic run keeps the filters on discovery and reads no excluded file.
   Broad loading also means an excluded script that fails to parse now makes
   project globals incomplete, which is the intended fail-closed direction: a
-  dependent answer becomes a reasoned `Unknown` and the rule stays silent, as
+  dependent answer becomes a reasoned `Unknown` and the rule degrades to the
+  generic wording rather than guessing, as
   does one that cannot be read at all, which is an exit-2 `project.load`
   failure. Nothing prunes the universe but the `.git`/`.godot` check, because
   this issue does not redefine it: gdkit honors neither `.gdignore` nor a
