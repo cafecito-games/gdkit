@@ -7,6 +7,7 @@ import (
 	"github.com/cafecito-games/gdparser/ast"
 	"github.com/cafecito-games/gdparser/token"
 
+	"github.com/cafecito-games/gdkit/internal/semantic"
 	"github.com/cafecito-games/gdkit/project"
 )
 
@@ -39,6 +40,16 @@ func init() {
 // virtual, which the engine calls with no reference in source, and one named
 // like an editor signal handler, "_on_...", which a scene connects by string.
 //
+// The virtual exemption resolves the script's base class up its native chain
+// against the engine schema rather than a hand-maintained list, so it is
+// complete for the bundled engine version and stops exempting a name on a class
+// that does not declare it — "_toggled" on a RefCounted is dead code, but on a
+// Button subclass it is a real override. Object's core callbacks — _init,
+// _notification, _to_string, and the property accessors — are absent from
+// Godot's extension API dump, so they stay a small fixed set. The "_on_"
+// exemption is a different mechanism (a scene connects by string, which no
+// schema knows) and stays as it is.
+//
 // The rule ships inert, as a new rule must, so an upgrade cannot change what an
 // existing project reports on unchanged configuration. It is also explicitly
 // single-file: a reference to a private member from another script — including a
@@ -50,10 +61,13 @@ func (unusedPrivateMemberRule) Name() string { return "unused-private-member" }
 
 func (unusedPrivateMemberRule) PendingSince() string { return "0.8.0" }
 
-func (unusedPrivateMemberRule) Check(_ *Context, script *project.Script) []Diagnostic {
+func (unusedPrivateMemberRule) RequiresEngineSchema() {}
+
+func (unusedPrivateMemberRule) Check(context *Context, script *project.Script) []Diagnostic {
 	if script.File == nil {
 		return nil
 	}
+	engine := context.Engine()
 	used := referenceNames(script)
 	strings_ := stringLiteralContents(script)
 
@@ -65,15 +79,15 @@ func (unusedPrivateMemberRule) Check(_ *Context, script *project.Script) []Diagn
 		found = append(found, spanDiagnostic(script, fmt.Sprintf("unused private %s %q", kind, name), span))
 	}
 
-	var walk func(body []ast.Statement)
-	walk = func(body []ast.Statement) {
+	var walk func(body []ast.Statement, base semantic.Type)
+	walk = func(body []ast.Statement, base semantic.Type) {
 		for _, statement := range body {
 			switch statement := statement.(type) {
 			case *ast.FunctionDeclaration:
 				if !strings.HasPrefix(statement.Name, "_") {
 					continue
 				}
-				if engineVirtuals[statement.Name] || strings.HasPrefix(statement.Name, "_on_") {
+				if isEngineCalled(engine, base, statement.Name) {
 					continue
 				}
 				report("function", statement.Name, statement.NameSpan)
@@ -85,21 +99,109 @@ func (unusedPrivateMemberRule) Check(_ *Context, script *project.Script) []Diagn
 		}
 		for _, statement := range body {
 			if class, ok := statement.(*ast.ClassDeclaration); ok {
-				walk(class.Body)
+				walk(class.Body, nativeBaseType(engine, class.Extends))
 			}
 		}
 	}
-	walk(script.File.Statements)
+	name, native := scriptBaseName(script)
+	base := semantic.Type{}
+	if native {
+		base = nativeBaseType(engine, name)
+	}
+	walk(script.File.Statements, base)
 	return found
 }
 
-// engineVirtuals are the engine callback methods gdkit recognises. A private
-// function whose name is one of these is called by the engine, never from
-// source, so it is not dead code. The list covers the virtuals of Object, Node,
-// CanvasItem, Control, and Resource; it is not exhaustive, and a project using a
-// virtual outside it can suppress the finding with a comment.
-var engineVirtuals = map[string]bool{
-	// Object.
+// scriptBaseName returns the base-class spelling of the script's top-level
+// class. A script with no extends clause returns "RefCounted", the implicit
+// base. The Boolean is false when the base is written in a form that names a
+// script class rather than a native engine class — a path literal or a member
+// access — which the rule cannot resolve to a native chain.
+func scriptBaseName(script *project.Script) (string, bool) {
+	if script.File == nil {
+		return "", false
+	}
+	for _, statement := range script.File.Statements {
+		directive, ok := statement.(*ast.Directive)
+		if !ok {
+			continue
+		}
+		var expression ast.Expression
+		switch directive.Name {
+		case "extends":
+			expression = directive.Value
+		case "class_name":
+			expression = directive.Extends
+		default:
+			continue
+		}
+		if expression == nil {
+			continue
+		}
+		identifier, ok := expression.(*ast.Identifier)
+		if !ok {
+			return "", false
+		}
+		return identifier.Name, true
+	}
+	return "RefCounted", true
+}
+
+// nativeBaseType resolves a base-class spelling to its native class type. An
+// empty spelling means a class with no extends clause, which inherits RefCounted.
+// A spelling that names no native class resolves to the zero Type (Unknown), so
+// the caller reports only what it can prove.
+func nativeBaseType(engine *semantic.Engine, name string) semantic.Type {
+	if engine == nil {
+		return semantic.Type{}
+	}
+	if name == "" {
+		name = "RefCounted"
+	}
+	return engine.Class(name)
+}
+
+// isEngineCalled reports whether a private function named name is reached by the
+// engine rather than by source: an editor signal handler ("_on_..."), one of
+// Object's core callbacks the schema does not record, or a virtual method
+// declared by the script's native base chain.
+func isEngineCalled(engine *semantic.Engine, base semantic.Type, name string) bool {
+	if strings.HasPrefix(name, "_on_") {
+		return true
+	}
+	if objectVirtuals[name] {
+		return true
+	}
+	return virtualInChain(engine, base, name)
+}
+
+// virtualInChain reports whether name is a virtual method declared by base or
+// any of its native ancestors.
+func virtualInChain(engine *semantic.Engine, base semantic.Type, name string) bool {
+	if engine == nil {
+		return false
+	}
+	for current := base; current.Kind() == semantic.KindClass; {
+		if engine.VirtualMethod(current.Name(), name) {
+			return true
+		}
+		parent, ok := current.Base()
+		if !ok {
+			return false
+		}
+		current = parent
+	}
+	return false
+}
+
+// objectVirtuals are the Object virtuals Godot's extension API dump does not mark
+// is_virtual. The dump records the virtuals of classes like Node and Control, but
+// Object's core callbacks — _init, _notification, _to_string, and the property
+// accessors — are dispatched by the engine directly rather than through
+// ClassDB's virtual-method table, so they never appear in the dump. Every script
+// class derives from Object, so these names are engine-called regardless of the
+// declared base. _static_init is the class-load hook, which the dump also omits.
+var objectVirtuals = map[string]bool{
 	"_init":                       true,
 	"_notification":               true,
 	"_get":                        true,
@@ -110,32 +212,7 @@ var engineVirtuals = map[string]bool{
 	"_to_string":                  true,
 	"_validate_property":          true,
 	"_get_configuration_warnings": true,
-	// Node.
-	"_ready":               true,
-	"_process":             true,
-	"_physics_process":     true,
-	"_enter_tree":          true,
-	"_exit_tree":           true,
-	"_input":               true,
-	"_unhandled_input":     true,
-	"_unhandled_key_input": true,
-	"_shortcut_input":      true,
-	// CanvasItem.
-	"_draw": true,
-	// Control.
-	"_gui_input":           true,
-	"_get_minimum_size":    true,
-	"_has_point":           true,
-	"_get_drag_data":       true,
-	"_can_drop_data":       true,
-	"_drop_data":           true,
-	"_make_custom_tooltip": true,
-	"_get_tooltip":         true,
-	"_get_cursor_shape":    true,
-	// Resource.
-	"_setup_local_to_scene": true,
-	// The class-load hook.
-	"_static_init": true,
+	"_static_init":                true,
 }
 
 // referenceNames returns every name the file mentions in a reference position: a

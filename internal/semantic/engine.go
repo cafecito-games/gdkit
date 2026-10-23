@@ -46,6 +46,7 @@ type Engine struct {
 	builtinConstructors map[string]Type
 	classes             map[string]Type
 	methods             map[engineMemberKey]EngineMethod
+	virtuals            map[engineMemberKey]bool
 	properties          map[engineMemberKey]EngineProperty
 	operators           map[engineOperatorKey]Type
 	singletons          map[string]Type
@@ -177,6 +178,16 @@ func (e *Engine) Method(owner, name string) (EngineMethod, bool) {
 	return method, ok
 }
 
+// VirtualMethod reports whether owner declares name as a virtual method — a
+// method the engine calls on a script with no reference in source, such as
+// Node._ready. Inherited lookup is a consumer policy, exactly as with Method.
+func (e *Engine) VirtualMethod(owner, name string) bool {
+	if e == nil {
+		return false
+	}
+	return e.virtuals[engineMemberKey{owner: owner, name: name}]
+}
+
 // Property returns the property declared directly by owner.
 func (e *Engine) Property(owner, name string) (EngineProperty, bool) {
 	if e == nil {
@@ -249,6 +260,7 @@ type EngineBuilder struct {
 	builtinConstructors map[string]bool
 	classes             map[string]string
 	methods             map[engineMemberKey]engineMethodSpec
+	virtuals            map[engineMemberKey]bool
 	properties          map[engineMemberKey]enginePropertySpec
 	operators           map[engineOperatorKey]engineOperatorSpec
 	singletons          map[string]engineSingletonSpec
@@ -262,6 +274,7 @@ func NewEngineBuilder() *EngineBuilder {
 		builtinConstructors: map[string]bool{},
 		classes:             map[string]string{},
 		methods:             map[engineMemberKey]engineMethodSpec{},
+		virtuals:            map[engineMemberKey]bool{},
 		properties:          map[engineMemberKey]enginePropertySpec{},
 		operators:           map[engineOperatorKey]engineOperatorSpec{},
 		singletons:          map[string]engineSingletonSpec{},
@@ -335,6 +348,24 @@ func (b *EngineBuilder) AddMethod(owner, name, returnType string, arguments []En
 		owner: owner, name: name, returnType: returnType,
 		arguments: append([]EngineArgumentSpec(nil), arguments...), static: static, vararg: vararg,
 	}
+	return nil
+}
+
+// AddVirtual records that one already declared method is virtual — the engine
+// calls it on a script with no reference in source. The method must already be
+// added, so a virtual flag can never name an unknown method.
+func (b *EngineBuilder) AddVirtual(owner, name string) error {
+	if err := engineMember("virtual method", owner, name); err != nil {
+		return err
+	}
+	key := engineMemberKey{owner: owner, name: name}
+	if _, exists := b.methods[key]; !exists {
+		return fmt.Errorf("engine virtual method %s.%s names an unknown method", owner, name)
+	}
+	if b.virtuals[key] {
+		return fmt.Errorf("duplicate engine virtual method %s.%s", owner, name)
+	}
+	b.virtuals[key] = true
 	return nil
 }
 
@@ -452,6 +483,7 @@ func (b *EngineBuilder) Build() (*Engine, error) {
 		builtinConstructors: make(map[string]Type, len(b.builtinConstructors)),
 		classes:             resolver.classes,
 		methods:             make(map[engineMemberKey]EngineMethod, len(b.methods)),
+		virtuals:            make(map[engineMemberKey]bool, len(b.virtuals)),
 		properties:          make(map[engineMemberKey]EngineProperty, len(b.properties)),
 		operators:           make(map[engineOperatorKey]Type, len(b.operators)),
 		singletons:          make(map[string]Type, len(b.singletons)),
@@ -481,6 +513,9 @@ func (b *EngineBuilder) Build() (*Engine, error) {
 	}
 	for name, spec := range b.utilities {
 		engine.utilities[name] = resolveEngineMethod(spec, engine.builtins, engine.classes)
+	}
+	for key := range b.virtuals {
+		engine.virtuals[key] = true
 	}
 	return engine, nil
 }
