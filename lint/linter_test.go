@@ -85,6 +85,7 @@ type fakeRule struct {
 }
 
 func (r fakeRule) Name() string                                 { return r.name }
+func (r fakeRule) Describe() string                             { return "test" }
 func (r fakeRule) Check(*Context, *project.Script) []Diagnostic { return r.diagnostics }
 
 // lintWithRules runs rules over one a.gd file through the driver alone. Rule

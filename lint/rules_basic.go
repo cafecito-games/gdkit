@@ -128,6 +128,10 @@ type unnecessaryPassRule struct{}
 
 func (unnecessaryPassRule) Name() string { return "unnecessary-pass" }
 
+func (unnecessaryPassRule) Describe() string {
+	return `Reports a "pass" statement that shares its block with another statement`
+}
+
 func (unnecessaryPassRule) Check(_ *Context, script *project.Script) []Diagnostic {
 	if script.File == nil {
 		return nil
@@ -196,6 +200,10 @@ type expressionNotAssignedRule struct{}
 
 func (expressionNotAssignedRule) Name() string { return "expression-not-assigned" }
 
+func (expressionNotAssignedRule) Describe() string {
+	return "Reports an expression statement whose value is thrown away"
+}
+
 func (expressionNotAssignedRule) Check(_ *Context, script *project.Script) []Diagnostic {
 	if script.File == nil {
 		return nil
@@ -258,6 +266,10 @@ type duplicatedLoadRule struct{}
 
 func (duplicatedLoadRule) Name() string { return "duplicated-load" }
 
+func (duplicatedLoadRule) Describe() string {
+	return "Reports a repeated load() or preload() of the same literal in one file"
+}
+
 func (duplicatedLoadRule) Check(_ *Context, script *project.Script) []Diagnostic {
 	if script.File == nil {
 		return nil
@@ -311,6 +323,10 @@ func (s *significantTokens) isParenthesizedArgument(callee *ast.Identifier, lite
 type unusedArgumentRule struct{}
 
 func (unusedArgumentRule) Name() string { return "unused-argument" }
+
+func (unusedArgumentRule) Describe() string {
+	return "Reports a function parameter the function never mentions"
+}
 
 func (unusedArgumentRule) Check(_ *Context, script *project.Script) []Diagnostic {
 	if script.File == nil {
@@ -413,6 +429,10 @@ func bareNodePathNames(path string) []string {
 type comparisonWithItselfRule struct{}
 
 func (comparisonWithItselfRule) Name() string { return "comparison-with-itself" }
+
+func (comparisonWithItselfRule) Describe() string {
+	return "Reports a comparison of an operand with itself"
+}
 
 var comparisonOperators = map[string]bool{"==": true, "!=": true, "<": true, ">": true, "<=": true, ">=": true}
 

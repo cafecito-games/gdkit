@@ -41,6 +41,10 @@ type missingDocstringRule struct{}
 
 func (missingDocstringRule) Name() string { return "missing-docstring" }
 
+func (missingDocstringRule) Describe() string {
+	return "Reports a public member with no ## documentation comment"
+}
+
 func (missingDocstringRule) Check(context *Context, script *project.Script) []Diagnostic {
 	if script.File == nil {
 		return nil

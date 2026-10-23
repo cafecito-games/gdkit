@@ -20,6 +20,10 @@ type inconsistentReturnRule struct{}
 
 func (inconsistentReturnRule) Name() string { return "inconsistent-return-statements" }
 
+func (inconsistentReturnRule) Describe() string {
+	return "Reports a function that returns a value on one path and falls off its end on another"
+}
+
 // PendingSince keeps the rule inert until a project opts in, so upgrading
 // gdkit cannot change an existing project's verdict.
 func (inconsistentReturnRule) PendingSince() string { return "0.7.0" }

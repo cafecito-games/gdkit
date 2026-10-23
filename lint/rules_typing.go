@@ -41,6 +41,17 @@ var typingRuleNames = []string{
 	ruleRequireTypedLoopVariable,
 }
 
+// typingDescriptions maps each typing rule to the one-line description shown
+// by `gdkit lint rules`.
+var typingDescriptions = map[string]string{
+	ruleRequireReturnType:         "Reports a function with no return type",
+	ruleRequireArgumentType:       "Reports a parameter with no type",
+	ruleRequireVariableType:       "Reports a variable with no type",
+	ruleRequireTypedCollection:    "Reports a bare Array or Dictionary with no element type",
+	ruleRequireSignalArgumentType: "Reports a signal parameter with no type",
+	ruleRequireTypedLoopVariable:  "Reports a for loop variable with no type",
+}
+
 func init() {
 	for _, rule := range typingRuleNames {
 		register(typingRule{rule: rule})
@@ -71,6 +82,8 @@ var (
 type typingRule struct{ rule string }
 
 func (r typingRule) Name() string { return r.rule }
+
+func (r typingRule) Describe() string { return typingDescriptions[r.rule] }
 
 func (r typingRule) PendingSince() string { return "0.5.0" }
 

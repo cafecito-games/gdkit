@@ -355,6 +355,7 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 type corpusPreChangeCollectionRule struct{}
 
 func (corpusPreChangeCollectionRule) Name() string         { return ruleRequireTypedCollection }
+func (corpusPreChangeCollectionRule) Describe() string     { return "test" }
 func (corpusPreChangeCollectionRule) PendingSince() string { return "0.5.0" }
 func (corpusPreChangeCollectionRule) Check(context *Context, script *project.Script) []Diagnostic {
 	if context == nil || script == nil {
@@ -401,6 +402,7 @@ func corpusPreChangeRules() []Rule {
 type corpusIssue80BaseCollectionRule struct{}
 
 func (corpusIssue80BaseCollectionRule) Name() string                { return ruleRequireTypedCollection }
+func (corpusIssue80BaseCollectionRule) Describe() string            { return "test" }
 func (corpusIssue80BaseCollectionRule) PendingSince() string        { return "0.5.0" }
 func (corpusIssue80BaseCollectionRule) NeedsSemanticAnalysis() bool { return true }
 func (corpusIssue80BaseCollectionRule) Check(context *Context, script *project.Script) []Diagnostic {

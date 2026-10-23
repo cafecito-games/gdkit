@@ -52,6 +52,10 @@ type noEngineLoggingRule struct{}
 
 func (noEngineLoggingRule) Name() string { return "no-engine-logging" }
 
+func (noEngineLoggingRule) Describe() string {
+	return "Reports a call that writes directly to the engine output"
+}
+
 func (noEngineLoggingRule) PendingSince() string { return "0.4.0" }
 
 func (noEngineLoggingRule) Check(context *Context, script *project.Script) []Diagnostic {

@@ -163,8 +163,12 @@ gdkit lint check .
 gdkit lint check --format json .
 gdkit lint check --disable max-line-length,max-file-lines .
 gdkit lint check --minimum-version 0.3.0 .
+gdkit lint rules
 gdkit lint init .
 ```
+
+`gdkit lint rules` lists every rule, its one-line description, and which ones
+ship inert, in text or `--format json`. It needs no project root.
 
 Text output is one line per diagnostic, naming the rule in parentheses:
 

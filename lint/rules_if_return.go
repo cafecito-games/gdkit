@@ -131,6 +131,10 @@ type noElseReturnRule struct{}
 
 func (noElseReturnRule) Name() string { return "no-else-return" }
 
+func (noElseReturnRule) Describe() string {
+	return `Reports an "else" that follows branches which all return`
+}
+
 func (noElseReturnRule) Check(_ *Context, script *project.Script) []Diagnostic {
 	if script.File == nil {
 		return nil
@@ -169,6 +173,10 @@ func (noElseReturnRule) Check(_ *Context, script *project.Script) []Diagnostic {
 type noElifReturnRule struct{}
 
 func (noElifReturnRule) Name() string { return "no-elif-return" }
+
+func (noElifReturnRule) Describe() string {
+	return `Reports an "elif" that follows a branch which returns`
+}
 
 func (noElifReturnRule) Check(_ *Context, script *project.Script) []Diagnostic {
 	if script.File == nil {

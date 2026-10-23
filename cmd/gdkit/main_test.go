@@ -184,6 +184,52 @@ func TestRunLintJSON(t *testing.T) {
 	}
 }
 
+func TestRunLintRules(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"lint", "rules"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("rules exit %d: %s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "function-name") || !strings.Contains(output, "Checks a function's name") {
+		t.Fatalf("unexpected output: %s", output)
+	}
+	if !strings.Contains(output, "unused-private-member") || !strings.Contains(output, "[ships inert]") {
+		t.Fatalf("pending marker missing: %s", output)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"lint", "rules", "--format", "json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("rules json exit %d: %s", code, stderr.String())
+	}
+	var infos []lint.RuleInfo
+	if err := json.Unmarshal(stdout.Bytes(), &infos); err != nil {
+		t.Fatalf("decode rules: %v (%s)", err, stdout.String())
+	}
+	if len(infos) == 0 {
+		t.Fatal("no rules listed")
+	}
+	found := false
+	for _, info := range infos {
+		if info.Name != "function-name" {
+			continue
+		}
+		found = true
+		if info.Description == "" || info.Pending {
+			t.Errorf("function-name = %+v, want a description and not pending", info)
+		}
+	}
+	if !found {
+		t.Fatal("function-name missing from JSON")
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"lint", "rules", "extra"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("rules with a positional arg exit %d, want 2", code)
+	}
+}
+
 func TestRunLintUsageErrors(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", "extends Node\n")

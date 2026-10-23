@@ -78,6 +78,10 @@ type maxReturnsRule struct{}
 
 func (maxReturnsRule) Name() string { return "max-returns" }
 
+func (maxReturnsRule) Describe() string {
+	return "Reports a function with more return statements than the limit"
+}
+
 func (maxReturnsRule) Check(context *Context, script *project.Script) []Diagnostic {
 	if script.File == nil {
 		return nil
@@ -100,6 +104,10 @@ func (maxReturnsRule) Check(context *Context, script *project.Script) []Diagnost
 type maxPublicMethodsRule struct{}
 
 func (maxPublicMethodsRule) Name() string { return "max-public-methods" }
+
+func (maxPublicMethodsRule) Describe() string {
+	return "Reports a class with more public methods than the limit"
+}
 
 func (maxPublicMethodsRule) Check(context *Context, script *project.Script) []Diagnostic {
 	if script.File == nil {
@@ -138,6 +146,10 @@ func (maxPublicMethodsRule) Check(context *Context, script *project.Script) []Di
 type functionArgumentsNumberRule struct{}
 
 func (functionArgumentsNumberRule) Name() string { return "function-arguments-number" }
+
+func (functionArgumentsNumberRule) Describe() string {
+	return "Reports a function with more arguments than the limit"
+}
 
 func (functionArgumentsNumberRule) Check(context *Context, script *project.Script) []Diagnostic {
 	if script.File == nil {
