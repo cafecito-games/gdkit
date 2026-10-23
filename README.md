@@ -20,6 +20,7 @@ parse the same way, so every tool agrees on which files are in scope.
 | [`gdkit format`](#formatting) | Rewrites GDScript into one canonical style, verifying every rewrite first |
 | [`gdkit uid`](#uid-identities) | Creates the `uid://` sidecars Godot would have created, and finds and repairs broken `uid://` references |
 | [`gdkit gen`](#code-generation) | Generates `_to_string`, `equals`, and `deep_equals` into the classes that opt in |
+| [`gdkit assets`](#unused-assets) | Reports the files nothing in the project still reaches |
 
 The analyzer uses [`gdparser`](https://github.com/cafecito-games/gdparser) and
 does not search source text with regular expressions. It parses GDScript,
@@ -38,6 +39,7 @@ gdkit lint check .      # GDScript style and correctness
 gdkit format check .    # canonical formatting; writes nothing
 gdkit uid check .       # missing, unusable, and unresolvable uid:// identities
 gdkit gen check .       # generated methods that are missing or out of date
+gdkit assets check .    # files nothing in the project still reaches
 ```
 
 Nothing needs configuring first: every tool runs with a built-in default policy.
@@ -79,6 +81,7 @@ SHA-256 manifest.
 - [Formatting](#formatting) — `gdkit format`
 - [UID identities](#uid-identities) — `gdkit uid`
 - [Code generation](#code-generation) — `gdkit gen`
+- [Unused assets](#unused-assets) — `gdkit assets`
 
 **Across every tool**
 
@@ -1282,11 +1285,178 @@ in your project's style — `gen write` introduces no new `format check` finding
 It does not reformat the rest of the file: every byte outside the region is left
 exactly as it was.
 
+## Unused assets
+
+`gdkit assets` answers one question: is anything still using this file?
+
+It is a whole-project reachability analysis, not a per-file check. Every file in
+the project is a node, every resource reference is an edge, and `project.godot`
+and `export_presets.cfg` supply the roots. What the mark never reaches is what
+the project has stopped using.
+
+```sh
+gdkit assets check /path/to/godot-project
+gdkit assets check --format json .
+gdkit assets check --disable asset.dynamic .
+gdkit assets init .
+```
+
+**It never writes.** `format`, `uid`, and `gen` each verify a rewrite before
+offering it; there is no equivalent safety net for deleting a file, because the
+safety property would have to be "the analysis was right". A path can be
+assembled at runtime, a resource can be loaded from C# or a GDExtension, and a
+plugin can discover a scene by scanning a directory — none of which leaves
+evidence a parser can read. **Treat the output as a review list, not a delete
+list.** `--format json` gives you a sorted list of paths to do whatever you want
+with, with your eyes open:
+
+```sh
+gdkit assets check --format json . | jq -r '.diagnostics[] | select(.rule == "asset.unreferenced") | .path'
+```
+
+### What creates a reference
+
+| Source | What counts |
+| --- | --- |
+| `.tscn`, `.tres`, `.escn` | every `[ext_resource]`, by `path=` where it has one and by `uid=` otherwise, plus every `res://` or `uid://` string anywhere else in the document |
+| `.gd` | every `res://` and `uid://` string literal, not only the argument of `load`/`preload` — `FileAccess.open("res://data/waves.json")` is a real dependency |
+| `.gd` | every reference to another script's global `class_name`, and to an autoload's name |
+| `project.godot`, `*.cfg` | every string value that is a resource path |
+| `.gdshader`, `.gdshaderinc` | every `#include` |
+| `.json` | every `res://` string in the decoded document |
+
+Two of these are deliberately broader than they could be. Reading *every*
+`res://` literal rather than only the ones in a known call position, and reading
+*every* value in `project.godot` rather than a list of the keys that hold a
+path, both over-keep: a string that merely looks like a resource path keeps a
+file alive that nothing really uses. That is a file this tool fails to mention.
+The alternative error is telling you to delete a file your project is using, and
+an enumerated list of manifest keys cannot be complete and rots silently when
+the engine adds one.
+
+For the same reason, shadowing is not resolved when matching `class_name`
+references, although [`gdkit arch`](#architecture-checks) does resolve it. A
+local variable named like a class keeps that class alive here. `arch` must not
+invent a boundary violation; `assets` must not invent a deletion.
+
+### Asset diagnostics
+
+| Rule | Default | Means |
+| --- | --- | --- |
+| `asset.unreferenced` | error | Nothing in the project names this file. |
+| `asset.unreachable` | warning | Something names it, but only files that are themselves unreachable — a dead cluster. |
+| `asset.dynamic` | warning | A load whose path is not a literal. Not a defect: the disclosure that reachability is incomplete here. |
+| `asset.missing` | warning | A reference that resolves to no file. |
+
+The two tiers exist because the confidence is genuinely different.
+`asset.unreferenced` means no edge points at the file at all. `asset.unreachable`
+means the only things pointing at it are dead too, which you only find out by
+deleting the unreferenced file at the head of the cluster — so it is reported
+separately, and gating CI on it means gating on findings nobody has reviewed yet.
+A project that has cleaned house promotes it:
+
+```json
+{ "version": 1, "severity": { "asset.unreachable": "error" } }
+```
+
+`asset.missing` is a warning rather than an error because it is a side
+observation rather than this tool's job, and because the references that dangle
+most often are the deliberate ones: a test asserting that loading
+`res://does/not/exist.tres` fails names a path that really is absent, and is
+right to.
+
+### Dynamic loads
+
+A path built at runtime cannot be resolved, and a project with a data-driven
+content pipeline has dozens of them. Two shapes still carry usable evidence:
+
+```gdscript
+load("res://data/" + id + ".tres")     # keeps everything under res://data/
+load("res://data/%s.tres" % id)        # keeps everything under res://data/
+load(path_variable)                    # keeps nothing
+```
+
+A concatenation keeps its leftmost literal and a format string keeps everything
+before its first verb, cut back to the last directory separator. Every one of
+these reports an `asset.dynamic` finding naming the line, whether or not it
+yielded a prefix, so the imprecision is visible rather than silent.
+
+A reference to a directory (`DirAccess.open("res://art")`, an export plugin's
+`bin/` path) keeps everything under it and is not a missing file. A glob is a
+search and names no file at all. A bare `res://` — a test runner scanning the
+whole project — is recorded as a dynamic site rather than keeping everything,
+because treating it as evidence would make every answer "still in use" and the
+whole analysis vacuous.
+
+### Keeping what the analysis cannot see
+
+`keep` pins additional roots, for the cases no parser can reach: a scene a C#
+caller loads, a test directory a runner scans, a resource named in a data file.
+
+```json
+{
+  "version": 1,
+  "keep": [
+    { "pattern": "tests/**", "reason": "GUT discovers these by scanning the directory" },
+    { "pattern": "art/portraits/**", "reason": "selected by id from a server payload" }
+  ]
+}
+```
+
+A kept file is a **root**, so what it depends on is reachable too — pinning a
+test scene only to be told its sprites are dead would make the key useless.
+`reason` is required. Unlike an [ADR-backed exception](#adr-backed-exceptions)
+it needs no ADR, because "a C# caller loads this" is too small a fact for a
+document, but a bare glob with no justification is how a keep list rots into a
+junk drawer nobody dares shorten.
+
+### Assets configuration
+
+`gdkit assets init` writes `.gdkit/assets.json`:
+
+```json
+{
+  "version": 1,
+  "source_roots": ["."],
+  "exclude": [".git/**", ".godot/**", ".gdkit/**", "addons/**", "node_modules/**", "**/node_modules/**"],
+  "asset_extensions": [".tscn", ".tres", ".gd", ".png", ".ogg", "..."],
+  "keep": [
+    { "pattern": "script_templates/**", "reason": "Godot reads the editor's script templates by scanning this directory" }
+  ]
+}
+```
+
+`source_roots` and `exclude` narrow **what may be reported, never what is read.**
+The whole project is always the universe. Narrowing the walk would delete the
+outgoing references of everything it hid, and every asset those files were the
+only user of would immediately report as unused — the tool would recommend
+deleting a file because it was told not to look at the thing using it.
+
+`asset_extensions` decides which files may appear in a finding. A file outside
+the list is still a node and still carries its references: a `.cfg` naming a
+texture keeps that texture alive while never being reported itself. The default
+list covers scenes, resources, scripts, shaders, textures, audio, fonts, models,
+and translations. `.json` is deliberately absent — a repository holds far more
+tooling JSON than game data — while still being read for the references inside
+it; a project whose data really is JSON adds the extension back.
+
+`exclude` starts wider than the other tools'. They walk only `.gd` files, so a
+repository that also holds a website is invisible to them; this one inventories
+every file there is.
+
+Because the extension list is a list of what to report, an extension nobody
+thought of goes unreported. That is the safe direction, but it means "clean" can
+mean "not looking" — so every report states how much of the project was eligible:
+
+```
+assets check passed (2503 of 4138 files eligible)
+```
+
 ## Ignoring files with .gdkitignore
 
 A file named `.gdkitignore` at the project root lists paths that `gdkit lint`,
-`gdkit format`, and `gdkit uid` skip, so third-party and generated code is
-named once for every tool:
+`gdkit format`, `gdkit uid`, `gdkit gen`, and `gdkit assets` skip, so
+third-party and generated code is named once for every tool:
 
 ```gitignore
 # Vendored plugins, wherever they sit in the tree
@@ -1389,6 +1559,8 @@ jobs:
         if: ${{ !cancelled() }}
       - run: gdkit uid check .
         if: ${{ !cancelled() }}
+      - run: gdkit assets check .
+        if: ${{ !cancelled() }}
 ```
 
 Two details make this hold up over time:
@@ -1406,7 +1578,7 @@ Exit codes are the same for every check command:
 
 | Exit | Meaning |
 | --- | --- |
-| `0` | clean — no findings, or `lint` findings that are all warnings |
+| `0` | clean — no findings, or `lint` or `assets` findings that are all warnings |
 | `1` | findings: a violation, a diagnostic, or a file that would be reformatted |
 | `2` | a configuration, usage, or I/O failure; no report was produced |
 
