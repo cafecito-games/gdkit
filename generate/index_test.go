@@ -1,8 +1,10 @@
 package generate
 
 import (
-	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIndexRecordsMethodsFieldsAndInheritance(t *testing.T) {
@@ -11,19 +13,16 @@ func TestIndexRecordsMethodsFieldsAndInheritance(t *testing.T) {
 		"sub.gd":  "class_name Sub\nextends Base\n\nvar r: int\n",
 	})
 	base, sub := index.ByClassName["Base"], index.ByClassName["Sub"]
-	if base == nil || sub == nil {
-		t.Fatal("class_name index is incomplete")
-	}
-	if sub.ParentID != "base.gd" {
-		t.Errorf("Sub.ParentID = %q, want base.gd", sub.ParentID)
-	}
-	if len(sub.Fields) != 1 || sub.Fields[0].Name != "r" {
-		t.Errorf("Sub.Fields = %+v", sub.Fields)
-	}
+	require.NotNil(t, base, "class_name index is incomplete")
+	require.NotNil(t, sub, "class_name index is incomplete")
+	assert.Equal(t, "base.gd", sub.ParentID)
+	require.Len(t, sub.Fields, 1)
+	assert.Equal(t, "r", sub.Fields[0].Name)
 	method, ok := base.Methods["equals"]
-	if !ok || method.Signature.Arity != 1 || method.Signature.Static || method.InRegion {
-		t.Errorf("Base.equals = %+v, %v", method, ok)
-	}
+	assert.True(t, ok)
+	assert.Equal(t, 1, method.Signature.Arity)
+	assert.False(t, method.Signature.Static)
+	assert.False(t, method.InRegion)
 }
 
 // class_name and extends on one line are a single Directive node.
@@ -33,12 +32,9 @@ func TestIndexReadsClassNameAndExtendsOnOneLine(t *testing.T) {
 		"sub.gd":  "class_name Sub extends Base\n",
 	})
 	sub := index.TopLevel["sub.gd"]
-	if !sub.HasClassName || sub.Name != "Sub" {
-		t.Errorf("Sub = %+v, want a class_name of Sub", sub)
-	}
-	if sub.ParentID != "base.gd" {
-		t.Errorf("ParentID = %q, want base.gd", sub.ParentID)
-	}
+	assert.True(t, sub.HasClassName)
+	assert.Equal(t, "Sub", sub.Name)
+	assert.Equal(t, "base.gd", sub.ParentID)
 }
 
 // Field metadata is needed for classes that never opt in, because both
@@ -48,9 +44,8 @@ func TestIndexRecordsFieldsForUnrequestedClasses(t *testing.T) {
 		"base.gd": "class_name Base\nextends RefCounted\n\n# gdkit:generate = equals\nvar q: int\n",
 		"sub.gd":  "class_name Sub\nextends Base\n\nvar r: int\n",
 	})
-	if fields := index.ByClassName["Sub"].Fields; len(fields) != 1 {
-		t.Errorf("an unrequested class has no field metadata: %+v", fields)
-	}
+	fields := index.ByClassName["Sub"].Fields
+	assert.Len(t, fields, 1, "an unrequested class has no field metadata")
 }
 
 // An unrequested inner class can extend a generated base and add fields, which
@@ -61,24 +56,14 @@ func TestIndexRecordsInnerClasses(t *testing.T) {
 		"holder.gd": "class_name Holder\nextends RefCounted\n\nclass Nested extends Base:\n\tvar r: int\n",
 	})
 	nested := index.Classes["holder.gd#Nested"]
-	if nested == nil {
-		t.Fatalf("the inner class was not indexed; have %v", sortedKeys(index.Classes))
-	}
-	if !nested.Inner {
-		t.Error("the inner class is not marked Inner")
-	}
-	if nested.ParentID != "base.gd" {
-		t.Errorf("Nested.ParentID = %q, want base.gd", nested.ParentID)
-	}
-	if len(nested.Fields) != 1 || nested.Fields[0].Name != "r" {
-		t.Errorf("Nested.Fields = %+v, want [r]", nested.Fields)
-	}
-	if index.TopLevel["holder.gd"].Inner {
-		t.Error("the file's top-level class was marked Inner")
-	}
-	if got := index.Descendants("base.gd"); !slices.Contains(got, "holder.gd#Nested") {
-		t.Errorf("Descendants(base) = %v, want the inner class", got)
-	}
+	require.NotNil(t, nested, "the inner class was not indexed")
+	assert.True(t, nested.Inner, "the inner class is not marked Inner")
+	assert.Equal(t, "base.gd", nested.ParentID)
+	require.Len(t, nested.Fields, 1)
+	assert.Equal(t, "r", nested.Fields[0].Name)
+	assert.False(t, index.TopLevel["holder.gd"].Inner, "the file's top-level class was marked Inner")
+	got := index.Descendants("base.gd")
+	assert.Contains(t, got, "holder.gd#Nested", "the inner class was not a descendant")
 }
 
 // Rewriting returned IDs as parentID+name drops middle segments, so A.B.C
@@ -90,16 +75,13 @@ func TestIndexBuildsNestedIdentitiesWithoutLosingSegments(t *testing.T) {
 			"\nclass D:\n\tclass C:\n\t\tvar r: int\n",
 	})
 	deep := index.Classes["a.gd#A#B#C"]
-	if deep == nil {
-		t.Fatalf("a.gd#A#B#C missing; have %v", sortedKeys(index.Classes))
-	}
-	if len(deep.Fields) != 1 || deep.Fields[0].Name != "q" {
-		t.Errorf("A.B.C fields = %+v, want [q]", deep.Fields)
-	}
+	require.NotNil(t, deep, "a.gd#A#B#C missing")
+	require.Len(t, deep.Fields, 1)
+	assert.Equal(t, "q", deep.Fields[0].Name)
 	sibling := index.Classes["a.gd#D#C"]
-	if sibling == nil || len(sibling.Fields) != 1 || sibling.Fields[0].Name != "r" {
-		t.Errorf("D.C = %+v, want its own identity holding [r]", sibling)
-	}
+	require.NotNil(t, sibling, "D.C is missing")
+	require.Len(t, sibling.Fields, 1)
+	assert.Equal(t, "r", sibling.Fields[0].Name)
 }
 
 // Calling FindRegion per class gave every inner class in a generated file the
@@ -109,12 +91,8 @@ func TestAnInnerClassDoesNotInheritTheFilesRegion(t *testing.T) {
 		"a.gd": "class_name Holder\nextends RefCounted\n\nclass Nested:\n\tvar q: int\n\n" +
 			"# gdkit:generated:begin\nfunc _to_string() -> String:\n\treturn \"Holder()\"\n# gdkit:generated:end\n",
 	})
-	if !index.TopLevel["a.gd"].HasRegion {
-		t.Errorf("the top-level class does not own the region: %v", index.TopLevel["a.gd"].RegionError)
-	}
-	if index.Classes["a.gd#Nested"].HasRegion {
-		t.Error("an inner class claimed the file's region")
-	}
+	assert.True(t, index.TopLevel["a.gd"].HasRegion, "the top-level class does not own the region")
+	assert.False(t, index.Classes["a.gd#Nested"].HasRegion, "an inner class claimed the file's region")
 }
 
 // A begin sentinel inside an inner class with its end outside is contained by
@@ -129,9 +107,8 @@ func TestSentinelsNotOwnedByTheTopLevelSuiteAreRefused(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			index := indexOf(t, map[string]string{"a.gd": source})
 			top := index.TopLevel["a.gd"]
-			if top.HasRegion || top.RegionError == nil {
-				t.Errorf("accepted as the top-level region: %+v", top)
-			}
+			assert.False(t, top.HasRegion, "accepted as the top-level region")
+			assert.NotNil(t, top.RegionError, "accepted as the top-level region")
 		})
 	}
 }
@@ -149,14 +126,12 @@ func TestIndexResolvesEveryInheritanceForm(t *testing.T) {
 		"domain/dotted.gd":   "class_name Dotted\nextends Base.Inner\n",
 	})
 	for _, path := range []string{"domain/by_name.gd", "domain/by_path.gd", "domain/by_rel.gd", "domain/by_uid.gd", "domain/by_raw.gd"} {
-		if got := index.TopLevel[path].ParentID; got != "domain/base.gd" {
-			t.Errorf("%s ParentID = %q, want domain/base.gd", path, got)
-		}
+		got := index.TopLevel[path].ParentID
+		assert.Equal(t, "domain/base.gd", got, path)
 	}
 	for _, path := range []string{"domain/chain.gd", "domain/dotted.gd"} {
-		if got := index.TopLevel[path].ParentID; got != "domain/base.gd#Inner" {
-			t.Errorf("%s ParentID = %q, want domain/base.gd#Inner", path, got)
-		}
+		got := index.TopLevel[path].ParentID
+		assert.Equal(t, "domain/base.gd#Inner", got, path)
 	}
 }
 
@@ -168,9 +143,8 @@ func TestAGlobalClassNameBeatsAnInnerClassOfTheSameName(t *testing.T) {
 		"a.gd": "class_name Holder\nextends RefCounted\n\n" +
 			"class Base:\n\tvar q: int\n\nclass Child extends Base:\n\tvar r: int\n",
 	})
-	if got := index.Classes["a.gd#Child"].ParentID; got != "base.gd" {
-		t.Errorf("Child.ParentID = %q, want the global base.gd", got)
-	}
+	got := index.Classes["a.gd#Child"].ParentID
+	assert.Equal(t, "base.gd", got)
 }
 
 // A preload constant is a type to Godot, so it is a real inheritance edge. A
@@ -182,9 +156,8 @@ func TestAPreloadAliasIsAnInheritanceEdge(t *testing.T) {
 		"deep/sub.gd": "const Base = preload(\"../base.gd\")\nextends Base\n\nvar r: int\n",
 	})
 	for _, path := range []string{"sub.gd", "deep/sub.gd"} {
-		if got := index.TopLevel[path].ParentID; got != "base.gd" {
-			t.Errorf("%s ParentID = %q, want base.gd via the preload alias", path, got)
-		}
+		got := index.TopLevel[path].ParentID
+		assert.Equal(t, "base.gd", got, path)
 	}
 }
 
@@ -196,9 +169,8 @@ func TestAnAutoloadIsAnInheritanceEdge(t *testing.T) {
 		"sub.gd":        "extends GameState\n\nvar r: int\n",
 		"project.godot": "[autoload]\nGameState=\"*res://state.gd\"\n",
 	})
-	if got := index.TopLevel["sub.gd"].ParentID; got != "state.gd" {
-		t.Errorf("ParentID = %q, want state.gd via the autoload", got)
-	}
+	got := index.TopLevel["sub.gd"].ParentID
+	assert.Equal(t, "state.gd", got)
 }
 
 // Every recognised-but-unresolved project form must set UnresolvedBase, or the
@@ -216,12 +188,8 @@ func TestUnresolvedProjectReferencesAreRecorded(t *testing.T) {
 	})
 	for _, path := range []string{"bad_path.gd", "bad_rel.gd", "bad_uid.gd", "bad_chain.gd", "bad_alias.gd", "bad_auto.gd"} {
 		class := index.TopLevel[path]
-		if !class.UnresolvedBase {
-			t.Errorf("%s: UnresolvedBase = false, want true (extends %q)", path, class.Extends)
-		}
-		if class.UnresolvedCause == "" {
-			t.Errorf("%s: no UnresolvedCause recorded", path)
-		}
+		assert.True(t, class.UnresolvedBase, path)
+		assert.NotEmpty(t, class.UnresolvedCause, path)
 	}
 }
 
@@ -231,12 +199,8 @@ func TestABareEngineBaseIsNotUnresolved(t *testing.T) {
 	index := indexOf(t, map[string]string{
 		"a.gd": "class_name Panel\nextends Control\n\nvar q: int\n",
 	})
-	if index.TopLevel["a.gd"].UnresolvedBase {
-		t.Error("an engine base was reported as unresolved")
-	}
-	if index.TopLevel["a.gd"].ParentID != "" {
-		t.Error("an engine base produced an inheritance edge")
-	}
+	assert.False(t, index.TopLevel["a.gd"].UnresolvedBase, "an engine base was reported as unresolved")
+	assert.Empty(t, index.TopLevel["a.gd"].ParentID, "an engine base produced an inheritance edge")
 }
 
 func TestIndexDetectsInheritanceCyclesAndTerminates(t *testing.T) {
@@ -245,19 +209,12 @@ func TestIndexDetectsInheritanceCyclesAndTerminates(t *testing.T) {
 		"b.gd": "class_name B\nextends A\n",
 		"c.gd": "class_name C\nextends A\n\nvar q: int\n",
 	})
-	if !index.InCycle["a.gd"] || !index.InCycle["b.gd"] {
-		t.Error("the A/B cycle was not detected")
-	}
-	if index.InCycle["c.gd"] {
-		t.Error("C is not itself in the cycle")
-	}
+	assert.True(t, index.InCycle["a.gd"], "the A/B cycle was not detected")
+	assert.True(t, index.InCycle["b.gd"], "the A/B cycle was not detected")
+	assert.False(t, index.InCycle["c.gd"], "C is not itself in the cycle")
 	// A class above a cycle is as unresolvable as one inside it.
-	if !index.ReachesCycle("c.gd") {
-		t.Error("ReachesCycle(C) = false, want true")
-	}
-	if len(index.Ancestry("c.gd")) == 0 {
-		t.Error("Ancestry returned nothing")
-	}
+	assert.True(t, index.ReachesCycle("c.gd"))
+	assert.NotEmpty(t, index.Ancestry("c.gd"), "Ancestry returned nothing")
 }
 
 func TestIndexRecordsDuplicateClassNames(t *testing.T) {
@@ -265,9 +222,7 @@ func TestIndexRecordsDuplicateClassNames(t *testing.T) {
 		"one.gd": "class_name Dup\n",
 		"two.gd": "class_name Dup\n",
 	})
-	if len(index.DuplicateClassNames["Dup"]) != 2 {
-		t.Errorf("duplicates = %+v", index.DuplicateClassNames)
-	}
+	assert.Len(t, index.DuplicateClassNames["Dup"], 2)
 }
 
 func TestIndexRecordsParseFailures(t *testing.T) {
@@ -275,10 +230,6 @@ func TestIndexRecordsParseFailures(t *testing.T) {
 		"ok.gd":     "class_name Fine\nextends RefCounted\n",
 		"broken.gd": "func (((\n",
 	})
-	if !slices.Equal(index.ParseFailures, []string{"broken.gd"}) {
-		t.Errorf("ParseFailures = %v, want [broken.gd]", index.ParseFailures)
-	}
-	if index.TopLevel["broken.gd"] != nil {
-		t.Error("an unparseable file produced a class")
-	}
+	assert.Equal(t, []string{"broken.gd"}, index.ParseFailures)
+	assert.Nil(t, index.TopLevel["broken.gd"], "an unparseable file produced a class")
 }

@@ -1,16 +1,16 @@
 package generate
 
 import (
-	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestDiagnosticStringMatchesTheSharedTextForm(t *testing.T) {
 	d := Diagnostic{Rule: ruleStale, Message: "generated region is out of date", Path: "hex.gd", Line: 14}
 	want := "hex.gd:14: Error: generated region is out of date (generate.stale)"
-	if got := d.String(); got != want {
-		t.Errorf("String() = %q, want %q", got, want)
-	}
+	got := d.String()
+	assert.Equal(t, want, got)
 }
 
 func TestReportSortIsDeterministic(t *testing.T) {
@@ -23,25 +23,16 @@ func TestReportSortIsDeterministic(t *testing.T) {
 		},
 	}
 	report.sort()
-	if report.Results[0].Path != "a.gd" {
-		t.Errorf("results not sorted by path: %+v", report.Results)
-	}
+	assert.Equal(t, "a.gd", report.Results[0].Path, "results not sorted by path")
 	got := []string{report.Diagnostics[0].Rule, report.Diagnostics[1].Rule, report.Diagnostics[2].Rule}
 	want := []string{ruleConflict, ruleStale, ruleMarker}
-	if !slices.Equal(got, want) {
-		t.Errorf("diagnostics = %v, want %v", got, want)
-	}
+	assert.Equal(t, want, got)
 }
 
 func TestReportPredicates(t *testing.T) {
 	empty := Report{}
-	if empty.HasChanges() || empty.HasDiagnostics() {
-		t.Error("an empty report reports changes or diagnostics")
-	}
-	if !(Report{Results: []Result{{Path: "a.gd", Changed: true}}}).HasChanges() {
-		t.Error("HasChanges missed a changed result")
-	}
-	if !(Report{Diagnostics: []Diagnostic{{Rule: ruleStale}}}).HasDiagnostics() {
-		t.Error("HasDiagnostics missed a diagnostic")
-	}
+	assert.False(t, empty.HasChanges(), "an empty report reports changes")
+	assert.False(t, empty.HasDiagnostics(), "an empty report reports diagnostics")
+	assert.True(t, (Report{Results: []Result{{Path: "a.gd", Changed: true}}}).HasChanges(), "HasChanges missed a changed result")
+	assert.True(t, (Report{Diagnostics: []Diagnostic{{Rule: ruleStale}}}).HasDiagnostics(), "HasDiagnostics missed a diagnostic")
 }

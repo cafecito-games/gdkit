@@ -1,10 +1,10 @@
 package generate
 
 import (
-	"slices"
 	"testing"
 
 	"github.com/cafecito-games/gdkit/internal/suppression"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMarkerGenerate(t *testing.T) {
@@ -15,13 +15,10 @@ func TestMarkerGenerate(t *testing.T) {
 		"# gdkit:generate=  equals ,to_string ": {"equals", "to_string"},
 	} {
 		got, err := MatchGenerate(line)
-		if err != nil {
-			t.Errorf("MatchGenerate(%q) errored: %v", line, err)
+		if !assert.NoError(t, err, "MatchGenerate(%q) errored", line) {
 			continue
 		}
-		if !slices.Equal(got, want) {
-			t.Errorf("MatchGenerate(%q) = %v, want %v", line, got, want)
-		}
+		assert.Equal(t, want, got, "MatchGenerate(%q)", line)
 	}
 }
 
@@ -35,9 +32,8 @@ func TestMarkerGenerateRejectsRubbish(t *testing.T) {
 		"# gdkit:generate = equals,",
 		"# gdkit:generate = no_such_generator",
 	} {
-		if _, err := MatchGenerate(line); err == nil {
-			t.Errorf("MatchGenerate(%q) accepted a bad list", line)
-		}
+		_, err := MatchGenerate(line)
+		assert.Error(t, err, "MatchGenerate(%q) accepted a bad list", line)
 	}
 }
 
@@ -50,25 +46,16 @@ func TestMarkerGenerateIgnoresOtherDirectives(t *testing.T) {
 		"var x = 1",
 	} {
 		names, err := MatchGenerate(line)
-		if err != nil || names != nil {
-			t.Errorf("MatchGenerate(%q) = %v, %v, want no match", line, names, err)
-		}
+		assert.NoError(t, err, "MatchGenerate(%q)", line)
+		assert.Nil(t, names, "MatchGenerate(%q)", line)
 	}
 }
 
 func TestMarkerIgnoreFormsAreDistinct(t *testing.T) {
-	if !MatchIgnore("# gdkit:generate:ignore") {
-		t.Error("the class form did not match")
-	}
-	if MatchIgnore("# gdkit:generate:ignore-field") {
-		t.Error("the class form matched the field form")
-	}
-	if !MatchIgnoreField("var x = 1  # gdkit:generate:ignore-field") {
-		t.Error("the field form did not match trailing")
-	}
-	if MatchIgnoreField("# gdkit:generate:ignore") {
-		t.Error("the field form matched the class form")
-	}
+	assert.True(t, MatchIgnore("# gdkit:generate:ignore"), "the class form did not match")
+	assert.False(t, MatchIgnore("# gdkit:generate:ignore-field"), "the class form matched the field form")
+	assert.True(t, MatchIgnoreField("var x = 1  # gdkit:generate:ignore-field"), "the field form did not match trailing")
+	assert.False(t, MatchIgnoreField("# gdkit:generate:ignore"), "the field form matched the class form")
 }
 
 // internal/suppression must not see these as suppression directives, or every
@@ -80,9 +67,8 @@ func TestMarkersAreNotSuppressionDirectives(t *testing.T) {
 		"# gdkit:generate:ignore-field",
 	} {
 		for _, kind := range suppression.Kinds {
-			if _, _, ok := suppression.Match(kind, line); ok {
-				t.Errorf("suppression.Match(%v, %q) matched", kind, line)
-			}
+			_, _, ok := suppression.Match(kind, line)
+			assert.False(t, ok, "suppression.Match(%d, %q) matched", kind, line)
 		}
 	}
 }
@@ -93,8 +79,7 @@ func TestStandsAlone(t *testing.T) {
 		"\t\t# gdkit:generate:ignore":        true,
 		"var x = 1  # gdkit:generate:ignore": false,
 	} {
-		if got := standsAlone(line); got != want {
-			t.Errorf("standsAlone(%q) = %v, want %v", line, got, want)
-		}
+		got := standsAlone(line)
+		assert.Equal(t, want, got, "standsAlone(%q)", line)
 	}
 }

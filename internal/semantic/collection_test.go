@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdparser/ast"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCollectionLifetimeFoldsClosedMutationVocabulary(t *testing.T) {
@@ -64,9 +65,7 @@ func run(flag: bool) -> void:
 		lambda_values.append(2.5)
 `,
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures())
 	analyzer := NewAnalyzer(source, collectionTestEngine(t))
 	file := source.File("collections.gd")
 	floatType := Builtin("float")
@@ -82,9 +81,8 @@ func run(flag: bool) -> void:
 	for name, expected := range want {
 		t.Run(name, func(t *testing.T) {
 			declaration := collectionDeclaration(t, file, name)
-			if got := analyzer.CollectionLifetime(declaration); !got.Equal(expected) {
-				t.Fatalf("CollectionLifetime(%s) = %s (%q), want %s", name, got, got.Reason(), expected)
-			}
+			got := analyzer.CollectionLifetime(declaration)
+			require.True(t, got.Equal(expected))
 		})
 	}
 }
@@ -186,29 +184,22 @@ func run() -> void:
 	print(alias)
 `,
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures())
 	analyzer := NewAnalyzer(source, collectionTestEngine(t))
 	file := source.File("lifetime.gd")
 	intType := Builtin("int")
-	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "untouched")); !got.Equal(Array(&intType)) {
-		t.Fatalf("untouched = %s (%q), want Array[int]", got, got.Reason())
-	}
-	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "shadowed")); !got.Equal(Array(&intType)) {
-		t.Fatalf("same-spelled lambda shadow changed outer result to %s (%q)", got, got.Reason())
-	}
+	got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "untouched"))
+	require.True(t, got.Equal(Array(&intType)))
+	got = analyzer.CollectionLifetime(collectionDeclaration(t, file, "shadowed"))
+	require.True(t, got.Equal(Array(&intType)))
 	for _, name := range []string{"passed", "captured", "aliased", "parameter_target", "stale_element_target", "stale_bulk_target", "stale_indirect_target", "stale_member_target", "stale_call_element_target", "stale_call_bulk_target", "match_bound", "returned", "rebound", "compound", "dynamic", "unknown_write", "unknown_source", "stored", "stored_as_key", "self_index", "ternary_receiver", "cast_receiver", "subscript_aliased", "subscript_passed", "subscript_returned", "subscript_iterated", "self_passed", "wrong_arity"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.CollectionLifetime(collectionDeclaration(t, file, name))
-			if !got.Equal(Array(nil)) {
-				t.Fatalf("CollectionLifetime(%s) = %s (%q), want generic Array", name, got, got.Reason())
-			}
+			require.True(t, got.Equal(Array(nil)))
 		})
 	}
-	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "optional")); !got.Equal(Dictionary(nil, nil)) {
-		t.Fatalf("omitted get_or_add default = %s (%q), want generic Dictionary", got, got.Reason())
-	}
+	got = analyzer.CollectionLifetime(collectionDeclaration(t, file, "optional"))
+	require.True(t, got.Equal(Dictionary(nil, nil)))
 }
 
 func TestCollectionLifetimeFailsClosedWhenNestedContentsLeaveDirectly(t *testing.T) {
@@ -237,18 +228,15 @@ func run() -> void:
 	sorted.sort_custom(comparator)
 `,
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures())
 	analyzer := NewAnalyzer(source, collectionTestEngine(t))
 	file := source.File("nested.gd")
 	for _, name := range []string{"subscript", "iterated", "popped", "mapping", "added", "sorted"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.CollectionLifetime(collectionDeclaration(t, file, name))
-			if got.Kind() == KindArray && got.Equal(Array(nil)) || got.Kind() == KindDictionary && got.Equal(Dictionary(nil, nil)) {
-				return
-			}
-			t.Fatalf("CollectionLifetime(%s) = %s (%q), want generic collection", name, got, got.Reason())
+			genericArray := got.Kind() == KindArray && got.Equal(Array(nil))
+			genericDictionary := got.Kind() == KindDictionary && got.Equal(Dictionary(nil, nil))
+			require.True(t, genericArray || genericDictionary)
 		})
 	}
 }
@@ -278,37 +266,28 @@ func run() -> void:
 	var call_subscript := [stale_member_element()]
 `,
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures())
 	analyzer := NewAnalyzer(source, collectionTestEngine(t))
 	file := source.File("initial.gd")
 	intType := Builtin("int")
 	inner := Array(&intType)
-	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "fresh")); !got.Equal(Array(&inner)) {
-		t.Fatalf("fresh = %s (%q), want Array[Array[int]]", got, got.Reason())
-	}
-	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "scalar_read")); !got.Equal(Array(&intType)) {
-		t.Fatalf("scalar_read = %s (%q), want Array[int]", got, got.Reason())
-	}
+	got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "fresh"))
+	require.True(t, got.Equal(Array(&inner)))
+	got = analyzer.CollectionLifetime(collectionDeclaration(t, file, "scalar_read"))
+	require.True(t, got.Equal(Array(&intType)))
 	stringType := Builtin("String")
-	if got := analyzer.CollectionLifetime(collectionDeclaration(t, file, "scalar_dictionary")); !got.Equal(Dictionary(&stringType, &intType)) {
-		t.Fatalf("scalar_dictionary = %s (%q), want Dictionary[String, int]", got, got.Reason())
-	}
+	got = analyzer.CollectionLifetime(collectionDeclaration(t, file, "scalar_dictionary"))
+	require.True(t, got.Equal(Dictionary(&stringType, &intType)))
 	for _, name := range []string{"array_value", "member_value", "direct_subscript", "indirect_subscript", "call_subscript"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.CollectionLifetime(collectionDeclaration(t, file, name))
-			if !got.Equal(Array(nil)) {
-				t.Fatalf("CollectionLifetime(%s) = %s (%q), want generic Array", name, got, got.Reason())
-			}
+			require.True(t, got.Equal(Array(nil)))
 		})
 	}
 	for _, name := range []string{"dictionary_value", "dictionary_key"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.CollectionLifetime(collectionDeclaration(t, file, name))
-			if !got.Equal(Dictionary(nil, nil)) {
-				t.Fatalf("CollectionLifetime(%s) = %s (%q), want generic Dictionary", name, got, got.Reason())
-			}
+			require.True(t, got.Equal(Dictionary(nil, nil)))
 		})
 	}
 }
@@ -322,9 +301,7 @@ func second() -> void:
 	pass
 `,
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures())
 	file := source.File("shared.gd")
 	declaration := collectionDeclaration(t, file, "values")
 	var second *ast.FunctionDeclaration
@@ -334,14 +311,11 @@ func second() -> void:
 		}
 		return true
 	})
-	if second == nil {
-		t.Fatal("fixture has no second function")
-	}
+	require.NotNil(t, second)
 	second.Body = append([]ast.Statement{declaration}, second.Body...)
 	analyzer := NewAnalyzer(source, collectionTestEngine(t))
-	if got := analyzer.CollectionLifetime(declaration); !got.Equal(Array(nil)) {
-		t.Fatalf("shared declaration = %s (%q), want generic Array", got, got.Reason())
-	}
+	got := analyzer.CollectionLifetime(declaration)
+	require.True(t, got.Equal(Array(nil)))
 }
 
 func TestCollectionLifetimeDistinguishesInitialUnknownFromIncompleteLifetime(t *testing.T) {
@@ -357,25 +331,20 @@ func run() -> void:
 	var local := [1]
 `,
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures())
 	analyzer := NewAnalyzer(source, collectionTestEngine(t))
 	closed := source.File("closed.gd")
 	unknown := analyzer.CollectionLifetime(collectionDeclaration(t, closed, "unknown"))
-	if unknown.Kind() != KindUnknown || unknown.Reason() == "" {
-		t.Fatalf("initial Unknown = %s (%q), want reasoned Unknown", unknown, unknown.Reason())
-	}
-	if got := analyzer.CollectionLifetime(collectionDeclaration(t, closed, "member")); !got.Equal(Array(nil)) {
-		t.Fatalf("member = %s (%q), want generic Array", got, got.Reason())
-	}
+	require.Equal(t, KindUnknown, unknown.Kind())
+	require.NotEmpty(t, unknown.Reason())
+	got := analyzer.CollectionLifetime(collectionDeclaration(t, closed, "member"))
+	require.True(t, got.Equal(Array(nil)))
 	foreign := sources(t, map[string]string{"foreign.gd": `class_name Foreign
 func run() -> void:
 	var local := [1]
 `})
-	if got := analyzer.CollectionLifetime(collectionDeclaration(t, foreign.File("foreign.gd"), "local")); !got.Equal(Array(nil)) {
-		t.Fatalf("foreign declaration = %s (%q), want generic Array", got, got.Reason())
-	}
+	got = analyzer.CollectionLifetime(collectionDeclaration(t, foreign.File("foreign.gd"), "local"))
+	require.True(t, got.Equal(Array(nil)))
 	local := collectionDeclaration(t, closed, "local")
 	want := analyzer.CollectionLifetime(local)
 	const readers = 16
@@ -391,9 +360,7 @@ func run() -> void:
 	wait.Wait()
 	close(results)
 	for got := range results {
-		if !got.Equal(want) {
-			t.Fatalf("concurrent result = %s (%q), want %s", got, got.Reason(), want)
-		}
+		require.True(t, got.Equal(want))
 	}
 }
 
@@ -405,26 +372,19 @@ func run() -> void:
 	values.append(2)
 `,
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures())
 	builder := NewEngineBuilder()
 	for _, builtin := range []string{"int", "float", "String", "bool", "Array", "Dictionary", "Callable", "Variant"} {
-		if err := builder.AddBuiltin(builtin); err != nil {
-			t.Fatal(err)
-		}
+		err := builder.AddBuiltin(builtin)
+		require.NoError(t, err)
 	}
-	if err := builder.AddMethod("Array", "append", "Variant", []EngineArgumentSpec{{Type: "String"}}, false, false); err != nil {
-		t.Fatal(err)
-	}
+	err := builder.AddMethod("Array", "append", "Variant", []EngineArgumentSpec{{Type: "String"}}, false, false)
+	require.NoError(t, err)
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	analyzer := NewAnalyzer(source, engine)
-	if got := analyzer.CollectionLifetime(collectionDeclaration(t, source.File("signature.gd"), "values")); !got.Equal(Array(nil)) {
-		t.Fatalf("wrong append signature = %s (%q), want generic Array", got, got.Reason())
-	}
+	got := analyzer.CollectionLifetime(collectionDeclaration(t, source.File("signature.gd"), "values"))
+	require.True(t, got.Equal(Array(nil)))
 }
 
 func collectionDeclaration(t *testing.T, file *ast.File, name string) *ast.VariableDeclaration {
@@ -433,16 +393,12 @@ func collectionDeclaration(t *testing.T, file *ast.File, name string) *ast.Varia
 	ast.Inspect(file, func(node ast.Node) bool {
 		declaration, ok := node.(*ast.VariableDeclaration)
 		if ok && declaration.Name == name {
-			if found != nil {
-				t.Fatalf("fixture has more than one declaration named %q", name)
-			}
+			require.Nil(t, found)
 			found = declaration
 		}
 		return true
 	})
-	if found == nil {
-		t.Fatalf("fixture has no declaration named %q", name)
-	}
+	require.NotNil(t, found)
 	return found
 }
 
@@ -450,9 +406,8 @@ func collectionTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	builder := NewEngineBuilder()
 	for _, builtin := range []string{"int", "float", "String", "StringName", "NodePath", "bool", "Array", "Dictionary", "Callable", "Signal", "Variant"} {
-		if err := builder.AddBuiltin(builtin); err != nil {
-			t.Fatal(err)
-		}
+		err := builder.AddBuiltin(builtin)
+		require.NoError(t, err)
 	}
 	methods := []struct {
 		owner, name, result string
@@ -492,14 +447,11 @@ func collectionTestEngine(t *testing.T) *Engine {
 		if result == "" {
 			result = "Variant"
 		}
-		if err := builder.AddMethod(method.owner, method.name, result, method.arguments, false, false); err != nil {
-			t.Fatal(err)
-		}
+		err := builder.AddMethod(method.owner, method.name, result, method.arguments, false, false)
+		require.NoError(t, err)
 	}
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return engine
 }
 

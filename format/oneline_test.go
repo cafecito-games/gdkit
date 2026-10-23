@@ -1,6 +1,10 @@
 package format
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // A one-line class body holds one member: in "class A: var v = 1; var u = 2"
 // the class holds v, and what a semicolon separates from it belongs to the
@@ -28,9 +32,8 @@ func TestFormatOneLineClassBodyKeepsTheScopeOfEveryMember(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := formatSource(t, DefaultConfig(), testCase.source); got != testCase.want {
-				t.Fatalf("formatted = %q, want %q", got, testCase.want)
-			}
+			got := formatSource(t, DefaultConfig(), testCase.source)
+			require.Equal(t, testCase.want, got)
 		})
 	}
 }
@@ -51,9 +54,8 @@ func TestFormatAcceptsOneMemberAndBlockClassBodies(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := formatSource(t, DefaultConfig(), testCase.source); got != testCase.want {
-				t.Fatalf("formatted = %q, want %q", got, testCase.want)
-			}
+			got := formatSource(t, DefaultConfig(), testCase.source)
+			require.Equal(t, testCase.want, got)
 		})
 	}
 }
@@ -76,9 +78,8 @@ func TestFormatOneLineLambdaBodiesAndSameLineAnnotations(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := formatSource(t, DefaultConfig(), testCase.source); got != testCase.want {
-				t.Fatalf("formatted = %q, want %q", got, testCase.want)
-			}
+			got := formatSource(t, DefaultConfig(), testCase.source)
+			require.Equal(t, testCase.want, got)
 		})
 	}
 }

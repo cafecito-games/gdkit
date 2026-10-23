@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func numbered(count int) []string {
@@ -80,9 +82,7 @@ func TestUnified(t *testing.T) {
 	for name, test := range cases {
 		t.Run(name, func(t *testing.T) {
 			got := Unified("old", "new", []byte(test.old), []byte(test.new))
-			if got != test.want {
-				t.Fatalf("Unified:\n%s\nwant:\n%s", got, test.want)
-			}
+			require.Equal(t, test.want, got)
 		})
 	}
 }
@@ -109,23 +109,16 @@ func TestUnifiedAppliesWithPatch(t *testing.T) {
 			directory := t.TempDir()
 			target := filepath.Join(directory, "file.txt")
 			patchFile := filepath.Join(directory, "change.patch")
-			if err := os.WriteFile(target, []byte(test.old), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			err := os.WriteFile(target, []byte(test.old), 0o644)
+			require.NoError(t, err)
 			diff := Unified("a/file.txt", "b/file.txt", []byte(test.old), []byte(test.new))
-			if err := os.WriteFile(patchFile, []byte(diff), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if output, err := exec.Command(patch, "-s", target, patchFile).CombinedOutput(); err != nil {
-				t.Fatalf("patch rejected the diff: %v\n%s\n%s", err, output, diff)
-			}
+			err = os.WriteFile(patchFile, []byte(diff), 0o644)
+			require.NoError(t, err)
+			_, err = exec.Command(patch, "-s", target, patchFile).CombinedOutput()
+			require.NoError(t, err, "patch rejected the diff")
 			got, err := os.ReadFile(target)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(got) != test.new {
-				t.Fatalf("patched file = %q, want %q\n%s", got, test.new, diff)
-			}
+			require.NoError(t, err)
+			require.Equal(t, test.new, string(got))
 		})
 	}
 }
@@ -143,12 +136,11 @@ func TestUnifiedStaysFastWhenEveryLineChanges(t *testing.T) {
 	}
 	started := time.Now()
 	diff := Unified("old", "new", []byte(old.String()), []byte(new.String()))
-	if elapsed := time.Since(started); elapsed > 5*time.Second {
-		t.Fatalf("diff of 6000 changed lines took %s", elapsed)
-	}
+	elapsed := time.Since(started)
+	require.False(t, elapsed > 5*time.Second, "diff of 6000 changed lines took too long")
 	// The "+++" header line is the one extra match for the addition marker.
-	removals, additions := strings.Count(diff, "\n-"), strings.Count(diff, "\n+")-1
-	if removals != 5400 || additions != 5400 {
-		t.Fatalf("diff has %d removals and %d additions, want 5400 of each", removals, additions)
-	}
+	removals := strings.Count(diff, "\n-")
+	additions := strings.Count(diff, "\n+") - 1
+	require.Equal(t, 5400, removals)
+	require.Equal(t, 5400, additions)
 }

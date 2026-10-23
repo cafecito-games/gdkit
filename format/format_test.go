@@ -4,14 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"sort"
-	"strings"
 	"testing"
 
 	"github.com/cafecito-games/gdparser/ast"
 	gdformat "github.com/cafecito-games/gdparser/format"
 	"github.com/cafecito-games/gdparser/parser"
+	"github.com/stretchr/testify/require"
 )
 
 const unformatted = "extends Node\nvar a=1\nfunc f( x ):\n\treturn x+a\n"
@@ -19,41 +18,31 @@ const unformatted = "extends Node\nvar a=1\nfunc f( x ):\n\treturn x+a\n"
 func TestNewRejectsInvalidConfig(t *testing.T) {
 	config := DefaultConfig()
 	config.LineWidth = 0
-	if _, err := New(config); err == nil {
-		t.Fatal("New accepted an invalid config")
-	}
+	_, err := New(config)
+	require.Error(t, err)
 }
 
 func TestFormatReportsChangedFileWithFormatterOutput(t *testing.T) {
 	report, snapshot := formatProject(t, DefaultConfig(), map[string]string{"a.gd": unformatted})
-	if report.HasDiagnostics() {
-		t.Fatalf("unexpected diagnostics: %v", report.Diagnostics)
-	}
-	if len(report.Results) != 1 {
-		t.Fatalf("got %d results, want 1", len(report.Results))
-	}
+	require.False(t, report.HasDiagnostics())
+	require.Len(t, report.Results, 1)
 	result := report.Results[0]
 	want := gdformat.FileWithOptions(snapshot.Scripts["a.gd"].File, gdformat.GodotStyle())
-	if result.Path != "a.gd" || !result.Changed || string(result.Formatted) != want {
-		t.Fatalf("result = %+v (%q), want changed with %q", result, result.Formatted, want)
-	}
-	if want == unformatted {
-		t.Fatal("fixture is already formatted")
-	}
-	if !report.HasChanges() || len(report.Changed()) != 1 {
-		t.Fatalf("HasChanges = %v, Changed = %v", report.HasChanges(), report.Changed())
-	}
+	require.Equal(t, "a.gd", result.Path)
+	require.True(t, result.Changed)
+	require.Equal(t, want, string(result.Formatted))
+	require.NotEqual(t, unformatted, want)
+	require.True(t, report.HasChanges())
+	require.Len(t, report.Changed(), 1)
 
 	again, _ := formatProject(t, DefaultConfig(), map[string]string{"a.gd": want})
-	if again.HasDiagnostics() || again.HasChanges() {
-		t.Fatalf("formatted output is not stable: %+v", again)
-	}
-	if len(again.Results) != 1 || again.Results[0].Changed || again.Results[0].Formatted != nil {
-		t.Fatalf("results = %+v, want one unchanged result", again.Results)
-	}
-	if again.Changed() == nil || len(again.Changed()) != 0 {
-		t.Fatalf("Changed = %#v, want an empty non-nil slice", again.Changed())
-	}
+	require.False(t, again.HasDiagnostics())
+	require.False(t, again.HasChanges())
+	require.Len(t, again.Results, 1)
+	require.False(t, again.Results[0].Changed)
+	require.Nil(t, again.Results[0].Formatted)
+	require.NotNil(t, again.Changed())
+	require.Empty(t, again.Changed())
 }
 
 func TestFormatHonoursEveryOption(t *testing.T) {
@@ -84,9 +73,8 @@ func TestFormatHonoursEveryOption(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := DefaultConfig()
 			testCase.configure(&config)
-			if got := formatSource(t, config, testCase.source); got != testCase.want {
-				t.Fatalf("formatted = %q, want %q", got, testCase.want)
-			}
+			got := formatSource(t, config, testCase.source)
+			require.Equal(t, testCase.want, got)
 		})
 	}
 }
@@ -95,34 +83,22 @@ func TestFormatReportsParseFailureWithoutResult(t *testing.T) {
 	report, snapshot := formatProject(t, DefaultConfig(), map[string]string{
 		"broken.gd": "var a = 1\nvar b = 2\nfunc (:\n",
 	})
-	if len(report.Results) != 0 {
-		t.Fatalf("results = %+v, want none", report.Results)
-	}
-	if len(report.Diagnostics) != 1 {
-		t.Fatalf("diagnostics = %v, want one", report.Diagnostics)
-	}
+	require.Empty(t, report.Results)
+	require.Len(t, report.Diagnostics, 1)
 	var parseError *parser.Error
-	if !errors.As(snapshot.Scripts["broken.gd"].ParseError, &parseError) {
-		t.Fatal("fixture did not fail with a parser error")
-	}
+	require.True(t, errors.As(snapshot.Scripts["broken.gd"].ParseError, &parseError), "fixture did not fail with a parser error")
 	diagnostic := report.Diagnostics[0]
 	start := parseError.Token.Span.Start
-	if diagnostic.Rule != "source-parse" || diagnostic.Path != "broken.gd" || diagnostic.Line != start.Line || diagnostic.Column != start.Column {
-		t.Fatalf("diagnostic = %+v, want source-parse at %d:%d", diagnostic, start.Line, start.Column)
-	}
-	if diagnostic.Line != 3 {
-		t.Fatalf("line = %d, want 3", diagnostic.Line)
-	}
-	if diagnostic.Message != parseError.Message {
-		t.Fatalf("message = %q, want %q", diagnostic.Message, parseError.Message)
-	}
+	require.Equal(t, "source-parse", diagnostic.Rule)
+	require.Equal(t, "broken.gd", diagnostic.Path)
+	require.Equal(t, start.Line, diagnostic.Line)
+	require.Equal(t, start.Column, diagnostic.Column)
+	require.Equal(t, 3, diagnostic.Line)
+	require.Equal(t, parseError.Message, diagnostic.Message)
 	want := "broken.gd:3: Error: " + parseError.Message + " (source-parse)"
-	if diagnostic.String() != want {
-		t.Fatalf("String() = %q, want %q", diagnostic.String(), want)
-	}
-	if !report.HasDiagnostics() || report.HasChanges() {
-		t.Fatalf("HasDiagnostics = %v, HasChanges = %v", report.HasDiagnostics(), report.HasChanges())
-	}
+	require.Equal(t, want, diagnostic.String())
+	require.True(t, report.HasDiagnostics())
+	require.False(t, report.HasChanges())
 }
 
 func TestFormatRefusesOutputThatFailsVerification(t *testing.T) {
@@ -131,21 +107,13 @@ func TestFormatRefusesOutputThatFailsVerification(t *testing.T) {
 		"b.gd": "var b = 2\n",
 	})
 	formatter, err := New(DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	formatter.emit = func(*ast.File, gdformat.Options) string { return "var renamed = 1\n" }
 	report := formatter.Format(snapshot)
-	if len(report.Results) != 0 {
-		t.Fatalf("results = %+v, want none", report.Results)
-	}
-	if len(report.Diagnostics) != 2 {
-		t.Fatalf("diagnostics = %v, want two", report.Diagnostics)
-	}
+	require.Empty(t, report.Results)
+	require.Len(t, report.Diagnostics, 2)
 	want := Diagnostic{Rule: "format.unsafe", Message: "formatting changed the syntax tree", Path: "a.gd", Line: 1, Column: 1}
-	if report.Diagnostics[0] != want {
-		t.Fatalf("diagnostic = %+v, want %+v", report.Diagnostics[0], want)
-	}
+	require.Equal(t, want, report.Diagnostics[0])
 }
 
 func TestFormatDoesNotMutateSnapshot(t *testing.T) {
@@ -157,19 +125,11 @@ func TestFormatDoesNotMutateSnapshot(t *testing.T) {
 	treeBefore := ast.JSONValue(script.File)
 	sourceBefore := string(script.Source)
 	formatter, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	report := formatter.Format(snapshot)
-	if !report.HasChanges() {
-		t.Fatalf("fixture was not reformatted: %+v", report)
-	}
-	if !reflect.DeepEqual(ast.JSONValue(script.File), treeBefore) {
-		t.Fatal("Format mutated the snapshot's syntax tree")
-	}
-	if string(script.Source) != sourceBefore {
-		t.Fatal("Format mutated the snapshot's source")
-	}
+	require.True(t, report.HasChanges())
+	require.Equal(t, treeBefore, ast.JSONValue(script.File))
+	require.Equal(t, sourceBefore, string(script.Source))
 }
 
 func TestFormatReportIsSortedAndDeterministic(t *testing.T) {
@@ -183,9 +143,7 @@ func TestFormatReportIsSortedAndDeterministic(t *testing.T) {
 	config := DefaultConfig()
 	snapshot := loadProject(t, config, files)
 	formatter, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	first := formatter.Format(snapshot)
 	second := formatter.Format(snapshot)
 
@@ -196,37 +154,21 @@ func TestFormatReportIsSortedAndDeterministic(t *testing.T) {
 	for _, diagnostic := range first.Diagnostics {
 		diagnosticPaths = append(diagnosticPaths, diagnostic.Path)
 	}
-	if !reflect.DeepEqual(resultPaths, []string{"a/y.gd", "b/z.gd", "c.gd"}) {
-		t.Fatalf("result paths = %v", resultPaths)
-	}
-	if !reflect.DeepEqual(diagnosticPaths, []string{"a/bad.gd", "b/bad.gd"}) {
-		t.Fatalf("diagnostic paths = %v", diagnosticPaths)
-	}
+	require.Equal(t, []string{"a/y.gd", "b/z.gd", "c.gd"}, resultPaths)
+	require.Equal(t, []string{"a/bad.gd", "b/bad.gd"}, diagnosticPaths)
 	firstJSON, err := json.Marshal(first)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	secondJSON, err := json.Marshal(second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(firstJSON) != string(secondJSON) {
-		t.Fatalf("runs differ:\n%s\n%s", firstJSON, secondJSON)
-	}
-	if strings.Contains(string(firstJSON), "var a") {
-		t.Fatalf("formatted bytes leaked into JSON: %s", firstJSON)
-	}
+	require.NoError(t, err)
+	require.Equal(t, string(firstJSON), string(secondJSON))
+	require.NotContains(t, string(firstJSON), "var a")
 }
 
 func TestEmptyReportMarshalsEmptyArrays(t *testing.T) {
 	report, _ := formatProject(t, DefaultConfig(), map[string]string{"notes.txt": "x"})
 	data, err := json.Marshal(report)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != `{"results":[],"diagnostics":[]}` {
-		t.Fatalf("JSON = %s", data)
-	}
+	require.NoError(t, err)
+	require.Equal(t, `{"results":[],"diagnostics":[]}`, string(data))
 }
 
 func TestFormatIsIdenticalAcrossRunsOfALargeProject(t *testing.T) {
@@ -247,44 +189,30 @@ func TestFormatIsIdenticalAcrossRunsOfALargeProject(t *testing.T) {
 	config := DefaultConfig()
 	snapshot := loadProject(t, config, files)
 	formatter, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	first := formatter.Format(snapshot)
-	if len(first.Results) != 160 || len(first.Changed()) != 140 || len(first.Diagnostics) != 40 {
-		t.Fatalf("got %d results, %d changed, %d diagnostics", len(first.Results), len(first.Changed()), len(first.Diagnostics))
-	}
-	if !sort.SliceIsSorted(first.Results, func(i, j int) bool { return first.Results[i].Path < first.Results[j].Path }) {
-		t.Fatal("results are not in path order")
-	}
+	require.Len(t, first.Results, 160)
+	require.Len(t, first.Changed(), 140)
+	require.Len(t, first.Diagnostics, 40)
+	require.True(t, sort.SliceIsSorted(first.Results, func(i, j int) bool { return first.Results[i].Path < first.Results[j].Path }), "results are not in path order")
 	firstJSON, err := json.Marshal(first)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for range 5 {
 		again := formatter.Format(snapshot)
 		againJSON, err := json.Marshal(again)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(againJSON) != string(firstJSON) {
-			t.Fatal("report differs between runs")
-		}
-		if !reflect.DeepEqual(again, first) {
-			t.Fatal("formatted contents differ between runs")
-		}
+		require.NoError(t, err)
+		require.Equal(t, string(firstJSON), string(againJSON))
+		require.Equal(t, first, again)
 	}
 }
 
 func TestFormatReportsLexerErrorAtItsPosition(t *testing.T) {
 	report, _ := formatProject(t, DefaultConfig(), map[string]string{"a.gd": "var a = 1\nvar s = \"\\x\"\n"})
 	want := Diagnostic{Rule: "source-parse", Message: `invalid escape "\x" in string`, Path: "a.gd", Line: 2, Column: 11}
-	if len(report.Diagnostics) != 1 || report.Diagnostics[0] != want {
-		t.Fatalf("diagnostics = %+v, want %+v", report.Diagnostics, want)
-	}
-	if got := report.Diagnostics[0].String(); got != `a.gd:2: Error: invalid escape "\x" in string (source-parse)` {
-		t.Fatalf("String() = %q", got)
-	}
+	require.Len(t, report.Diagnostics, 1)
+	require.Equal(t, want, report.Diagnostics[0])
+	got := report.Diagnostics[0].String()
+	require.Equal(t, `a.gd:2: Error: invalid escape "\x" in string (source-parse)`, got)
 }
 
 // These pin how the formatter treats the edges of a file, so a change in
@@ -309,13 +237,11 @@ func TestFormatAtTheEdgesOfAFile(t *testing.T) {
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
 			report, _ := formatProject(t, DefaultConfig(), map[string]string{"a.gd": testCase.source})
-			if report.HasDiagnostics() || len(report.Results) != 1 {
-				t.Fatalf("report = %+v, want one result", report)
-			}
+			require.False(t, report.HasDiagnostics())
+			require.Len(t, report.Results, 1)
 			result := report.Results[0]
-			if result.Changed != testCase.changed || string(result.Formatted) != testCase.want {
-				t.Fatalf("changed = %v, formatted = %q; want %v, %q", result.Changed, result.Formatted, testCase.changed, testCase.want)
-			}
+			require.Equal(t, testCase.changed, result.Changed)
+			require.Equal(t, testCase.want, string(result.Formatted))
 		})
 	}
 }

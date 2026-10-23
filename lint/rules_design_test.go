@@ -3,6 +3,8 @@ package lint
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func designConfig(maxReturns, maxPublicMethods, arguments int) Config {
@@ -27,9 +29,8 @@ func TestMaxReturnsBoundaryAndLocation(t *testing.T) {
 	overLimit := "func a(x):\n\tif x:\n\t\treturn 1\n\treturn 2\n\treturn 3\n"
 	assertRuleWithConfig(t, designConfig(2, 20, 10), "max-returns", overLimit, 5)
 	found := lintSourceWithConfig(t, designConfig(2, 20, 10), "max-returns", overLimit)
-	if found[0].Message != `Function "a" has more than 2 return statements` || found[0].Column != 2 {
-		t.Fatalf("unexpected diagnostic %+v", found[0])
-	}
+	require.Equal(t, `Function "a" has more than 2 return statements`, found[0].Message)
+	require.Equal(t, 2, found[0].Column)
 }
 
 func TestMaxReturnsDefaultIsSix(t *testing.T) {
@@ -86,9 +87,8 @@ func TestMaxPublicMethodsBoundary(t *testing.T) {
 	assertRuleWithConfig(t, config, "max-public-methods", repeatedFunctions("f", 2, "")+"func _p(): pass\n")
 	assertRuleWithConfig(t, config, "max-public-methods", repeatedFunctions("f", 3, ""), 1)
 	found := lintSourceWithConfig(t, config, "max-public-methods", repeatedFunctions("f", 3, ""))
-	if found[0].Message != `"Class global scope" has more than 2 public methods (functions)` || found[0].Column != 1 {
-		t.Fatalf("unexpected diagnostic %+v", found[0])
-	}
+	require.Equal(t, `"Class global scope" has more than 2 public methods (functions)`, found[0].Message)
+	require.Equal(t, 1, found[0].Column)
 }
 
 func TestMaxPublicMethodsDefaultIsTwenty(t *testing.T) {
@@ -132,16 +132,9 @@ class Statics:
 		`"Class Deep" has more than 2 public methods (functions)`,
 		`"Class Ab" has more than 2 public methods (functions)`,
 	}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-	lines := []int{found[0].Line, found[1].Line, found[2].Line}
-	if lines[0] != 2 || lines[1] != 6 || lines[2] != 10 {
-		t.Fatalf("lines %v", lines)
-	}
-	if found[2].Column != 12 {
-		t.Fatalf("abstract class column %d, want the class keyword", found[2].Column)
-	}
+	require.Equal(t, want, got)
+	require.Equal(t, []int{2, 6, 10}, []int{found[0].Line, found[1].Line, found[2].Line})
+	require.Equal(t, 12, found[2].Column)
 }
 
 func TestFunctionArgumentsNumberBoundaryAndLocation(t *testing.T) {
@@ -149,9 +142,9 @@ func TestFunctionArgumentsNumberBoundaryAndLocation(t *testing.T) {
 	assertRuleWithConfig(t, config, "function-arguments-number", "func a(p, q): pass\n")
 	assertRuleWithConfig(t, config, "function-arguments-number", "@warning_ignore(\"x\")\nfunc a(p, q, r): pass\n", 2)
 	found := lintSourceWithConfig(t, config, "function-arguments-number", "@rpc(\"any\") func a(p, q, r): pass\n")
-	if len(found) != 1 || found[0].Column != 13 || found[0].Message != `Function "a" has more than 2 arguments` {
-		t.Fatalf("unexpected diagnostics %+v", found)
-	}
+	require.Len(t, found, 1)
+	require.Equal(t, 13, found[0].Column)
+	require.Equal(t, `Function "a" has more than 2 arguments`, found[0].Message)
 }
 
 func TestFunctionArgumentsNumberDefaultIsTen(t *testing.T) {

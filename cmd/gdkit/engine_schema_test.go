@@ -12,6 +12,7 @@ import (
 
 	"github.com/cafecito-games/gdkit/internal/semantic/engineschema"
 	"github.com/cafecito-games/gdkit/lint"
+	"github.com/stretchr/testify/require"
 )
 
 // The decompressed bytes are the complete official producer output documented
@@ -25,48 +26,37 @@ func TestRunLintJSONReportsExplicitEngineSchemaProvenance(t *testing.T) {
 	writeCLIFile(t, root, ".gdkit/lint.json", `{"godot_version":"4.7","extension_api":"tools/godot/extension_api.json"}`)
 
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", "--format", "json", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %s", stderr.String())
-	}
+	code := run([]string{"lint", "check", "--format", "json", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	require.Empty(t, stderr.String())
 	var report lint.Report
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatalf("decode report: %v (%s)", err, stdout.String())
-	}
-	if report.EngineSchema == nil || report.EngineSchema.Source != engineschema.SourceOverride ||
-		report.EngineSchema.Version != (engineschema.Version{Major: 4, Minor: 7, Patch: 2}) ||
-		report.EngineSchema.RawSHA256 == "" || report.EngineSchema.FullName == "" {
-		t.Fatalf("engine_schema = %+v", report.EngineSchema)
-	}
-	if strings.Contains(stdout.String(), "builtin_classes") || strings.Contains(stdout.String(), "Sprite2D") {
-		t.Fatalf("report leaked raw engine API: %s", stdout.String())
-	}
+	err := json.Unmarshal(stdout.Bytes(), &report)
+	require.NoError(t, err, "decode report")
+	require.NotNil(t, report.EngineSchema)
+	require.Equal(t, engineschema.SourceOverride, report.EngineSchema.Source)
+	require.Equal(t, engineschema.Version{Major: 4, Minor: 7, Patch: 2}, report.EngineSchema.Version)
+	require.NotEmpty(t, report.EngineSchema.RawSHA256)
+	require.NotEmpty(t, report.EngineSchema.FullName)
+	require.NotContains(t, stdout.String(), "builtin_classes")
+	require.NotContains(t, stdout.String(), "Sprite2D")
 }
 
 func TestRunLintJSONReportsEnabledCollectionInferenceAndEmbeddedProvenance(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", "var lookup := {\"a\": 1}\n\nfunc run() -> void:\n\tvar local_lookup := {\"a\": 1}\n")
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("exit %d, want 1: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %s", stderr.String())
-	}
+	code := run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
+	require.Empty(t, stderr.String())
 	var report lint.Report
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatalf("decode report: %v (%s)", err, stdout.String())
-	}
-	if report.EngineSchema == nil || report.EngineSchema.Source != engineschema.SourceEmbedded ||
-		report.EngineSchema.Version != (engineschema.Version{Major: 4, Minor: 7, Patch: 2}) {
-		t.Fatalf("engine_schema = %+v", report.EngineSchema)
-	}
-	if len(report.Diagnostics) != 2 || report.Diagnostics[0].Message != "Dictionary has no element type; write Dictionary[K, V]" ||
-		report.Diagnostics[1].Message != "Dictionary has no element type; write Dictionary[String, int]" {
-		t.Fatalf("diagnostics = %+v", report.Diagnostics)
-	}
+	err := json.Unmarshal(stdout.Bytes(), &report)
+	require.NoError(t, err, "decode report")
+	require.NotNil(t, report.EngineSchema)
+	require.Equal(t, engineschema.SourceEmbedded, report.EngineSchema.Source)
+	require.Equal(t, engineschema.Version{Major: 4, Minor: 7, Patch: 2}, report.EngineSchema.Version)
+	require.Len(t, report.Diagnostics, 2)
+	require.Equal(t, "Dictionary has no element type; write Dictionary[K, V]", report.Diagnostics[0].Message)
+	require.Equal(t, "Dictionary has no element type; write Dictionary[String, int]", report.Diagnostics[1].Message)
 }
 
 func TestRunLintEnabledCollectionRejectsUnsupportedMinorAsJSON(t *testing.T) {
@@ -74,22 +64,18 @@ func TestRunLintEnabledCollectionRejectsUnsupportedMinorAsJSON(t *testing.T) {
 	writeCLIFile(t, root, "player.gd", "var items := [1]\n")
 	writeCLIFile(t, root, ".gdkit/lint.json", `{"godot_version":"4.6"}`)
 	body := runFailure(t, "lint", "check", "--format", "json", "--enable", "require-typed-collection", root)
-	if body.Kind != "config.invalid" || !strings.Contains(body.Message, "4.6") || !strings.Contains(body.Message, "extension_api") {
-		t.Fatalf("failure = %+v", body)
-	}
+	require.Equal(t, "config.invalid", body.Kind)
+	require.Contains(t, body.Message, "4.6")
+	require.Contains(t, body.Message, "extension_api")
 }
 
 func TestRunLintExtensionAPIFailuresUseJSONKindsPathsAndEmptyStdout(t *testing.T) {
 	fixture := readCLIEngineFixture(t)
 	var mismatched map[string]any
-	if err := json.Unmarshal(fixture, &mismatched); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, json.Unmarshal(fixture, &mismatched))
 	mismatched["header"].(map[string]any)["version_minor"] = float64(8)
 	mismatchData, err := json.Marshal(mismatched)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	tests := []struct {
 		name string
@@ -113,15 +99,13 @@ func TestRunLintExtensionAPIFailuresUseJSONKindsPathsAndEmptyStdout(t *testing.T
 				"godot_version": "4.7",
 				"extension_api": test.path,
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			writeCLIBytes(t, root, ".gdkit/lint.json", config)
 			body := runFailure(t, "lint", "check", "--format", "json", root)
 			wantPath := filepath.Join(root, filepath.FromSlash(test.path))
-			if body.Kind != test.kind || body.Path != wantPath || !strings.Contains(body.Message, test.path) {
-				t.Fatalf("failure = %+v, want kind %q path %q", body, test.kind, wantPath)
-			}
+			require.Equal(t, test.kind, body.Kind)
+			require.Equal(t, wantPath, body.Path)
+			require.Contains(t, body.Message, test.path)
 		})
 	}
 }
@@ -135,14 +119,11 @@ func TestRunLintInvalidExtensionAPIPathsFailClosedAsJSON(t *testing.T) {
 				"godot_version": "4.7",
 				"extension_api": configuredPath,
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			writeCLIBytes(t, root, ".gdkit/lint.json", config)
 			body := runFailure(t, "lint", "check", "--format", "json", root)
-			if body.Kind != "config.invalid" || !strings.HasSuffix(filepath.ToSlash(body.Path), "/.gdkit/lint.json") {
-				t.Fatalf("failure = %+v", body)
-			}
+			require.Equal(t, "config.invalid", body.Kind)
+			require.True(t, strings.HasSuffix(filepath.ToSlash(body.Path), "/.gdkit/lint.json"))
 		})
 	}
 }
@@ -151,18 +132,13 @@ func TestRunLintResolvedExtensionAPIEscapeFailsClosedAsJSON(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", "extends Node\n")
 	outside := filepath.Join(t.TempDir(), "extension_api.json")
-	if err := os.WriteFile(outside, readCLIEngineFixture(t), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(outside, readCLIEngineFixture(t), 0o600))
 	configuredPath := "engine.json"
-	if err := os.Symlink(outside, filepath.Join(root, configuredPath)); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, configuredPath)))
 	writeCLIFile(t, root, ".gdkit/lint.json", `{"godot_version":"4.7","extension_api":"engine.json"}`)
 	body := runFailure(t, "lint", "check", "--format", "json", root)
-	if body.Kind != "config.invalid" || body.Path != filepath.Join(root, configuredPath) {
-		t.Fatalf("failure = %+v", body)
-	}
+	require.Equal(t, "config.invalid", body.Kind)
+	require.Equal(t, filepath.Join(root, configuredPath), body.Path)
 }
 
 func TestRunLintMalformedExtensionAPIPresenceFailsAsConfigParseJSON(t *testing.T) {
@@ -174,52 +150,36 @@ func TestRunLintMalformedExtensionAPIPresenceFailsAsConfigParseJSON(t *testing.T
 		writeCLIFile(t, root, "player.gd", "extends Node\n")
 		writeCLIFile(t, root, ".gdkit/lint.json", contents)
 		body := runFailure(t, "lint", "check", "--format", "json", root)
-		if body.Kind != "config.parse" || !strings.HasSuffix(filepath.ToSlash(body.Path), "/.gdkit/lint.json") {
-			t.Fatalf("failure = %+v", body)
-		}
+		require.Equal(t, "config.parse", body.Kind)
+		require.True(t, strings.HasSuffix(filepath.ToSlash(body.Path), "/.gdkit/lint.json"))
 	}
 }
 
 func TestRunLintNonRegularExtensionAPIFailsAsConfigInvalidJSON(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", "extends Node\n")
-	if err := os.Mkdir(filepath.Join(root, "engine.json"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Mkdir(filepath.Join(root, "engine.json"), 0o700))
 	writeCLIFile(t, root, ".gdkit/lint.json", `{"extension_api":"engine.json"}`)
 	body := runFailure(t, "lint", "check", "--format", "json", root)
-	if body.Kind != "config.invalid" || body.Path != filepath.Join(root, "engine.json") {
-		t.Fatalf("failure = %+v", body)
-	}
+	require.Equal(t, "config.invalid", body.Kind)
+	require.Equal(t, filepath.Join(root, "engine.json"), body.Path)
 }
 
 func readCLIEngineFixture(t *testing.T) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "semantic", "engineschema", "testdata", "extension_api_4_7_2_official.json.gz"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	reader, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	raw, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reader.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
 	return raw
 }
 
 func writeCLIBytes(t *testing.T, root, name string, contents []byte) {
 	t.Helper()
 	absolute := filepath.Join(root, filepath.FromSlash(name))
-	if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(absolute, contents, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
+	require.NoError(t, os.WriteFile(absolute, contents, 0o644))
 }

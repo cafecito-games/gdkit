@@ -1,6 +1,11 @@
 package uid
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 // The expected texts come from Godot's own encoding. uid://d4n4ub6itg400 for
 // MaxID is the value quoted in the comment beside ResourceUID::id_to_text.
@@ -19,13 +24,10 @@ func TestEncodeMatchesGodot(t *testing.T) {
 		{MaxID, "uid://d4n4ub6itg400"},
 	}
 	for _, test := range cases {
-		if got := Encode(test.id); got != test.text {
-			t.Errorf("Encode(%d) = %q, want %q", test.id, got, test.text)
-		}
+		assert.Equal(t, test.text, Encode(test.id))
 		id, ok := Decode(test.text)
-		if !ok || id != test.id {
-			t.Errorf("Decode(%q) = %d, %t, want %d, true", test.text, id, ok, test.id)
-		}
+		assert.True(t, ok)
+		assert.Equal(t, test.id, id)
 	}
 }
 
@@ -34,9 +36,8 @@ func TestEncodeNeverUsesTheMissingCharacters(t *testing.T) {
 	// with the base covers every digit position.
 	for id := uint64(0); id < 500000; id += 7 {
 		for _, character := range Encode(id) {
-			if character == 'z' || character == '9' {
-				t.Fatalf("Encode(%d) = %q uses %q", id, Encode(id), character)
-			}
+			require.NotEqual(t, 'z', character)
+			require.NotEqual(t, '9', character)
 		}
 	}
 }
@@ -45,9 +46,8 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	ids := []uint64{0, 1, 33, 34, 1 << 20, 1 << 40, MaxID - 1, MaxID}
 	for _, id := range ids {
 		decoded, ok := Decode(Encode(id))
-		if !ok || decoded != id {
-			t.Errorf("round trip of %d gave %d, %t", id, decoded, ok)
-		}
+		assert.True(t, ok)
+		assert.Equal(t, id, decoded)
 	}
 }
 
@@ -68,15 +68,13 @@ func TestDecodeRejectsInvalidText(t *testing.T) {
 		"far above max": "uid://bbbbbbbbbbbbbbbbbbbb",
 	}
 	for name, text := range cases {
-		if id, ok := Decode(text); ok {
-			t.Errorf("%s: Decode(%q) = %d, true, want false", name, text, id)
-		}
+		_, ok := Decode(text)
+		assert.False(t, ok, name)
 	}
 }
 
 func TestDecodeAcceptsPadding(t *testing.T) {
 	id, ok := Decode("uid://aaab")
-	if !ok || id != 1 {
-		t.Fatalf("Decode(\"uid://aaab\") = %d, %t, want 1, true", id, ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, uint64(1), id)
 }

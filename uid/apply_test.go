@@ -3,27 +3,22 @@ package uid
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestApplyWritesASidecarGodotWouldHaveWritten(t *testing.T) {
 	snapshot, root := loadProject(t, map[string]string{"player.gd": "extends Node\n"})
 	written, err := Apply(snapshot, Check(snapshot), seeded(1), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(written, []string{"player.gd.uid"}) {
-		t.Fatalf("written = %v, want player.gd.uid", written)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"player.gd.uid"}, written)
 	// Godot writes the identifier with store_line, so the file is the text
 	// and a single newline, with no BOM and nothing else.
-	if got := readFile(t, root, "player.gd.uid"); got != "uid://b\n" {
-		t.Errorf("sidecar = %q, want %q", got, "uid://b\n")
-	}
+	assert.Equal(t, "uid://b\n", readFile(t, root, "player.gd.uid"))
 }
 
 func TestApplyWritesASidecarPerScriptInPathOrder(t *testing.T) {
@@ -32,19 +27,11 @@ func TestApplyWritesASidecarPerScriptInPathOrder(t *testing.T) {
 		"player.gd":      "extends Node\n",
 	})
 	written, err := Apply(snapshot, Check(snapshot), seeded(1), false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := []string{"player.gd.uid", "world/enemy.gd.uid"}
-	if !reflect.DeepEqual(written, want) {
-		t.Fatalf("written = %v, want %v", written, want)
-	}
-	if got := readFile(t, root, "player.gd.uid"); got != "uid://b\n" {
-		t.Errorf("player sidecar = %q, want uid://b", got)
-	}
-	if got := readFile(t, root, "world/enemy.gd.uid"); got != "uid://c\n" {
-		t.Errorf("enemy sidecar = %q, want uid://c", got)
-	}
+	require.Equal(t, want, written)
+	assert.Equal(t, "uid://b\n", readFile(t, root, "player.gd.uid"))
+	assert.Equal(t, "uid://c\n", readFile(t, root, "world/enemy.gd.uid"))
 }
 
 func TestApplyLeavesTheProjectCleanAfterwards(t *testing.T) {
@@ -52,16 +39,11 @@ func TestApplyLeavesTheProjectCleanAfterwards(t *testing.T) {
 		"player.gd":      "extends Node\n",
 		"world/enemy.gd": "extends Node\n",
 	})
-	if _, err := Apply(snapshot, Check(snapshot), seeded(1), false); err != nil {
-		t.Fatal(err)
-	}
+	_, err := Apply(snapshot, Check(snapshot), seeded(1), false)
+	require.NoError(t, err)
 	reloaded, err := project.Load(project.Config{Root: root, HonorIgnoreFile: true, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report := Check(reloaded); report.HasDiagnostics() {
-		t.Fatalf("diagnostics after writing = %v, want none", report.Diagnostics)
-	}
+	require.NoError(t, err)
+	require.False(t, Check(reloaded).HasDiagnostics())
 }
 
 func TestApplyDoesNotTouchAnExistingSidecar(t *testing.T) {
@@ -71,15 +53,9 @@ func TestApplyDoesNotTouchAnExistingSidecar(t *testing.T) {
 		"enemy.gd":      "extends Node\n",
 	})
 	written, err := Apply(snapshot, Check(snapshot), seeded(1), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(written, []string{"enemy.gd.uid"}) {
-		t.Fatalf("written = %v, want enemy.gd.uid only", written)
-	}
-	if got := readFile(t, root, "player.gd.uid"); got != "uid://bcd\n" {
-		t.Errorf("player sidecar = %q, want it untouched", got)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"enemy.gd.uid"}, written)
+	assert.Equal(t, "uid://bcd\n", readFile(t, root, "player.gd.uid"))
 }
 
 func TestApplyWithoutRepairLeavesMalformedAndDuplicateSidecars(t *testing.T) {
@@ -92,18 +68,10 @@ func TestApplyWithoutRepairLeavesMalformedAndDuplicateSidecars(t *testing.T) {
 		"c.gd.uid": "nonsense\n",
 	})
 	written, err := Apply(snapshot, Check(snapshot), seeded(1), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(written) != 0 {
-		t.Fatalf("written = %v, want nothing", written)
-	}
-	if got := readFile(t, root, "b.gd.uid"); got != "uid://bb\n" {
-		t.Errorf("duplicate sidecar = %q, want it untouched", got)
-	}
-	if got := readFile(t, root, "c.gd.uid"); got != "nonsense\n" {
-		t.Errorf("malformed sidecar = %q, want it untouched", got)
-	}
+	require.NoError(t, err)
+	require.Len(t, written, 0)
+	assert.Equal(t, "uid://bb\n", readFile(t, root, "b.gd.uid"))
+	assert.Equal(t, "nonsense\n", readFile(t, root, "c.gd.uid"))
 }
 
 func TestApplyWithRepairReissuesTheSidecarsItCannotTrust(t *testing.T) {
@@ -117,25 +85,15 @@ func TestApplyWithRepairReissuesTheSidecarsItCannotTrust(t *testing.T) {
 		"d.gd":     "extends Node\n",
 	})
 	written, err := Apply(snapshot, Check(snapshot), seeded(100), true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	// The missing sidecar is created first, then the repairs in path order.
 	want := []string{"d.gd.uid", "b.gd.uid", "c.gd.uid"}
-	if !reflect.DeepEqual(written, want) {
-		t.Fatalf("written = %v, want %v", written, want)
-	}
+	require.Equal(t, want, written)
 	// a.gd is the first claimant, so it keeps the shared identifier.
-	if got := readFile(t, root, "a.gd.uid"); got != "uid://bb\n" {
-		t.Errorf("first claimant = %q, want it untouched", got)
-	}
+	assert.Equal(t, "uid://bb\n", readFile(t, root, "a.gd.uid"))
 	reloaded, err := project.Load(project.Config{Root: root, HonorIgnoreFile: true, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report := Check(reloaded); report.HasDiagnostics() {
-		t.Fatalf("diagnostics after repair = %v, want none", report.Diagnostics)
-	}
+	require.NoError(t, err)
+	require.False(t, Check(reloaded).HasDiagnostics())
 }
 
 // A repaired sidecar is renamed over, which must not widen its permissions.
@@ -145,19 +103,12 @@ func TestApplyKeepsThePermissionsOfARepairedSidecar(t *testing.T) {
 		"a.gd.uid": "nonsense\n",
 	})
 	target := filepath.Join(root, "a.gd.uid")
-	if err := os.Chmod(target, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Apply(snapshot, Check(snapshot), seeded(1), true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Chmod(target, 0o600))
+	_, err := Apply(snapshot, Check(snapshot), seeded(1), true)
+	require.NoError(t, err)
 	info, err := os.Stat(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Errorf("permissions = %o, want 600", got)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }
 
 // The generator must avoid identifiers already on disk, including those beside
@@ -171,12 +122,9 @@ func TestApplyAvoidsIdentifiersAlreadyInTheProject(t *testing.T) {
 	})
 	// The seeded generator would hand out uid://b and then uid://c, both of
 	// which are taken, so player.gd must end up with uid://d.
-	if _, err := Apply(snapshot, Check(snapshot), seeded(1), false); err != nil {
-		t.Fatal(err)
-	}
-	if got := readFile(t, root, "player.gd.uid"); got != "uid://d\n" {
-		t.Errorf("sidecar = %q, want uid://d", got)
-	}
+	_, err := Apply(snapshot, Check(snapshot), seeded(1), false)
+	require.NoError(t, err)
+	assert.Equal(t, "uid://d\n", readFile(t, root, "player.gd.uid"))
 }
 
 // Two scripts in one run cannot be handed the same identifier either.
@@ -186,37 +134,22 @@ func TestApplyDoesNotRepeatItself(t *testing.T) {
 		files[name+".gd"] = "extends Node\n"
 	}
 	snapshot, root := loadProject(t, files)
-	if _, err := Apply(snapshot, Check(snapshot), NewGenerator(nil), false); err != nil {
-		t.Fatal(err)
-	}
+	_, err := Apply(snapshot, Check(snapshot), NewGenerator(nil), false)
+	require.NoError(t, err)
 	reloaded, err := project.Load(project.Config{Root: root, HonorIgnoreFile: true, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reloaded.UIDs) != 5 {
-		t.Fatalf("project holds %d distinct identifiers, want 5", len(reloaded.UIDs))
-	}
+	require.NoError(t, err)
+	require.Len(t, reloaded.UIDs, 5)
 }
 
 // A sidecar created between the snapshot and the write is not clobbered.
 func TestApplyRefusesToOverwriteASidecarThatAppeared(t *testing.T) {
 	snapshot, root := loadProject(t, map[string]string{"player.gd": "extends Node\n"})
-	if err := os.WriteFile(filepath.Join(root, "player.gd.uid"), []byte("uid://bcd\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "player.gd.uid"), []byte("uid://bcd\n"), 0o644))
 	written, err := Apply(snapshot, Check(snapshot), seeded(1), false)
-	if err == nil {
-		t.Fatal("Apply succeeded, want an error naming the sidecar")
-	}
-	if !strings.Contains(err.Error(), "player.gd.uid") {
-		t.Errorf("error = %v, want it to name player.gd.uid", err)
-	}
-	if len(written) != 0 {
-		t.Errorf("written = %v, want nothing", written)
-	}
-	if got := readFile(t, root, "player.gd.uid"); got != "uid://bcd\n" {
-		t.Errorf("sidecar = %q, want it untouched", got)
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "player.gd.uid")
+	assert.Len(t, written, 0)
+	assert.Equal(t, "uid://bcd\n", readFile(t, root, "player.gd.uid"))
 }
 
 func TestApplyOnACleanProjectWritesNothing(t *testing.T) {
@@ -225,12 +158,8 @@ func TestApplyOnACleanProjectWritesNothing(t *testing.T) {
 		"player.gd.uid": "uid://bcd\n",
 	})
 	written, err := Apply(snapshot, Check(snapshot), seeded(1), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(written) != 0 {
-		t.Fatalf("written = %v, want nothing", written)
-	}
+	require.NoError(t, err)
+	require.Len(t, written, 0)
 }
 
 func TestApplyRepointsABrokenReferenceAtThePathItNames(t *testing.T) {
@@ -243,16 +172,10 @@ func TestApplyRepointsABrokenReferenceAtThePathItNames(t *testing.T) {
 	// Repointing a reference needs no --repair: the path beside it is the
 	// authority, and it is what Godot already falls back to.
 	written, err := Apply(snapshot, Check(snapshot), seeded(1), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(written, []string{"main.tscn"}) {
-		t.Fatalf("written = %v, want main.tscn", written)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"main.tscn"}, written)
 	want := strings.Replace(main, "uid://xxx", "uid://bbb", 1)
-	if got := readFile(t, root, "main.tscn"); got != want {
-		t.Errorf("main.tscn = %q, want only the identifier changed", got)
-	}
+	assert.Equal(t, want, readFile(t, root, "main.tscn"))
 }
 
 func TestApplyRepointsACrossedReference(t *testing.T) {
@@ -264,15 +187,10 @@ func TestApplyRepointsACrossedReference(t *testing.T) {
 		"main.tscn":     scene("uid://ddd", external("uid://ccc", "player.gd", "1_a")),
 	})
 	report := Check(snapshot)
-	if got := rules(report); !reflect.DeepEqual(got, []string{RuleCrossed}) {
-		t.Fatalf("rules = %v, want one %s", got, RuleCrossed)
-	}
-	if _, err := Apply(snapshot, report, seeded(1), false); err != nil {
-		t.Fatal(err)
-	}
-	if got := readFile(t, root, "main.tscn"); !strings.Contains(got, `uid="uid://bbb"`) {
-		t.Errorf("main.tscn = %q, want the reference pointing at player.gd", got)
-	}
+	require.Equal(t, []string{RuleCrossed}, rules(report))
+	_, err := Apply(snapshot, report, seeded(1), false)
+	require.NoError(t, err)
+	assert.Contains(t, readFile(t, root, "main.tscn"), `uid="uid://bbb"`)
 	assertClean(t, root)
 }
 
@@ -286,18 +204,10 @@ func TestApplyLeavesAPathlessReferenceUntouched(t *testing.T) {
 	})
 	report := Check(snapshot)
 	written, err := Apply(snapshot, report, seeded(1), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(written) != 0 {
-		t.Fatalf("written = %v, want nothing", written)
-	}
-	if got := readFile(t, root, "loader.gd"); got != source {
-		t.Errorf("loader.gd = %q, want it untouched", got)
-	}
-	if got := len(report.Remaining(true)); got != 1 {
-		t.Errorf("Remaining(true) has %d diagnostics, want the preload left behind", got)
-	}
+	require.NoError(t, err)
+	require.Len(t, written, 0)
+	assert.Equal(t, source, readFile(t, root, "loader.gd"))
+	assert.Len(t, report.Remaining(true), 1)
 }
 
 // Reissuing a declaration is only safe if the references to the old value move
@@ -309,21 +219,13 @@ func TestApplyWithRepairMovesEveryReferenceToAReissuedIdentity(t *testing.T) {
 		"theme.tres": "[gd_resource type=\"Theme\" format=3 uid=\"uid://ddd\"]\n\n[ext_resource type=\"PackedScene\" uid=\"uid://b_local_reg_screen\" path=\"res://main.tscn\" id=\"1_b\"]\n",
 	})
 	written, err := Apply(snapshot, Check(snapshot), seeded(1), true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := []string{"main.tscn", "other.tscn", "theme.tres"}
-	if !reflect.DeepEqual(written, want) {
-		t.Fatalf("written = %v, want %v", written, want)
-	}
+	require.Equal(t, want, written)
 	for _, name := range want {
 		contents := readFile(t, root, name)
-		if strings.Contains(contents, "b_local_reg_screen") {
-			t.Errorf("%s = %q, want the old value gone", name, contents)
-		}
-		if !strings.Contains(contents, "uid://b") {
-			t.Errorf("%s = %q, want the minted identifier", name, contents)
-		}
+		assert.NotContains(t, contents, "b_local_reg_screen", name)
+		assert.Contains(t, contents, "uid://b", name)
 	}
 	assertClean(t, root)
 }
@@ -337,15 +239,9 @@ func TestApplyWithoutRepairLeavesAMalformedDeclarationAndItsReferences(t *testin
 		"other.tscn": other,
 	})
 	written, err := Apply(snapshot, Check(snapshot), seeded(1), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(written) != 0 {
-		t.Fatalf("written = %v, want nothing", written)
-	}
-	if got := readFile(t, root, "other.tscn"); got != other {
-		t.Errorf("other.tscn = %q, want it untouched", got)
-	}
+	require.NoError(t, err)
+	require.Len(t, written, 0)
+	assert.Equal(t, other, readFile(t, root, "other.tscn"))
 }
 
 // A reissued duplicate is a shared value, so only a reference that names the
@@ -361,16 +257,11 @@ func TestApplyWithRepairMovesOnlyTheReferencesItCanAttribute(t *testing.T) {
 			external("uid://bb", "b.gd", "1_a"),
 			external("uid://bb", "a.gd", "2_b")),
 	})
-	if _, err := Apply(snapshot, Check(snapshot), seeded(100), true); err != nil {
-		t.Fatal(err)
-	}
+	_, err := Apply(snapshot, Check(snapshot), seeded(100), true)
+	require.NoError(t, err)
 	contents := readFile(t, root, "main.tscn")
-	if !strings.Contains(contents, external(Encode(100), "b.gd", "1_a")) {
-		t.Errorf("main.tscn = %q, want b.gd's reference moved to the new identifier", contents)
-	}
-	if !strings.Contains(contents, external("uid://bb", "a.gd", "2_b")) {
-		t.Errorf("main.tscn = %q, want a.gd's reference left on the shared value", contents)
-	}
+	assert.Contains(t, contents, external(Encode(100), "b.gd", "1_a"))
+	assert.Contains(t, contents, external("uid://bb", "a.gd", "2_b"))
 	assertClean(t, root)
 }
 
@@ -384,24 +275,15 @@ func TestApplyRefusesWhenAReferenceMovedUnderIt(t *testing.T) {
 		"other.gd":      "extends Node\n",
 	})
 	edited := scene("uid://ddd", external("uid://xxy", "player.gd", "1_a"))
-	if err := os.WriteFile(filepath.Join(root, "main.tscn"), []byte(edited), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.tscn"), []byte(edited), 0o644))
 	written, err := Apply(snapshot, Check(snapshot), seeded(1), true)
-	if err == nil {
-		t.Fatal("Apply succeeded, want it to refuse")
-	}
-	if !strings.Contains(err.Error(), "main.tscn:3") {
-		t.Errorf("error = %v, want it to name main.tscn:3", err)
-	}
-	if len(written) != 0 {
-		t.Errorf("written = %v, want nothing", written)
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "main.tscn:3")
+	assert.Len(t, written, 0)
 	// The missing sidecar is part of the same run, so it is not written
 	// either.
-	if _, statErr := os.Stat(filepath.Join(root, "other.gd.uid")); statErr == nil {
-		t.Error("other.gd.uid was written, want the whole run abandoned")
-	}
+	_, statErr := os.Stat(filepath.Join(root, "other.gd.uid"))
+	assert.Error(t, statErr)
 }
 
 // assertClean reloads the project and fails when anything is still wrong with
@@ -409,12 +291,8 @@ func TestApplyRefusesWhenAReferenceMovedUnderIt(t *testing.T) {
 func assertClean(t *testing.T, root string) {
 	t.Helper()
 	reloaded, err := project.Load(project.Config{Root: root, HonorIgnoreFile: true, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report := Check(reloaded); report.HasDiagnostics() {
-		t.Fatalf("diagnostics after writing = %v, want none", report.Diagnostics)
-	}
+	require.NoError(t, err)
+	require.False(t, Check(reloaded).HasDiagnostics())
 }
 
 // Creating a script's sidecar and leaving the scene that names it still
@@ -426,22 +304,12 @@ func TestApplyPointsAReferenceAtAnIdentityItCreates(t *testing.T) {
 		"main.tscn": scene("uid://ddd", external("uid://xxx", "player.gd", "1_a")),
 	})
 	report := Check(snapshot)
-	if got := rules(report); !reflect.DeepEqual(got, []string{RuleDangling, RuleMissing}) {
-		t.Fatalf("rules = %v, want the scene's reference and the missing sidecar", got)
-	}
+	require.Equal(t, []string{RuleDangling, RuleMissing}, rules(report))
 	written, err := Apply(snapshot, report, seeded(1), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(written, []string{"player.gd.uid", "main.tscn"}) {
-		t.Fatalf("written = %v, want the sidecar then the scene", written)
-	}
-	if got := readFile(t, root, "player.gd.uid"); got != "uid://b\n" {
-		t.Fatalf("sidecar = %q, want uid://b", got)
-	}
-	if got := readFile(t, root, "main.tscn"); !strings.Contains(got, external("uid://b", "player.gd", "1_a")) {
-		t.Errorf("main.tscn = %q, want the reference pointing at the new identifier", got)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"player.gd.uid", "main.tscn"}, written)
+	require.Equal(t, "uid://b\n", readFile(t, root, "player.gd.uid"))
+	assert.Contains(t, readFile(t, root, "main.tscn"), external("uid://b", "player.gd", "1_a"))
 	// One run is enough, which is the point.
 	assertClean(t, root)
 }
@@ -457,13 +325,10 @@ func TestApplyWithRepairFollowsAPathEvenWhenTheOldTextIsShared(t *testing.T) {
 		"other.tscn": scene("uid://ccc",
 			"[ext_resource type=\"PackedScene\" uid=\""+shared+"\" path=\"res://main.tscn\" id=\"1_a\"]"),
 	})
-	if _, err := Apply(snapshot, Check(snapshot), seeded(1), true); err != nil {
-		t.Fatal(err)
-	}
+	_, err := Apply(snapshot, Check(snapshot), seeded(1), true)
+	require.NoError(t, err)
 	for _, name := range []string{"main.tscn", "alt.tscn", "other.tscn"} {
-		if got := readFile(t, root, name); strings.Contains(got, shared) {
-			t.Errorf("%s = %q, want the shared value gone", name, got)
-		}
+		assert.NotContains(t, readFile(t, root, name), shared, name)
 	}
 	assertClean(t, root)
 }
@@ -479,10 +344,7 @@ func TestApplyWithRepairLeavesAnUnattributableReferenceAlone(t *testing.T) {
 		"loader.gd":     source,
 		"loader.gd.uid": "uid://ccc\n",
 	})
-	if _, err := Apply(snapshot, Check(snapshot), seeded(1), true); err != nil {
-		t.Fatal(err)
-	}
-	if got := readFile(t, root, "loader.gd"); got != source {
-		t.Errorf("loader.gd = %q, want it untouched", got)
-	}
+	_, err := Apply(snapshot, Check(snapshot), seeded(1), true)
+	require.NoError(t, err)
+	assert.Equal(t, source, readFile(t, root, "loader.gd"))
 }

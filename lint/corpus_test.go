@@ -1,14 +1,12 @@
 package lint
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -21,6 +19,7 @@ import (
 	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdparser/ast"
 	"github.com/cafecito-games/gdparser/token"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -66,9 +65,7 @@ func corpusConfig() Config {
 func loadCorpus(t *testing.T, root string, config Config) *project.Snapshot {
 	t.Helper()
 	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return snapshot
 }
 
@@ -83,23 +80,18 @@ func TestCorpus(t *testing.T) {
 	config := corpusConfig()
 	snapshot := loadCorpus(t, root, config)
 	linter, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	report := linter.Lint(snapshot)
-	if string(marshalReport(t, report)) != string(marshalReport(t, linter.Lint(snapshot))) {
-		t.Fatal("two runs over the same snapshot produced different reports")
-	}
+	require.Equal(t, marshalReport(t, linter.Lint(snapshot)), marshalReport(t, report),
+		"two runs over the same snapshot produced different reports")
 	t.Logf("linted %d files, %d diagnostics", len(snapshot.Paths), len(report.Diagnostics))
 }
 
 func marshalReport(t *testing.T, report Report) []byte {
 	t.Helper()
 	data, err := json.Marshal(report)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return data
 }
 
@@ -112,23 +104,17 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 	if root == "" {
 		t.Skip("GDKIT_CORPUS is not set")
 	}
-	if revision := gitAt(t, root, "rev-parse", "HEAD"); revision != corpusRevision {
-		t.Fatalf("corpus revision = %s, want %s", revision, corpusRevision)
-	}
-	if status := gitAt(t, root, "status", "--porcelain=v1"); status != "" {
-		t.Fatalf("corpus is not clean: %s", status)
-	}
+	revision := gitAt(t, root, "rev-parse", "HEAD")
+	require.Equal(t, corpusRevision, revision)
+	status := gitAt(t, root, "status", "--porcelain=v1")
+	require.Empty(t, status)
 
 	configPath := filepath.Join(root, filepath.FromSlash(DefaultConfigPath))
 	configBytes, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	ignorePresent, ignoreDigest := corpusOptionalDigest(t, filepath.Join(root, ".gdkitignore"))
 	config, err := LoadConfig(root, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	enabledConfig := corpusConfigWithEnabledRule(config, ruleRequireTypedCollection)
 	// The enabled collection rule needs semantic analysis, so this mirrors the
 	// CLI's broad load: the whole project is the dependency universe and the
@@ -143,76 +129,43 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 			HonorIgnoreFile: true,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	filtered, err := project.Load(project.Config{
 		Root:            root,
 		SourceRoots:     enabledConfig.SourceRoots,
 		Exclude:         enabledConfig.Exclude,
 		HonorIgnoreFile: true,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(snapshot.Selected, filtered.Paths) {
-		t.Fatalf("broad Selected (%d) does not reproduce the filtered walk (%d)",
-			len(snapshot.Selected), len(filtered.Paths))
-	}
-	if len(snapshot.Paths) <= len(snapshot.Selected) {
-		t.Fatalf("broad Paths = %d, want more than Selected = %d", len(snapshot.Paths), len(snapshot.Selected))
-	}
-	if snapshot.Scripts[corpusExcludedDependency] == nil {
-		t.Fatalf("universe is missing the excluded dependency %s", corpusExcludedDependency)
-	}
-	if slices.Contains(snapshot.Selected, corpusExcludedDependency) {
-		t.Fatalf("%s is excluded from lint actions but appears in Selected", corpusExcludedDependency)
-	}
-	if !slices.Contains(snapshot.Selected, corpusDependencyConsumer) {
-		t.Fatalf("Selected is missing the consumer %s", corpusDependencyConsumer)
-	}
+	require.NoError(t, err)
+	require.Equal(t, filtered.Paths, snapshot.Selected)
+	require.Greater(t, len(snapshot.Paths), len(snapshot.Selected))
+	require.NotNil(t, snapshot.Scripts[corpusExcludedDependency])
+	require.NotContains(t, snapshot.Selected, corpusExcludedDependency)
+	require.Contains(t, snapshot.Selected, corpusDependencyConsumer)
 	declared := semantic.BuildIndex(semanticsource.NewSnapshot(snapshot)).ClassByName(corpusExcludedClassName)
-	if declared == nil || declared.Path != corpusExcludedDependency {
-		t.Fatalf("ClassByName(%q) = %+v, want the excluded declaration", corpusExcludedClassName, declared)
-	}
+	require.NotNil(t, declared)
+	require.Equal(t, corpusExcludedDependency, declared.Path)
 
 	legacy, err := newLinterForProject(root, enabledConfig, corpusPreChangeRules())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	before := legacy.Lint(snapshot)
-	if before.EngineSchema != nil {
-		t.Fatalf("pre-change mirror unexpectedly selected engine provenance: %+v", before.EngineSchema)
-	}
+	require.Nil(t, before.EngineSchema)
 	beforeCollection := corpusCollectionDiagnostics(before)
-	if len(before.Diagnostics) != len(beforeCollection) {
-		t.Fatalf("pre-change mirror diagnostics include non-collection rules: %+v", before.Diagnostics)
-	}
-	if len(beforeCollection) != corpusPreChangeCollectionCount {
-		t.Fatalf("pre-change collection diagnostics = %d, want %d", len(beforeCollection), corpusPreChangeCollectionCount)
-	}
+	require.Len(t, before.Diagnostics, len(beforeCollection))
+	require.Len(t, beforeCollection, corpusPreChangeCollectionCount)
 
 	baseLinter, err := newLinterForProject(root, enabledConfig, corpusIssue80BaseRules())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	baseReport := baseLinter.Lint(snapshot)
 	baseCollection := corpusCollectionDiagnostics(baseReport)
 	baseTuples := corpusDiagnosticTuples(baseCollection)
-	if len(baseTuples) != corpusIssue80BaseCount {
-		t.Fatalf("issue #80 base collection diagnostics = %d, want %d", len(baseTuples), corpusIssue80BaseCount)
-	}
-	if digest := corpusDiagnosticDigest(baseTuples); digest != corpusIssue80BaseDigest {
-		t.Fatalf("issue #80 base collection digest = %s, want %s", digest, corpusIssue80BaseDigest)
-	}
+	require.Len(t, baseTuples, corpusIssue80BaseCount)
+	digest := corpusDiagnosticDigest(baseTuples)
+	require.Equal(t, corpusIssue80BaseDigest, digest)
 
 	enabled, err := NewForProject(root, enabledConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if enabled.context.Engine() == nil {
-		t.Fatal("enabled collection run selected no engine")
-	}
+	require.NoError(t, err)
+	require.NotNil(t, enabled.context.Engine())
 	var lintAnalyzerConstructions int
 	originalFactory := enabled.newSemanticAnalyzer
 	enabled.newSemanticAnalyzer = func(snapshot *project.Snapshot, engine *semantic.Engine) *semantic.Analyzer {
@@ -220,22 +173,14 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 		return originalFactory(snapshot, engine)
 	}
 	after, enabledMedian := timedCorpusLint(t, enabled, snapshot)
-	if lintAnalyzerConstructions != corpusTimingSamples {
-		t.Fatalf("enabled lint analyzer constructions = %d, want %d", lintAnalyzerConstructions, corpusTimingSamples)
-	}
-	if after.EngineSchema == nil {
-		t.Fatal("enabled collection report omitted engine provenance")
-	}
+	require.Equal(t, corpusTimingSamples, lintAnalyzerConstructions)
+	require.NotNil(t, after.EngineSchema)
 	afterCollection := corpusCollectionDiagnostics(after)
-	if len(after.Diagnostics) != len(afterCollection) {
-		t.Fatalf("enabled collection run changed a non-collection diagnostic: %+v", after.Diagnostics)
-	}
+	require.Len(t, after.Diagnostics, len(afterCollection))
 
 	disabledConfig := corpusConfigWithDisabledRule(config, ruleRequireTypedCollection)
 	disabled, err := NewForProject(root, disabledConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var disabledAnalyzerConstructions int
 	disabledFactory := disabled.newSemanticAnalyzer
 	disabled.newSemanticAnalyzer = func(snapshot *project.Snapshot, engine *semantic.Engine) *semantic.Analyzer {
@@ -243,30 +188,21 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 		return disabledFactory(snapshot, engine)
 	}
 	_, disabledMedian := timedCorpusLint(t, disabled, snapshot)
-	if disabledAnalyzerConstructions != 0 {
-		t.Fatalf("disabled lint analyzer constructions = %d, want 0", disabledAnalyzerConstructions)
-	}
+	require.Equal(t, 0, disabledAnalyzerConstructions)
 
 	firstReceipt := corpusAnalyzerReceipt(t, snapshot, enabled.context.Engine())
 	secondReceipt := corpusAnalyzerReceipt(t, snapshot, enabled.context.Engine())
 	firstReceiptJSON, err := json.Marshal(firstReceipt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	secondReceiptJSON, err := json.Marshal(secondReceipt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(firstReceiptJSON, secondReceiptJSON) {
-		t.Fatalf("two fresh analyzers produced different receipts:\nfirst=%s\nsecond=%s", firstReceiptJSON, secondReceiptJSON)
-	}
+	require.NoError(t, err)
+	require.Equal(t, firstReceiptJSON, secondReceiptJSON)
 
 	for name, report := range map[string]Report{"pre-change": before, "issue80 base": baseReport, "enabled": after} {
 		for _, diagnostic := range report.Diagnostics {
 			for _, prefix := range corpusUnselectedRoots {
-				if strings.HasPrefix(diagnostic.Path, prefix) {
-					t.Fatalf("%s mirror reported on unselected dependency: %+v", name, diagnostic)
-				}
+				require.False(t, strings.HasPrefix(diagnostic.Path, prefix),
+					"%s mirror reported on unselected dependency: %+v", name, diagnostic)
 			}
 		}
 	}
@@ -277,9 +213,7 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 	baseExact, baseGeneric := corpusCollectionPrecision(baseTuples)
 	afterExact, afterGeneric := corpusCollectionPrecision(afterTuples)
 	payload := corpusRequireTuple(t, afterTuples, corpusPayloadPath, corpusPayloadLine)
-	if payload.Message == "Dictionary has no element type; write Dictionary[String, String]" {
-		t.Fatalf("payload tuple retained the unsound initializer-only suggestion: %+v", payload)
-	}
+	require.NotEqual(t, "Dictionary has no element type; write Dictionary[String, String]", payload.Message)
 	gdkitRoot := gitAt(t, "", "rev-parse", "--show-toplevel")
 	receipt := corpusSemanticReceipt{
 		CorpusPath:                         root,
@@ -339,9 +273,7 @@ func TestCorpusSemanticReceipt(t *testing.T) {
 		EnabledLintMedian:                  enabledMedian.String(),
 	}
 	data, err := json.Marshal(receipt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Logf("semantic lint corpus receipt: %s", data)
 	t.Logf("#53_gate_recommendation = %s", receipt.GateRecommendation)
 }
@@ -679,12 +611,10 @@ func corpusIssue80BaseNestedUnknownType(typeValue semantic.Type) bool {
 
 func TestCorpusIssue80BaseCollectionRuleFailsClosedWithoutSemanticContext(t *testing.T) {
 	rule := corpusIssue80BaseCollectionRule{}
-	if diagnostics := rule.Check(nil, nil); diagnostics != nil {
-		t.Fatalf("nil context diagnostics = %+v, want nil", diagnostics)
-	}
-	if diagnostics := rule.Check(&Context{}, nil); diagnostics != nil {
-		t.Fatalf("nil script diagnostics = %+v, want nil", diagnostics)
-	}
+	diagnostics := rule.Check(nil, nil)
+	require.Nil(t, diagnostics)
+	diagnostics = rule.Check(&Context{}, nil)
+	require.Nil(t, diagnostics)
 }
 
 func corpusIssue80BaseRules() []Rule {
@@ -734,9 +664,7 @@ func timedCorpusLint(t *testing.T, linter *Linter, snapshot *project.Snapshot) (
 			first, firstJSON = report, data
 			continue
 		}
-		if !bytes.Equal(firstJSON, data) {
-			t.Fatalf("lint run %d did not serialize identically to the first run", sample+1)
-		}
+		require.Equal(t, firstJSON, data, "lint run %d did not serialize identically to the first run", sample+1)
 	}
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 	return first, durations[len(durations)/2]
@@ -786,9 +714,9 @@ func corpusAnalyzerReceipt(t *testing.T, snapshot *project.Snapshot, engine *sem
 					reason = corpusSceneNodeCategory
 					summary.SceneNodeCount++
 				}
-				if strings.TrimSpace(reason) == "" {
-					t.Fatalf("Unknown expression at %s:%d:%d has no reason", path, expression.Span().Start.Line, expression.Span().Start.Column)
-				}
+				require.NotEmpty(t, strings.TrimSpace(reason),
+					"Unknown expression at %s:%d:%d has no reason",
+					path, expression.Span().Start.Line, expression.Span().Start.Column)
 				unknownReasons[reason]++
 			case semantic.KindVariant:
 				summary.Variant++
@@ -973,9 +901,7 @@ func corpusRequireTuple(t *testing.T, tuples []corpusDiagnosticTuple, path strin
 			found = append(found, tuple)
 		}
 	}
-	if len(found) != 1 {
-		t.Fatalf("tuple at %s:%d = %+v, want exactly one", path, line, found)
-	}
+	require.Len(t, found, 1)
 	return found[0]
 }
 
@@ -1085,9 +1011,7 @@ func corpusOptionalDigest(t *testing.T, path string) (bool, string) {
 	if os.IsNotExist(err) {
 		return false, ""
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return true, corpusDigest(data)
 }
 
@@ -1099,9 +1023,7 @@ func gitAt(t *testing.T, directory string, args ...string) string {
 	}
 	command = append(command, args...)
 	output, err := exec.Command("git", command...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v (%s)", strings.Join(command, " "), err, output)
-	}
+	require.NoError(t, err, "git %s: %s", strings.Join(command, " "), output)
 	return strings.TrimSpace(string(output))
 }
 
@@ -1120,9 +1042,8 @@ func TestCorpusGateRecommendation(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := corpusGateRecommendation(test.rank, test.count, test.unknownTotal); got != test.want {
-				t.Fatalf("corpusGateRecommendation(%d, %d, %d) = %q, want %q", test.rank, test.count, test.unknownTotal, got, test.want)
-			}
+			got := corpusGateRecommendation(test.rank, test.count, test.unknownTotal)
+			require.Equal(t, test.want, got)
 		})
 	}
 }
@@ -1133,13 +1054,11 @@ func TestCorpusDiagnosticDigestCanonical(t *testing.T) {
 		{Path: "a.gd", Line: 1, Column: 1, EndLine: 1, EndColumn: 2, Rule: "a", Severity: SeverityError, Message: "first"},
 	}
 	const wantJSON = `[{"path":"a.gd","line":1,"column":1,"end_line":1,"end_column":2,"rule":"a","severity":"error","message":"first"},{"path":"b.gd","line":2,"column":3,"end_line":2,"end_column":4,"rule":"z","severity":"warning","message":"later"}]`
-	if got := string(corpusCanonicalDiagnosticTupleJSON(tuples)); got != wantJSON {
-		t.Fatalf("canonical tuple JSON = %s, want %s", got, wantJSON)
-	}
+	got := string(corpusCanonicalDiagnosticTupleJSON(tuples))
+	require.Equal(t, wantJSON, got)
 	const wantDigest = "1ff607347b379f868a195bad2a461f62707737fa5e53f931322cd55132a8af65"
-	if got := corpusDiagnosticDigest(tuples); got != wantDigest {
-		t.Fatalf("canonical tuple digest = %s, want %s", got, wantDigest)
-	}
+	got = corpusDiagnosticDigest(tuples)
+	require.Equal(t, wantDigest, got)
 }
 
 // BenchmarkCorpusSemanticLoadAndLint measures what the universe/selection
@@ -1155,9 +1074,7 @@ func BenchmarkCorpusSemanticLoadAndLint(b *testing.B) {
 		b.Skip("GDKIT_CORPUS is not set")
 	}
 	baseConfig, err := LoadConfig(root, "")
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, err)
 	for _, bench := range []struct {
 		name   string
 		config Config
@@ -1169,13 +1086,9 @@ func BenchmarkCorpusSemanticLoadAndLint(b *testing.B) {
 			// One untimed run states the shape being measured, so a reader of
 			// the receipt knows which universe and action set it describes.
 			linter, err := NewForProject(root, bench.config)
-			if err != nil {
-				b.Fatal(err)
-			}
+			require.NoError(b, err)
 			snapshot, err := project.Load(benchmarkLoadConfig(root, bench.config, linter))
-			if err != nil {
-				b.Fatal(err)
-			}
+			require.NoError(b, err)
 			b.Logf("%s: semantic=%t paths=%d selected=%d",
 				bench.name, linter.NeedsSemanticAnalysis(), len(snapshot.Paths), len(snapshot.Selected))
 
@@ -1183,16 +1096,11 @@ func BenchmarkCorpusSemanticLoadAndLint(b *testing.B) {
 			b.ResetTimer()
 			for range b.N {
 				linter, err := NewForProject(root, bench.config)
-				if err != nil {
-					b.Fatal(err)
-				}
+				require.NoError(b, err)
 				snapshot, err := project.Load(benchmarkLoadConfig(root, bench.config, linter))
-				if err != nil {
-					b.Fatal(err)
-				}
-				if report := linter.Lint(snapshot); report.Diagnostics == nil {
-					b.Fatal("lint produced no diagnostic slice")
-				}
+				require.NoError(b, err)
+				report := linter.Lint(snapshot)
+				require.NotNil(b, report.Diagnostics)
 			}
 		})
 	}
@@ -1242,20 +1150,14 @@ func TestCorpusFailsClosedOnItsDanglingAddonMount(t *testing.T) {
 	if root == "" {
 		t.Skip("GDKIT_CORPUS is not set")
 	}
-	if revision := gitAt(t, root, "rev-parse", "HEAD"); revision != corpusRevision {
-		t.Fatalf("corpus revision = %s, want %s", revision, corpusRevision)
-	}
-	if status := gitAt(t, root, "status", "--porcelain=v1"); status != "" {
-		t.Fatalf("corpus is not clean: %s", status)
-	}
+	revision := gitAt(t, root, "rev-parse", "HEAD")
+	require.Equal(t, corpusRevision, revision)
+	status := gitAt(t, root, "status", "--porcelain=v1")
+	require.Empty(t, status)
 	link, err := os.Readlink(filepath.Join(root, filepath.FromSlash(corpusDanglingMount)))
-	if err != nil {
-		t.Fatalf("the corpus no longer declares %s as a symlink: %v", corpusDanglingMount, err)
-	}
-	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(corpusDanglingMount))); err == nil {
-		t.Fatalf("%s -> %s now resolves; this test's premise is the sparse clone that omits it",
-			corpusDanglingMount, link)
-	}
+	require.NoError(t, err, "the corpus no longer declares %s as a symlink", corpusDanglingMount)
+	_, err = os.Stat(filepath.Join(root, filepath.FromSlash(corpusDanglingMount)))
+	require.Error(t, err, "%s -> %s now resolves", corpusDanglingMount, link)
 
 	config := corpusConfig()
 	// Exactly the shape cmd/gdkit's lintProjectConfig builds for a semantic
@@ -1270,24 +1172,17 @@ func TestCorpusFailsClosedOnItsDanglingAddonMount(t *testing.T) {
 			HonorIgnoreFile: true,
 		},
 	})
-	if snapshot != nil {
-		t.Fatalf("a failed load published a snapshot with %d paths", len(snapshot.Paths))
-	}
-	if err == nil {
-		t.Fatal("want a project-load error for the dangling mount")
-	}
-	if !strings.Contains(err.Error(), corpusDanglingMount) {
-		t.Fatalf("error = %q, want it to name %q", err, corpusDanglingMount)
-	}
+	require.Nil(t, snapshot)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), corpusDanglingMount)
 	t.Logf("capability-on load of the pinned corpus failed closed: %v", err)
 
 	// The capability-off load every other corpus test uses is unaffected, so
 	// the pinned receipt still measures what it measured.
-	if _, err := project.Load(project.Config{
+	_, err = project.Load(project.Config{
 		Root:        root,
 		SourceRoots: config.SourceRoots,
 		Exclude:     config.Exclude,
-	}); err != nil {
-		t.Fatalf("the capability-off load must be unaffected: %v", err)
-	}
+	})
+	require.NoError(t, err, "the capability-off load must be unaffected")
 }

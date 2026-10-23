@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +16,8 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdkit/internal/semantic"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -32,18 +33,14 @@ const (
 func readRawFixture(t *testing.T) []byte {
 	t.Helper()
 	data, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return data
 }
 
 func readOfficialRawFixture(t *testing.T) []byte {
 	t.Helper()
 	compressed, err := os.ReadFile(officialRawFixturePath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return decompressArtifactForTest(t, compressed)
 }
 
@@ -55,73 +52,62 @@ func readOfficialRawFixture(t *testing.T) []byte {
 func TestLoadRawAcceptsGodotProducedFixtureByteForByte(t *testing.T) {
 	data := readRawFixture(t)
 	loaded, err := LoadRaw(data, SourceOverride, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Engine == nil {
-		t.Fatal("LoadRaw returned no Engine")
-	}
+	require.NoError(t, err)
+	require.NotNil(t, loaded.Engine)
 	provenance := loaded.Provenance
-	if provenance.Source != SourceOverride || provenance.Version != (Version{Major: 4, Minor: 7, Patch: 2}) ||
-		provenance.Status != "stable" || provenance.Build != "official" ||
-		provenance.FullName != "Godot Engine v4.7.2.stable.official" || provenance.RawSHA256 != fixtureRawSHA256 ||
-		provenance.SchemaSHA256 == "" || provenance.SourceCommit != "" {
-		t.Fatalf("provenance = %+v", provenance)
-	}
+	require.Equal(t, SourceOverride, provenance.Source)
+	require.Equal(t, Version{Major: 4, Minor: 7, Patch: 2}, provenance.Version)
+	require.Equal(t, "stable", provenance.Status)
+	require.Equal(t, "official", provenance.Build)
+	require.Equal(t, "Godot Engine v4.7.2.stable.official", provenance.FullName)
+	require.Equal(t, fixtureRawSHA256, provenance.RawSHA256)
+	require.NotEmpty(t, provenance.SchemaSHA256)
+	require.Empty(t, provenance.SourceCommit)
 	distilled, err := distillRaw(data, SourceOverride, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	constructible := map[string]bool{}
 	for _, builtin := range distilled.Builtins {
-		if builtin.Constructible == nil {
-			t.Fatalf("builtin %q omitted constructibility", builtin.Name)
-		}
+		require.NotNil(t, builtin.Constructible)
 		constructible[builtin.Name] = *builtin.Constructible
 	}
-	if !constructible["Vector2"] || constructible["bool"] {
-		t.Fatalf("sample constructor facts = %#v, want Vector2 only among checked rows", constructible)
-	}
+	require.True(t, constructible["Vector2"])
+	require.False(t, constructible["bool"])
 
 	class := loaded.Engine.Class("Sprite2D")
 	for _, want := range []string{"Sprite2D", "Node2D", "CanvasItem", "Node", "Object"} {
-		if class.Kind() != semantic.KindClass || class.Name() != want {
-			t.Fatalf("class chain at %s = kind %v name %q reason %q", want, class.Kind(), class.Name(), class.Reason())
-		}
+		require.Equal(t, semantic.KindClass, class.Kind())
+		require.Equal(t, want, class.Name())
 		if want == "Object" {
 			break
 		}
 		var ok bool
 		class, ok = class.Base()
-		if !ok {
-			t.Fatalf("%s has no base", want)
-		}
+		require.True(t, ok)
 	}
 	getNode, ok := loaded.Engine.Method("Node", "get_node")
-	if !ok || getNode.ReturnType().Name() != "Node" || len(getNode.Arguments()) != 1 || getNode.Arguments()[0].Type().Name() != "NodePath" {
-		t.Fatalf("Node.get_node = %#v, %t", getNode, ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, "Node", getNode.ReturnType().Name())
+	require.Len(t, getNode.Arguments(), 1)
+	require.Equal(t, "NodePath", getNode.Arguments()[0].Type().Name())
 	call, ok := loaded.Engine.Method("Object", "call")
-	if !ok || call.ReturnType().Kind() != semantic.KindVariant || !call.Vararg() {
-		t.Fatalf("Object.call = %#v, %t", call, ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, semantic.KindVariant, call.ReturnType().Kind())
+	require.True(t, call.Vararg())
 	children, ok := loaded.Engine.Method("Node", "get_children")
-	if !ok || len(children.Arguments()) != 1 || !children.Arguments()[0].HasDefault() {
-		t.Fatalf("Node.get_children = %#v, %t", children, ok)
-	}
+	require.True(t, ok)
+	require.Len(t, children.Arguments(), 1)
+	require.True(t, children.Arguments()[0].HasDefault())
 	element, elementOK := children.ReturnType().Element()
-	if children.ReturnType().Kind() != semantic.KindArray || !elementOK || element.Name() != "Node" {
-		t.Fatalf("Node.get_children return = kind %v element %q/%t", children.ReturnType().Kind(), element.Name(), elementOK)
-	}
+	require.Equal(t, semantic.KindArray, children.ReturnType().Kind())
+	require.True(t, elementOK)
+	require.Equal(t, "Node", element.Name())
 	position, ok := loaded.Engine.Property("Node2D", "position")
-	if !ok || position.Type().Name() != "Vector2" {
-		t.Fatalf("Node2D.position = %#v, %t", position, ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, "Vector2", position.Type().Name())
 	for _, operator := range []struct{ name, right string }{{"+", "Vector2"}, {"*", "float"}} {
 		result, found := loaded.Engine.Operator("Vector2", operator.name, operator.right)
-		if !found || result.Name() != "Vector2" {
-			t.Errorf("Vector2 %s %s = %q, %t", operator.name, operator.right, result.Name(), found)
-		}
+		assert.True(t, found)
+		assert.Equal(t, "Vector2", result.Name())
 	}
 }
 
@@ -131,44 +117,31 @@ func TestLoadRawAcceptsGodotProducedFixtureByteForByte(t *testing.T) {
 // 559-619,623-908,912-1283,1287-1305 (commit ed1daf0bf).
 func TestLoadRawAcceptsOfficialGodot472DumpByteForByte(t *testing.T) {
 	raw := readOfficialRawFixture(t)
-	if len(raw) != officialRawBytes || digestBytes(raw) != officialRawSHA256 {
-		t.Fatalf("official raw fixture = %d bytes, SHA-256 %s", len(raw), digestBytes(raw))
-	}
+	require.Equal(t, officialRawBytes, len(raw))
+	require.Equal(t, officialRawSHA256, digestBytes(raw))
 	var producer rawDocument
-	if err := json.Unmarshal(raw, &producer); err != nil {
-		t.Fatal(err)
-	}
-	if len(producer.Classes) <= semantic.EngineInheritanceDepthLimit {
-		t.Fatalf("official class count = %d, want proof that the %d limit applies only to chain depth",
-			len(producer.Classes), semantic.EngineInheritanceDepthLimit)
-	}
+	err := json.Unmarshal(raw, &producer)
+	require.NoError(t, err)
+	require.False(t, len(producer.Classes) <= semantic.EngineInheritanceDepthLimit)
 	constructorRows := 0
 	for _, builtin := range producer.BuiltinClasses {
-		if builtin.Constructors == nil || len(builtin.Constructors) == 0 {
-			t.Fatalf("official builtin %q has no constructor evidence", builtin.Name)
-		}
+		require.NotNil(t, builtin.Constructors)
+		require.NotEmpty(t, builtin.Constructors)
 		constructorRows += len(builtin.Constructors)
 	}
-	if len(producer.BuiltinClasses) != 38 || constructorRows != 156 {
-		t.Fatalf("official constructor inventory = %d builtins / %d rows, want 38 / 156", len(producer.BuiltinClasses), constructorRows)
-	}
+	require.Len(t, producer.BuiltinClasses, 38)
+	require.Equal(t, 156, constructorRows)
 	distilled, err := distillRaw(raw, SourceOverride, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for _, builtin := range distilled.Builtins {
-		if builtin.Constructible == nil || !*builtin.Constructible {
-			t.Fatalf("official builtin %q lost constructor eligibility", builtin.Name)
-		}
+		require.NotNil(t, builtin.Constructible)
+		require.True(t, *builtin.Constructible)
 	}
 	loaded, err := LoadRaw(raw, SourceOverride, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Provenance.Version != (Version{Major: 4, Minor: 7, Patch: 2}) ||
-		loaded.Provenance.Build != "official" || loaded.Provenance.RawSHA256 != officialRawSHA256 {
-		t.Fatalf("official raw provenance = %+v", loaded.Provenance)
-	}
+	require.NoError(t, err)
+	require.Equal(t, Version{Major: 4, Minor: 7, Patch: 2}, loaded.Provenance.Version)
+	require.Equal(t, "official", loaded.Provenance.Build)
+	require.Equal(t, officialRawSHA256, loaded.Provenance.RawSHA256)
 	assertCoreEngineFacts(t, loaded.Engine)
 }
 
@@ -180,24 +153,25 @@ func TestLoadRawSizeLimitBoundary(t *testing.T) {
 		atLimit[index] = ' '
 	}
 	readAtLimit, err := ReadRawJSON(bytes.NewReader(atLimit))
-	if err != nil || len(readAtLimit) != MaxRawJSONBytes {
-		t.Fatalf("read at limit = %d bytes, %v", len(readAtLimit), err)
-	}
-	if loaded, err := LoadRaw(readAtLimit, SourceOverride, ""); err != nil || loaded == nil {
-		t.Fatalf("at limit = %+v, %v", loaded, err)
-	}
+	require.NoError(t, err)
+	require.Len(t, readAtLimit, MaxRawJSONBytes)
+	loaded, err := LoadRaw(readAtLimit, SourceOverride, "")
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
 
 	reader := &countingRawReader{remaining: MaxRawJSONBytes + 1024}
-	if data, err := ReadRawJSON(reader); err == nil || data != nil || !errors.Is(err, ErrRawInvalid) ||
-		reader.read != MaxRawJSONBytes+1 {
-		t.Fatalf("bounded read = %d bytes consumed, %d bytes returned, %v", reader.read, len(data), err)
-	}
+	data, err := ReadRawJSON(reader)
+	require.Error(t, err)
+	require.Nil(t, data)
+	require.ErrorIs(t, err, ErrRawInvalid)
+	require.Equal(t, int64(MaxRawJSONBytes+1), reader.read)
 
 	aboveLimit := make([]byte, MaxRawJSONBytes+1)
-	if loaded, err := LoadRaw(aboveLimit, SourceOverride, ""); err == nil || loaded != nil ||
-		!errors.Is(err, ErrRawInvalid) || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("above limit = %+v, %v", loaded, err)
-	}
+	loaded, err = LoadRaw(aboveLimit, SourceOverride, "")
+	require.Error(t, err)
+	require.Nil(t, loaded)
+	require.ErrorIs(t, err, ErrRawInvalid)
+	require.Contains(t, err.Error(), "exceeds")
 }
 
 type countingRawReader struct {
@@ -229,14 +203,14 @@ func TestLoadRawRejectsTypeNestingBeforePublication(t *testing.T) {
 			}))
 			loaded, err := LoadRaw(data, SourceOverride, "")
 			if depth == semantic.EngineTypeNestingLimit {
-				if err != nil || loaded == nil {
-					t.Fatalf("at limit = %+v, %v", loaded, err)
-				}
+				require.NoError(t, err)
+				require.NotNil(t, loaded)
 				return
 			}
-			if err == nil || loaded != nil || !errors.Is(err, ErrRawInvalid) || !strings.Contains(err.Error(), "nesting exceeds") {
-				t.Fatalf("over limit = %+v, %v", loaded, err)
-			}
+			require.Error(t, err)
+			require.Nil(t, loaded)
+			require.ErrorIs(t, err, ErrRawInvalid)
+			require.Contains(t, err.Error(), "nesting exceeds")
 		})
 	}
 }
@@ -256,29 +230,23 @@ func TestLoadRawRejectsInheritanceDepthBeforePublication(t *testing.T) {
 			})
 			loaded, err := LoadRaw(data, SourceOverride, "")
 			if count == semantic.EngineInheritanceDepthLimit {
-				if err != nil || loaded == nil {
-					t.Fatalf("at limit = %+v, %v", loaded, err)
-				}
+				require.NoError(t, err)
+				require.NotNil(t, loaded)
 				return
 			}
-			if err == nil || loaded != nil || !errors.Is(err, ErrRawInvalid) || !strings.Contains(err.Error(), "inheritance depth exceeds") {
-				t.Fatalf("over limit = %+v, %v", loaded, err)
-			}
+			require.Error(t, err)
+			require.Nil(t, loaded)
+			require.ErrorIs(t, err, ErrRawInvalid)
+			require.Contains(t, err.Error(), "inheritance depth exceeds")
 		})
 	}
 }
 
 func TestOfficialGodot472RegeneratesCommittedArtifactByteForByte(t *testing.T) {
 	generated, err := GenerateArtifact(readOfficialRawFixture(t), officialGodotCommit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(generated, godot47Artifact) {
-		t.Fatalf("generated artifact SHA-256 = %s, committed = %s", digestBytes(generated), digestBytes(godot47Artifact))
-	}
-	if got := digestBytes(generated); got != officialArtifactSHA256 {
-		t.Fatalf("generated artifact SHA-256 = %s, want %s", got, officialArtifactSHA256)
-	}
+	require.NoError(t, err)
+	require.Equal(t, godot47Artifact, generated)
+	require.Equal(t, officialArtifactSHA256, digestBytes(generated))
 }
 
 func TestSourceKindsAreClosedAndValidated(t *testing.T) {
@@ -297,14 +265,12 @@ func TestSourceKindsAreClosedAndValidated(t *testing.T) {
 		t.Run(string(test.source), func(t *testing.T) {
 			loaded, err := LoadRaw(data, test.source, test.commit)
 			if test.valid {
-				if err != nil || loaded.Provenance.Source != test.source {
-					t.Fatalf("LoadRaw() = %+v, %v", loaded, err)
-				}
+				require.NoError(t, err)
+				require.Equal(t, test.source, loaded.Provenance.Source)
 				return
 			}
-			if err == nil || !errors.Is(err, ErrRawInvalid) {
-				t.Fatalf("LoadRaw() error = %v, want ErrRawInvalid", err)
-			}
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrRawInvalid)
 		})
 	}
 }
@@ -312,63 +278,41 @@ func TestSourceKindsAreClosedAndValidated(t *testing.T) {
 func TestGenerateArtifactIsDeterministicAndIdentityBound(t *testing.T) {
 	data := readRawFixture(t)
 	first, err := GenerateArtifact(data, officialGodotCommit)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	second, err := GenerateArtifact(data, officialGodotCommit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(first, second) {
-		t.Fatal("the same raw input produced different artifact bytes")
-	}
+	require.NoError(t, err)
+	require.Equal(t, first, second, "the same raw input produced different artifact bytes")
 	otherIdentity, err := GenerateArtifact(data, "different-commit")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Equal(first, otherIdentity) {
-		t.Fatal("changing source identity did not change the artifact")
-	}
+	require.NoError(t, err)
+	require.NotEqual(t, first, otherIdentity, "changing source identity did not change the artifact")
 
 	reader, err := gzip.NewReader(bytes.NewReader(first))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reader.ModTime.IsZero() || reader.Name != "" || reader.Comment != "" || len(reader.Extra) != 0 {
-		t.Fatalf("gzip header is not normalized: %+v", reader.Header)
-	}
+	require.NoError(t, err)
+	require.True(t, reader.ModTime.IsZero())
+	require.Empty(t, reader.Name)
+	require.Empty(t, reader.Comment)
+	require.Empty(t, reader.Extra)
 	uncompressed, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reader.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(uncompressed, []byte(fixturePath)) || bytes.Contains(uncompressed, []byte("generated_at")) {
-		t.Fatal("artifact identity includes a path or timestamp")
-	}
+	require.NoError(t, err)
+	err = reader.Close()
+	require.NoError(t, err)
+	require.False(t, bytes.Contains(uncompressed, []byte(fixturePath)), "artifact identity includes a path or timestamp")
+	require.False(t, bytes.Contains(uncompressed, []byte("generated_at")), "artifact identity includes a path or timestamp")
 
 	document, digest, err := decodeArtifactJSON(uncompressed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if digest == "" || document.Provenance.SourceCommit != officialGodotCommit {
-		t.Fatalf("artifact digest/provenance = %q / %+v", digest, document.Provenance)
-	}
-	if !sort.SliceIsSorted(document.Classes, func(i, j int) bool { return document.Classes[i].Name < document.Classes[j].Name }) ||
-		!sort.SliceIsSorted(document.Methods, func(i, j int) bool {
-			return document.Methods[i].Owner < document.Methods[j].Owner ||
-				(document.Methods[i].Owner == document.Methods[j].Owner && document.Methods[i].Name < document.Methods[j].Name)
-		}) {
-		t.Fatal("artifact records are not in stable identity order")
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, digest)
+	require.Equal(t, officialGodotCommit, document.Provenance.SourceCommit)
+	require.True(t, sort.SliceIsSorted(document.Classes, func(i, j int) bool { return document.Classes[i].Name < document.Classes[j].Name }))
+	require.True(t, sort.SliceIsSorted(document.Methods, func(i, j int) bool {
+		return document.Methods[i].Owner < document.Methods[j].Owner ||
+			(document.Methods[i].Owner == document.Methods[j].Owner && document.Methods[i].Name < document.Methods[j].Name)
+	}))
 	loaded, err := LoadArtifact(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Provenance.SchemaSHA256 != digest || loaded.Provenance.RawSHA256 != fixtureRawSHA256 || loaded.Provenance.Source != SourceEmbedded {
-		t.Fatalf("loaded provenance = %+v", loaded.Provenance)
-	}
+	require.NoError(t, err)
+	require.Equal(t, digest, loaded.Provenance.SchemaSHA256)
+	require.Equal(t, fixtureRawSHA256, loaded.Provenance.RawSHA256)
+	require.Equal(t, SourceEmbedded, loaded.Provenance.Source)
 }
 
 func TestRawValidationRejectsEveryDuplicateIdentity(t *testing.T) {
@@ -388,9 +332,10 @@ func TestRawValidationRejectsEveryDuplicateIdentity(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			data := mutateRawFixture(t, test.mutate)
 			loaded, err := LoadRaw(data, SourceOverride, "")
-			if err == nil || !errors.Is(err, ErrRawInvalid) || loaded != nil || !strings.Contains(err.Error(), "duplicate") {
-				t.Fatalf("LoadRaw() = %+v, %v", loaded, err)
-			}
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrRawInvalid)
+			require.Nil(t, loaded)
+			require.Contains(t, err.Error(), "duplicate")
 		})
 	}
 }
@@ -401,18 +346,19 @@ func TestRawValidationDistinguishesMalformedFromInvalid(t *testing.T) {
 		append(readRawFixture(t), []byte(` {}`)...),
 	} {
 		loaded, err := LoadRaw(malformed, SourceOverride, "")
-		if err == nil || !errors.Is(err, ErrRawParse) || loaded != nil {
-			t.Fatalf("malformed LoadRaw() = %+v, %v", loaded, err)
-		}
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrRawParse)
+		require.Nil(t, loaded)
 	}
 
 	for _, key := range []string{"header", "builtin_classes", "classes", "singletons", "utility_functions"} {
 		t.Run("missing-"+key, func(t *testing.T) {
 			data := mutateRawFixture(t, func(document map[string]any) { delete(document, key) })
 			loaded, err := LoadRaw(data, SourceOverride, "")
-			if err == nil || !errors.Is(err, ErrRawInvalid) || loaded != nil || !strings.Contains(err.Error(), key) {
-				t.Fatalf("LoadRaw() = %+v, %v", loaded, err)
-			}
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrRawInvalid)
+			require.Nil(t, loaded)
+			require.Contains(t, err.Error(), key)
 		})
 	}
 }
@@ -492,9 +438,9 @@ func TestRawValidationRejectsMalformedRetainedRows(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			loaded, err := LoadRaw(mutateRawFixture(t, test.mutate), SourceOverride, "")
-			if err == nil || !errors.Is(err, ErrRawInvalid) || loaded != nil {
-				t.Fatalf("LoadRaw() = %+v, %v", loaded, err)
-			}
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrRawInvalid)
+			require.Nil(t, loaded)
 		})
 	}
 }
@@ -550,9 +496,9 @@ func TestRawBuiltinConstructorValidationFailsClosed(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			loaded, err := LoadRaw(mutateRawFixture(t, test.mutate), SourceOverride, "")
-			if err == nil || loaded != nil || !errors.Is(err, ErrRawInvalid) {
-				t.Fatalf("LoadRaw() = %+v, %v; want ErrRawInvalid without publication", loaded, err)
-			}
+			require.Error(t, err)
+			require.Nil(t, loaded)
+			require.ErrorIs(t, err, ErrRawInvalid)
 		})
 	}
 }
@@ -564,69 +510,56 @@ func TestRawValidationIgnoresUnknownProducerFields(t *testing.T) {
 			row["future_class_field"] = map[string]any{"unknown": true}
 		})(document)
 	})
-	if loaded, err := LoadRaw(data, SourceOverride, ""); err != nil || loaded == nil {
-		t.Fatalf("LoadRaw() = %+v, %v", loaded, err)
-	}
+	loaded, err := LoadRaw(data, SourceOverride, "")
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
 }
 
 func TestEmbeddedRegistryHasOnlyExact47AndOfficialProvenance(t *testing.T) {
-	if got := SupportedMinors(); len(got) != 1 || got[0] != (MinorVersion{Major: 4, Minor: 7}) {
-		t.Fatalf("SupportedMinors() = %+v", got)
-	}
+	got := SupportedMinors()
+	require.Len(t, got, 1)
+	require.Equal(t, MinorVersion{Major: 4, Minor: 7}, got[0])
 	for _, version := range []MinorVersion{{Major: 4, Minor: 6}, {Major: 4, Minor: 8}, {Major: 5, Minor: 0}} {
 		loaded, err := LoadEmbedded(version.Major, version.Minor)
-		if err == nil || !errors.Is(err, ErrUnsupportedVersion) || loaded != nil {
-			t.Fatalf("LoadEmbedded(%+v) = %+v, %v", version, loaded, err)
-		}
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrUnsupportedVersion)
+		require.Nil(t, loaded)
 	}
 	loaded, err := LoadEmbedded(4, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	wantVersion := Version{Major: 4, Minor: 7, Patch: 2}
-	if loaded.Provenance.Source != SourceEmbedded || loaded.Provenance.Version != wantVersion ||
-		loaded.Provenance.RawSHA256 != officialRawSHA256 || loaded.Provenance.SourceCommit != officialGodotCommit {
-		t.Fatalf("embedded provenance = %+v", loaded.Provenance)
-	}
-	if loaded.Engine.Class("Animation").Kind() != semantic.KindClass {
-		t.Fatal("official table does not contain Animation")
-	}
+	require.Equal(t, SourceEmbedded, loaded.Provenance.Source)
+	require.Equal(t, wantVersion, loaded.Provenance.Version)
+	require.Equal(t, officialRawSHA256, loaded.Provenance.RawSHA256)
+	require.Equal(t, officialGodotCommit, loaded.Provenance.SourceCommit)
+	require.Equal(t, semantic.KindClass, loaded.Engine.Class("Animation").Kind())
 	assertCoreEngineFacts(t, loaded.Engine)
 	override, err := LoadRaw(readRawFixture(t), SourceOverride, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := override.Engine.Class("Animation"); got.Kind() != semantic.KindUnknown {
-		t.Fatalf("override unexpectedly merged embedded Animation: kind %v name %q", got.Kind(), got.Name())
-	}
+	require.NoError(t, err)
+	require.Equal(t, semantic.KindUnknown, override.Engine.Class("Animation").Kind())
 	loaded.Provenance.Source = SourceOverride
 	again, err := LoadEmbedded(4, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if again == loaded || again.Engine != loaded.Engine || again.Provenance.Source != SourceEmbedded {
-		t.Fatalf("registry publication was mutable: first=%p second=%p provenance=%+v", loaded, again, again.Provenance)
-	}
+	require.NoError(t, err)
+	require.NotSame(t, loaded, again)
+	require.Same(t, loaded.Engine, again.Engine)
+	require.Equal(t, SourceEmbedded, again.Provenance.Source)
 }
 
 func TestArtifactRejectsDigestTamperingAndNonCanonicalRecords(t *testing.T) {
 	blob, err := GenerateArtifact(readRawFixture(t), officialGodotCommit)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	payload := decompressArtifactForTest(t, blob)
 	var envelope artifact
-	if err := json.Unmarshal(payload, &envelope); err != nil {
-		t.Fatal(err)
-	}
+	err = json.Unmarshal(payload, &envelope)
+	require.NoError(t, err)
 
 	t.Run("digest", func(t *testing.T) {
 		tampered := envelope
 		tampered.Digest = strings.Repeat("0", sha256.Size*2)
 		loaded, err := LoadArtifact(compressArtifactForTest(t, tampered))
-		if err == nil || loaded != nil || !strings.Contains(err.Error(), "digest") {
-			t.Fatalf("LoadArtifact() = %+v, %v", loaded, err)
-		}
+		require.Error(t, err)
+		require.Nil(t, loaded)
+		require.Contains(t, err.Error(), "digest")
 	})
 
 	t.Run("record order", func(t *testing.T) {
@@ -634,13 +567,11 @@ func TestArtifactRejectsDigestTamperingAndNonCanonicalRecords(t *testing.T) {
 		tampered.Schema.Classes = append([]classRecord(nil), envelope.Schema.Classes...)
 		tampered.Schema.Classes[0], tampered.Schema.Classes[1] = tampered.Schema.Classes[1], tampered.Schema.Classes[0]
 		tampered.Digest, err = schemaDigest(tampered.Schema)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		loaded, loadErr := LoadArtifact(compressArtifactForTest(t, tampered))
-		if loadErr == nil || loaded != nil || !strings.Contains(loadErr.Error(), "canonical order") {
-			t.Fatalf("LoadArtifact() = %+v, %v", loaded, loadErr)
-		}
+		require.Error(t, loadErr)
+		require.Nil(t, loaded)
+		require.Contains(t, loadErr.Error(), "canonical order")
 	})
 
 	t.Run("missing constructibility", func(t *testing.T) {
@@ -648,38 +579,30 @@ func TestArtifactRejectsDigestTamperingAndNonCanonicalRecords(t *testing.T) {
 		tampered.Schema.Builtins = append([]builtinRecord(nil), envelope.Schema.Builtins...)
 		tampered.Schema.Builtins[0].Constructible = nil
 		tampered.Digest, err = schemaDigest(tampered.Schema)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		loaded, loadErr := LoadArtifact(compressArtifactForTest(t, tampered))
-		if loadErr == nil || loaded != nil || !strings.Contains(loadErr.Error(), "constructible") {
-			t.Fatalf("LoadArtifact() = %+v, %v", loaded, loadErr)
-		}
+		require.Error(t, loadErr)
+		require.Nil(t, loaded)
+		require.Contains(t, loadErr.Error(), "constructible")
 	})
 
 	t.Run("stale schema version", func(t *testing.T) {
 		tampered := envelope
 		tampered.Schema.Version = 1
 		tampered.Digest, err = schemaDigest(tampered.Schema)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		loaded, loadErr := LoadArtifact(compressArtifactForTest(t, tampered))
-		if loadErr == nil || loaded != nil || !strings.Contains(loadErr.Error(), "unsupported engine schema version 1") {
-			t.Fatalf("LoadArtifact() = %+v, %v", loaded, loadErr)
-		}
+		require.Error(t, loadErr)
+		require.Nil(t, loaded)
+		require.Contains(t, loadErr.Error(), "unsupported engine schema version 1")
 	})
 }
 
 func TestLoadRegistryArtifactRequiresExactIdentity(t *testing.T) {
 	blob, err := GenerateArtifact(readRawFixture(t), officialGodotCommit)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	baseline, err := LoadArtifact(blob)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	matching := registryIdentity{
 		version:      baseline.Provenance.Version,
 		rawSHA256:    baseline.Provenance.RawSHA256,
@@ -688,15 +611,12 @@ func TestLoadRegistryArtifactRequiresExactIdentity(t *testing.T) {
 	}
 
 	var envelope artifact
-	if err := json.Unmarshal(decompressArtifactForTest(t, blob), &envelope); err != nil {
-		t.Fatal(err)
-	}
+	err = json.Unmarshal(decompressArtifactForTest(t, blob), &envelope)
+	require.NoError(t, err)
 	envelope.Schema.Provenance.Source = SourceOverride
 	envelope.Schema.Provenance.SourceCommit = ""
 	envelope.Digest, err = schemaDigest(envelope.Schema)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	overrideBlob := compressArtifactForTest(t, envelope)
 
 	tests := []struct {
@@ -720,23 +640,21 @@ func TestLoadRegistryArtifactRequiresExactIdentity(t *testing.T) {
 			}
 			loaded, err := loadRegistryArtifact(test.blob, identity)
 			if test.accepted {
-				if err != nil || loaded == nil || loaded.Engine == nil {
-					t.Fatalf("loadRegistryArtifact() = %+v, %v", loaded, err)
-				}
+				require.NoError(t, err)
+				require.NotNil(t, loaded)
+				require.NotNil(t, loaded.Engine)
 				return
 			}
-			if err == nil || loaded != nil || !strings.Contains(err.Error(), "does not match its registry identity") {
-				t.Fatalf("loadRegistryArtifact() = %+v, %v", loaded, err)
-			}
+			require.Error(t, err)
+			require.Nil(t, loaded)
+			require.Contains(t, err.Error(), "does not match its registry identity")
 		})
 	}
 }
 
 func TestLazyArtifactConcurrentLoadsPublishOneCompleteEngine(t *testing.T) {
 	blob, err := GenerateArtifact(readRawFixture(t), officialGodotCommit)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var calls atomic.Int32
 	lazy := newLazyArtifact(blob, func(data []byte) (*Loaded, error) {
 		calls.Add(1)
@@ -755,16 +673,13 @@ func TestLazyArtifactConcurrentLoadsPublishOneCompleteEngine(t *testing.T) {
 		}()
 	}
 	wait.Wait()
-	if calls.Load() != 1 {
-		t.Fatalf("artifact decoded %d times, want 1", calls.Load())
-	}
+	require.Equal(t, int32(1), calls.Load())
 	for index := range results {
-		if errorsFound[index] != nil || results[index] == nil || results[index].Engine == nil {
-			t.Fatalf("result %d = %+v, %v", index, results[index], errorsFound[index])
-		}
-		if results[index] != results[0] || results[index].Engine != results[0].Engine {
-			t.Fatalf("result %d did not observe the single published value", index)
-		}
+		require.NoError(t, errorsFound[index])
+		require.NotNil(t, results[index])
+		require.NotNil(t, results[index].Engine)
+		require.Same(t, results[0], results[index])
+		require.Same(t, results[0].Engine, results[index].Engine)
 	}
 }
 
@@ -772,9 +687,8 @@ func TestCorruptArtifactNeverPublishesPartialState(t *testing.T) {
 	lazy := newLazyArtifact([]byte("not gzip"), LoadArtifact)
 	for attempt := 0; attempt < 2; attempt++ {
 		loaded, err := lazy.Load()
-		if err == nil || loaded != nil {
-			t.Fatalf("attempt %d = %+v, %v", attempt, loaded, err)
-		}
+		require.Error(t, err)
+		require.Nil(t, loaded)
 	}
 }
 
@@ -822,14 +736,10 @@ func TestOfficialArtifactResolvesOrExplainsEveryRetainedTypeSpelling(t *testing.
 	}
 
 	loaded, err := LoadEmbedded(4, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	payload := decompressArtifactForTest(t, godot47Artifact)
 	document, _, err := decodeArtifactJSON(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	spellings := map[string]bool{}
 	for _, class := range document.Classes {
 		if class.Inherits != "" {
@@ -868,15 +778,11 @@ func TestOfficialArtifactResolvesOrExplainsEveryRetainedTypeSpelling(t *testing.
 		}
 		assertContainerComponentsResolved(t, spelling, resolved)
 	}
-	for spelling, reason := range gotUnknown {
-		if !wantUnknown[spelling] {
-			t.Errorf("official retained type %q unexpectedly became Unknown: %s", spelling, reason)
-		}
+	for spelling := range gotUnknown {
+		assert.Contains(t, wantUnknown, spelling)
 	}
 	for spelling := range wantUnknown {
-		if _, found := gotUnknown[spelling]; !found {
-			t.Errorf("official retained type %q is no longer Unknown; remove it from the explicit allowlist", spelling)
-		}
+		assert.Contains(t, gotUnknown, spelling)
 	}
 }
 
@@ -884,21 +790,21 @@ func assertContainerComponentsResolved(t *testing.T, spelling string, resolved s
 	t.Helper()
 	if element, ok := resolved.Element(); ok {
 		if element.Kind() == semantic.KindUnknown {
-			t.Errorf("official retained type %q hid an Unknown array element: %s", spelling, element.Reason())
+			assert.NotEqual(t, semantic.KindUnknown, element.Kind())
 		} else {
 			assertContainerComponentsResolved(t, spelling, element)
 		}
 	}
 	if key, ok := resolved.Key(); ok {
 		if key.Kind() == semantic.KindUnknown {
-			t.Errorf("official retained type %q hid an Unknown dictionary key: %s", spelling, key.Reason())
+			assert.NotEqual(t, semantic.KindUnknown, key.Kind())
 		} else {
 			assertContainerComponentsResolved(t, spelling, key)
 		}
 	}
 	if value, ok := resolved.Value(); ok {
 		if value.Kind() == semantic.KindUnknown {
-			t.Errorf("official retained type %q hid an Unknown dictionary value: %s", spelling, value.Reason())
+			assert.NotEqual(t, semantic.KindUnknown, value.Kind())
 		} else {
 			assertContainerComponentsResolved(t, spelling, value)
 		}
@@ -909,9 +815,8 @@ func BenchmarkLoadEmbeddedArtifactCold(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		loaded, err := LoadArtifact(godot47Artifact)
-		if err != nil || loaded == nil {
-			b.Fatalf("LoadArtifact() = %+v, %v", loaded, err)
-		}
+		require.NoError(b, err)
+		require.NotNil(b, loaded)
 	}
 }
 
@@ -921,19 +826,15 @@ func BenchmarkLoadOfficialRawOverrideCold(b *testing.B) {
 		b.Skip("set GDKIT_EXTENSION_API to an official raw extension_api.json")
 	}
 	raw, err := os.ReadFile(name)
-	if err != nil {
-		b.Fatal(err)
-	}
-	if got := digestBytes(raw); got != officialRawSHA256 {
-		b.Fatalf("raw SHA-256 = %s, want %s", got, officialRawSHA256)
-	}
+	require.NoError(b, err)
+	got := digestBytes(raw)
+	require.Equal(b, officialRawSHA256, got)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
 		loaded, err := LoadRaw(raw, SourceOverride, "")
-		if err != nil || loaded == nil {
-			b.Fatalf("LoadRaw() = %+v, %v", loaded, err)
-		}
+		require.NoError(b, err)
+		require.NotNil(b, loaded)
 	}
 }
 
@@ -988,14 +889,11 @@ func mutateNestedNamedRow(table, owner, nested, name string, mutate func(map[str
 func mutateRawFixture(t *testing.T, mutate func(map[string]any)) []byte {
 	t.Helper()
 	var document map[string]any
-	if err := json.Unmarshal(readRawFixture(t), &document); err != nil {
-		t.Fatal(err)
-	}
+	err := json.Unmarshal(readRawFixture(t), &document)
+	require.NoError(t, err)
 	mutate(document)
 	data, err := json.Marshal(document)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return data
 }
 
@@ -1007,33 +905,24 @@ func digestBytes(data []byte) string {
 func decompressArtifactForTest(t *testing.T, blob []byte) []byte {
 	t.Helper()
 	reader, err := gzip.NewReader(bytes.NewReader(blob))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	payload, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reader.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	err = reader.Close()
+	require.NoError(t, err)
 	return payload
 }
 
 func compressArtifactForTest(t *testing.T, value artifact) []byte {
 	t.Helper()
 	payload, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var compressed bytes.Buffer
 	writer := gzip.NewWriter(&compressed)
-	if _, err := writer.Write(payload); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
+	_, err = writer.Write(payload)
+	require.NoError(t, err)
+	err = writer.Close()
+	require.NoError(t, err)
 	return compressed.Bytes()
 }
 
@@ -1042,9 +931,7 @@ func compressArtifactForTest(t *testing.T, value artifact) []byte {
 // resolves a script's base chain against it.
 func TestEngineRecordsVirtualMethods(t *testing.T) {
 	loaded, err := LoadEmbedded(4, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	engine := loaded.Engine
 	for _, virtual := range []struct{ owner, name string }{
 		{"Node", "_ready"},
@@ -1056,17 +943,13 @@ func TestEngineRecordsVirtualMethods(t *testing.T) {
 		{"MainLoop", "_initialize"},
 		{"Logger", "_log_error"},
 	} {
-		if !engine.VirtualMethod(virtual.owner, virtual.name) {
-			t.Errorf("%s.%s is not recorded virtual", virtual.owner, virtual.name)
-		}
+		assert.True(t, engine.VirtualMethod(virtual.owner, virtual.name))
 	}
 	for _, ordinary := range []struct{ owner, name string }{
 		{"Object", "call"},
 		{"Node", "get_node"},
 	} {
-		if engine.VirtualMethod(ordinary.owner, ordinary.name) {
-			t.Errorf("%s.%s is wrongly recorded virtual", ordinary.owner, ordinary.name)
-		}
+		assert.False(t, engine.VirtualMethod(ordinary.owner, ordinary.name))
 	}
 }
 
@@ -1074,34 +957,29 @@ func assertCoreEngineFacts(t *testing.T, engine *semantic.Engine) {
 	t.Helper()
 	class := engine.Class("Sprite2D")
 	for _, want := range []string{"Sprite2D", "Node2D", "CanvasItem", "Node", "Object"} {
-		if class.Kind() != semantic.KindClass || class.Name() != want {
-			t.Fatalf("embedded class chain at %s = kind %v name %q reason %q", want, class.Kind(), class.Name(), class.Reason())
-		}
+		require.Equal(t, semantic.KindClass, class.Kind())
+		require.Equal(t, want, class.Name())
 		if want == "Object" {
 			break
 		}
 		var ok bool
 		class, ok = class.Base()
-		if !ok {
-			t.Fatalf("embedded %s has no base", want)
-		}
+		require.True(t, ok)
 	}
 	getNode, ok := engine.Method("Node", "get_node")
-	if !ok || getNode.ReturnType().Name() != "Node" || len(getNode.Arguments()) != 1 || getNode.Arguments()[0].Type().Name() != "NodePath" {
-		t.Fatalf("embedded Node.get_node = %#v, %t", getNode, ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, "Node", getNode.ReturnType().Name())
+	require.Len(t, getNode.Arguments(), 1)
+	require.Equal(t, "NodePath", getNode.Arguments()[0].Type().Name())
 	call, ok := engine.Method("Object", "call")
-	if !ok || call.ReturnType().Kind() != semantic.KindVariant {
-		t.Fatalf("embedded Object.call = %#v, %t", call, ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, semantic.KindVariant, call.ReturnType().Kind())
 	position, ok := engine.Property("Node2D", "position")
-	if !ok || position.Type().Name() != "Vector2" {
-		t.Fatalf("embedded Node2D.position = %#v, %t", position, ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, "Vector2", position.Type().Name())
 	for _, operand := range []struct{ operator, right string }{{"+", "Vector2"}, {"*", "float"}} {
 		result, found := engine.Operator("Vector2", operand.operator, operand.right)
-		if !found || result.Name() != "Vector2" {
-			t.Fatalf("embedded Vector2 %s %s = %q, %t", operand.operator, operand.right, result.Name(), found)
-		}
+		require.True(t, found)
+		require.Equal(t, "Vector2", result.Name())
 	}
 }

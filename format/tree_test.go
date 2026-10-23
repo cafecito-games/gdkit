@@ -7,14 +7,14 @@ import (
 	"github.com/cafecito-games/gdparser"
 	"github.com/cafecito-games/gdparser/ast"
 	gdformat "github.com/cafecito-games/gdparser/format"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func parseTree(t *testing.T, source string) *ast.File {
 	t.Helper()
 	file, err := gdparser.ParseFile("a.gd", []byte(source))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return file
 }
 
@@ -22,9 +22,7 @@ func TestSameTreeIgnoresPositionsAndFileName(t *testing.T) {
 	before := parseTree(t, "var a = 1\n\n\n\nfunc f(x):\n\treturn x\n")
 	after := parseTree(t, "var   a  =  1\nfunc f( x ):\n    return x\n")
 	after.Name = "elsewhere.gd"
-	if !sameTree(before, after, gdformat.GodotStyle()) {
-		t.Fatal("trees that differ only in layout were reported as different")
-	}
+	require.True(t, sameTree(before, after, gdformat.GodotStyle()), "trees that differ only in layout were reported as different")
 }
 
 func TestSameTreeSeesEveryMeaningfulDifference(t *testing.T) {
@@ -55,12 +53,9 @@ func TestSameTreeSeesEveryMeaningfulDifference(t *testing.T) {
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
 			before, after := parseTree(t, testCase.before), parseTree(t, testCase.after)
-			if !sameTree(before, before, gdformat.GodotStyle()) || !sameTree(after, after, gdformat.GodotStyle()) {
-				t.Fatal("a tree differs from itself")
-			}
-			if sameTree(before, after, gdformat.GodotStyle()) {
-				t.Fatal("different trees were reported as the same")
-			}
+			require.True(t, sameTree(before, before, gdformat.GodotStyle()), "a tree differs from itself")
+			require.True(t, sameTree(after, after, gdformat.GodotStyle()), "a tree differs from itself")
+			require.False(t, sameTree(before, after, gdformat.GodotStyle()), "different trees were reported as the same")
 		})
 	}
 }
@@ -86,14 +81,13 @@ func TestComparedFieldsSkipOnlySourceMetadata(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"File.Name", "Base.SourceSpan", "Trivia.BlankLinesBefore", "FunctionDeclaration.NameSpan", "Branch.KeywordSpan"} {
-		if !skipped[name] {
-			t.Errorf("%s is compared, want it skipped", name)
-		}
+		assert.True(t, skipped[name], "%s is compared, want it skipped", name)
 		delete(skipped, name)
 	}
 	for name := range skipped {
-		if len(name) < 4 || name[len(name)-4:] != "Span" {
-			t.Errorf("%s is skipped, want it compared", name)
+		assert.GreaterOrEqual(t, len(name), 4, "%s is skipped, want it compared", name)
+		if len(name) >= 4 {
+			assert.Equal(t, "Span", name[len(name)-4:], "%s is skipped, want it compared", name)
 		}
 	}
 }
@@ -101,7 +95,5 @@ func TestComparedFieldsSkipOnlySourceMetadata(t *testing.T) {
 func TestSameTreeKeepsAnInferredParameterDefaultAcrossSpacing(t *testing.T) {
 	before := parseTree(t, "func f(x:=1, y=2, z: = 3):\n\tpass\n")
 	after := parseTree(t, "func f(x := 1, y = 2, z := 3):\n\tpass\n")
-	if !sameTree(before, after, gdformat.GodotStyle()) {
-		t.Fatal("parameters that differ only in spacing were reported as different")
-	}
+	require.True(t, sameTree(before, after, gdformat.GodotStyle()), "parameters that differ only in spacing were reported as different")
 }

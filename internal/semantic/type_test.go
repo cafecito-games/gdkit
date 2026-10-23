@@ -3,6 +3,9 @@ package semantic
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestKindsAndSpellings(t *testing.T) {
@@ -35,77 +38,58 @@ func TestKindsAndSpellings(t *testing.T) {
 	seen := make(map[Kind]bool)
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := test.type_.Kind(); got != test.kind {
-				t.Fatalf("Kind() = %v, want %v", got, test.kind)
-			}
-			if got := test.type_.String(); got != test.string {
-				t.Fatalf("String() = %q, want %q", got, test.string)
-			}
-			if got := test.type_.String(); got != test.string {
-				t.Fatalf("second String() = %q, want stable %q", got, test.string)
-			}
+			kind := test.type_.Kind()
+			require.Equal(t, test.kind, kind)
+			require.Equal(t, test.string, test.type_.String())
+			require.Equal(t, test.string, test.type_.String())
 		})
 		seen[test.kind] = true
 	}
 
 	for kind := KindUnknown; kind <= KindEnum; kind++ {
-		if !seen[kind] {
-			t.Errorf("kind %v has no vocabulary test", kind)
-		}
+		assert.True(t, seen[kind])
 	}
 }
 
 func TestUnknownRequiresAReasonAndZeroFailsClosed(t *testing.T) {
 	for _, reason := range []string{"", " ", "\t\n"} {
 		t.Run("reason="+reason, func(t *testing.T) {
-			defer func() {
-				if recover() == nil {
-					t.Fatal("Unknown accepted an empty reason")
-				}
-			}()
-			Unknown(reason)
+			assert.Panics(t, func() { Unknown(reason) }, "Unknown accepted an empty reason")
 		})
 	}
 
 	var zero Type
-	if zero.Kind() != KindUnknown {
-		t.Fatalf("zero Kind() = %v, want KindUnknown", zero.Kind())
-	}
-	if strings.TrimSpace(zero.Reason()) == "" {
-		t.Fatal("zero Type has no Unknown reason")
-	}
-	if got := zero.AssignableTo(Variant()); got != AssignabilityIndeterminate {
-		t.Fatalf("zero.AssignableTo(Variant()) = %v, want indeterminate", got)
-	}
+	require.Equal(t, KindUnknown, zero.Kind())
+	require.NotEmpty(t, strings.TrimSpace(zero.Reason()))
+	assignability := zero.AssignableTo(Variant())
+	require.Equal(t, AssignabilityIndeterminate, assignability)
 }
 
 func TestAccessors(t *testing.T) {
 	base := Class("Base", nil, false)
 	child := Class("Child", &base, true)
-	if child.Name() != "Child" || !child.Meta() {
-		t.Fatalf("class accessors = (%q, %v), want (Child, true)", child.Name(), child.Meta())
-	}
-	if got, ok := child.Base(); !ok || !got.Equal(base) {
-		t.Fatalf("Base() = (%v, %v), want Base", got, ok)
-	}
+	require.Equal(t, "Child", child.Name())
+	require.True(t, child.Meta())
+	got, ok := child.Base()
+	require.True(t, ok)
+	require.True(t, got.Equal(base))
 
 	intType := Builtin("int")
 	array := Array(&intType)
-	if got, ok := array.Element(); !ok || !got.Equal(intType) {
-		t.Fatalf("Element() = (%v, %v), want int", got, ok)
-	}
-	if _, ok := Array(nil).Element(); ok {
-		t.Fatal("untyped Array reported an element")
-	}
+	got, ok = array.Element()
+	require.True(t, ok)
+	require.True(t, got.Equal(intType))
+	_, ok = Array(nil).Element()
+	require.False(t, ok)
 
 	stringType := Builtin("String")
 	dictionary := Dictionary(&stringType, &intType)
-	if got, ok := dictionary.Key(); !ok || !got.Equal(stringType) {
-		t.Fatalf("Key() = (%v, %v), want String", got, ok)
-	}
-	if got, ok := dictionary.Value(); !ok || !got.Equal(intType) {
-		t.Fatalf("Value() = (%v, %v), want int", got, ok)
-	}
+	got, ok = dictionary.Key()
+	require.True(t, ok)
+	require.True(t, got.Equal(stringType))
+	got, ok = dictionary.Value()
+	require.True(t, ok)
+	require.True(t, got.Equal(intType))
 }
 
 func TestEqualIsStructural(t *testing.T) {
@@ -131,9 +115,8 @@ func TestEqualIsStructural(t *testing.T) {
 	}
 	for _, test := range equal {
 		t.Run(test.name, func(t *testing.T) {
-			if !test.left.Equal(test.right) || !test.right.Equal(test.left) {
-				t.Fatalf("structurally equal types did not compare equal: %v, %v", test.left, test.right)
-			}
+			require.True(t, test.left.Equal(test.right))
+			require.True(t, test.right.Equal(test.left))
 		})
 	}
 
@@ -152,9 +135,8 @@ func TestEqualIsStructural(t *testing.T) {
 	}
 	for _, test := range notEqual {
 		t.Run(test.name, func(t *testing.T) {
-			if test.left.Equal(test.right) || test.right.Equal(test.left) {
-				t.Fatalf("different types compared equal: %v, %v", test.left, test.right)
-			}
+			require.False(t, test.left.Equal(test.right))
+			require.False(t, test.right.Equal(test.left))
 		})
 	}
 }
@@ -207,12 +189,10 @@ func TestAssignableTo(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := test.from.AssignableTo(test.to); got != test.want {
-				t.Fatalf("%v.AssignableTo(%v) = %v, want %v", test.from, test.to, got, test.want)
-			}
-			if got := test.from.AssignableTo(test.to); got != test.want {
-				t.Fatalf("repeated AssignableTo = %v, want stable %v", got, test.want)
-			}
+			got := test.from.AssignableTo(test.to)
+			require.Equal(t, test.want, got)
+			got = test.from.AssignableTo(test.to)
+			require.Equal(t, test.want, got)
 		})
 	}
 }
@@ -242,9 +222,8 @@ func TestAssignableToFailsClosedOnUnknownTargetAncestry(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := test.source.AssignableTo(test.target); got != AssignabilityIndeterminate {
-				t.Fatalf("%v.AssignableTo(%v) = %v, want indeterminate", test.source, test.target, got)
-			}
+			got := test.source.AssignableTo(test.target)
+			require.Equal(t, AssignabilityIndeterminate, got)
 		})
 	}
 }
@@ -259,9 +238,8 @@ func TestAssignabilityVocabulary(t *testing.T) {
 		{AssignabilityNo, "no"},
 	}
 	for _, test := range tests {
-		if got := test.value.String(); got != test.want {
-			t.Errorf("Assignability(%d).String() = %q, want %q", test.value, got, test.want)
-		}
+		got := test.value.String()
+		assert.Equal(t, test.want, got)
 	}
 }
 
@@ -269,30 +247,25 @@ func TestConstructorsCopyTypeArguments(t *testing.T) {
 	component := Builtin("int")
 	array := Array(&component)
 	component = Builtin("String")
-	if got := array.String(); got != "Array[int]" {
-		t.Fatalf("caller mutation changed Array to %q", got)
-	}
+	require.Equal(t, "Array[int]", array.String())
 
 	base := Class("Base", nil, false)
 	child := Class("Child", &base, false)
 	base = Class("Other", nil, false)
-	if got, ok := child.Base(); !ok || got.Name() != "Base" {
-		t.Fatalf("caller mutation changed class base to (%v, %v)", got, ok)
-	}
+	got, ok := child.Base()
+	require.True(t, ok)
+	require.Equal(t, "Base", got.Name())
 }
 
 func TestMalformedTypesFailClosedAndCyclesTerminate(t *testing.T) {
 	unsupported := Type{node: &typeNode{kind: Kind(255)}}
-	if unsupported.Kind() != KindUnknown || strings.TrimSpace(unsupported.Reason()) == "" {
-		t.Fatalf("unsupported kind did not degrade to reasoned Unknown: %v", unsupported)
-	}
-	if got := unsupported.AssignableTo(unsupported); got != AssignabilityIndeterminate {
-		t.Fatalf("unsupported kind assignability = %v, want indeterminate", got)
-	}
+	require.Equal(t, KindUnknown, unsupported.Kind())
+	require.NotEmpty(t, strings.TrimSpace(unsupported.Reason()))
+	assignability := unsupported.AssignableTo(unsupported)
+	require.Equal(t, AssignabilityIndeterminate, assignability)
 	malformed := Type{node: &typeNode{kind: KindSignal, name: "not allowed"}}
-	if malformed.Kind() != KindUnknown || malformed.AssignableTo(Signal()) != AssignabilityIndeterminate {
-		t.Fatalf("malformed shape did not fail closed: %v", malformed)
-	}
+	require.Equal(t, KindUnknown, malformed.Kind())
+	require.Equal(t, AssignabilityIndeterminate, malformed.AssignableTo(Signal()))
 
 	cycleA := Type{node: &typeNode{kind: KindClass, name: "Cycle"}}
 	cycleA.node.base = cycleA
@@ -300,12 +273,8 @@ func TestMalformedTypesFailClosedAndCyclesTerminate(t *testing.T) {
 	cycleB := Type{node: &typeNode{kind: KindClass, name: "Cycle"}}
 	cycleB.node.base = cycleB
 	cycleB.node.hasBase = true
-	if !cycleA.Equal(cycleB) {
-		t.Fatal("structurally equivalent cycles did not compare equal")
-	}
-	if got := cycleA.AssignableTo(Class("Other", nil, false)); got != AssignabilityIndeterminate {
-		t.Fatalf("cyclic ancestry assignability = %v, want indeterminate", got)
-	}
+	require.True(t, cycleA.Equal(cycleB))
+	require.Equal(t, AssignabilityIndeterminate, cycleA.AssignableTo(Class("Other", nil, false)))
 }
 
 func typePointer(value Type) *Type { return &value }

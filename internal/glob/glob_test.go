@@ -1,6 +1,11 @@
 package glob
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestMatchHandlesSegmentsAndFeatureCaptures(t *testing.T) {
 	cases := []struct {
@@ -19,11 +24,9 @@ func TestMatchHandlesSegmentsAndFeatureCaptures(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		matches, captures := Match(testCase.pattern, testCase.name)
-		if matches != testCase.matches {
-			t.Errorf("Match(%q, %q) = %v, want %v", testCase.pattern, testCase.name, matches, testCase.matches)
-		}
-		if testCase.feature != "" && captures["feature"] != testCase.feature {
-			t.Errorf("Match(%q, %q) feature = %q, want %q", testCase.pattern, testCase.name, captures["feature"], testCase.feature)
+		assert.Equal(t, testCase.matches, matches)
+		if testCase.feature != "" {
+			assert.Equal(t, testCase.feature, captures["feature"])
 		}
 	}
 }
@@ -86,40 +89,30 @@ func TestConsumerContracts(t *testing.T) {
 
 	for _, testCase := range cases {
 		matches, captures := Match(testCase.pattern, testCase.name)
-		if matches != testCase.wantMatch {
-			t.Errorf("Match(%q, %q): got match=%v, want %v (%s)", testCase.pattern, testCase.name, matches, testCase.wantMatch, testCase.description)
-		}
+		assert.Equal(t, testCase.wantMatch, matches, testCase.description)
 
 		// Check captures behavior
 		if testCase.wantMatch {
 			if testCase.wantCaptures == nil {
 				// Should not reach here - when match is true, wantCaptures should be specified
-				t.Errorf("Match(%q, %q): test case missing wantCaptures (%s)", testCase.pattern, testCase.name, testCase.description)
+				assert.NotNil(t, testCase.wantCaptures, testCase.description)
 			} else {
 				// Compare maps
 				for key, wantValue := range testCase.wantCaptures {
-					if captures[key] != wantValue {
-						t.Errorf("Match(%q, %q): captures[%q] = %q, want %q (%s)", testCase.pattern, testCase.name, key, captures[key], wantValue, testCase.description)
-					}
+					assert.Equal(t, wantValue, captures[key], testCase.description)
 				}
 				// Check no extra keys
-				if len(captures) != len(testCase.wantCaptures) {
-					t.Errorf("Match(%q, %q): captures has %d keys, want %d (%s)", testCase.pattern, testCase.name, len(captures), len(testCase.wantCaptures), testCase.description)
-				}
+				assert.Len(t, captures, len(testCase.wantCaptures), testCase.description)
 			}
 		} else {
-			if len(captures) > 0 {
-				t.Errorf("Match(%q, %q): expected no match but got captures=%v (%s)", testCase.pattern, testCase.name, captures, testCase.description)
-			}
+			assert.Empty(t, captures, testCase.description)
 		}
 	}
 }
 
 func TestPatternMatchMethod(t *testing.T) {
 	pattern, err := Compile("**/*.gd")
-	if err != nil {
-		t.Fatalf("Compile failed: %v", err)
-	}
+	require.NoError(t, err, "Compile failed")
 
 	cases := []struct {
 		name    string
@@ -132,21 +125,13 @@ func TestPatternMatchMethod(t *testing.T) {
 
 	for _, testCase := range cases {
 		matches, _ := pattern.Match(testCase.name)
-		if matches != testCase.matches {
-			t.Errorf("pattern.Match(%q) = %v, want %v", testCase.name, matches, testCase.matches)
-		}
+		assert.Equal(t, testCase.matches, matches)
 	}
 }
 
 func TestMatchAnyAndCompile(t *testing.T) {
-	if !MatchAny([]string{"a/**", "b/**"}, "b/c.gd") {
-		t.Error("MatchAny should match the second pattern")
-	}
-	if MatchAny(nil, "b/c.gd") {
-		t.Error("MatchAny on no patterns should be false")
-	}
+	assert.True(t, MatchAny([]string{"a/**", "b/**"}, "b/c.gd"), "MatchAny should match the second pattern")
+	assert.False(t, MatchAny(nil, "b/c.gd"), "MatchAny on no patterns should be false")
 	_, err := Compile("a/**")
-	if err != nil {
-		t.Errorf("Compile should succeed for valid glob pattern: %v", err)
-	}
+	assert.NoError(t, err, "Compile should succeed for valid glob pattern")
 }

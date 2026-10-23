@@ -1,8 +1,10 @@
 package lint
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // engineLoggingConfig opts in to the rule, which ships inert.
@@ -39,31 +41,23 @@ func TestNoEngineLoggingReportsEveryDefaultFunction(t *testing.T) {
 func TestNoEngineLoggingMessageAndSpan(t *testing.T) {
 	found := lintSourceWithConfig(t, engineLoggingConfig(), "no-engine-logging",
 		"func a():\n\tpush_error(\"boom\")\n")
-	if len(found) != 1 {
-		t.Fatalf("got %d diagnostics, want 1", len(found))
-	}
+	require.Len(t, found, 1)
 	want := `"push_error" writes to the engine output directly; use a logger abstraction instead`
-	if found[0].Message != want {
-		t.Fatalf("message = %q, want %q", found[0].Message, want)
-	}
+	require.Equal(t, want, found[0].Message)
 	// The span covers the callee, not the whole call, so an editor highlights
 	// the name the project has to replace.
-	if found[0].Column != 2 || found[0].EndLine != 2 || found[0].EndColumn != 12 {
-		t.Fatalf("unexpected span %+v", found[0])
-	}
+	require.Equal(t, 2, found[0].Column)
+	require.Equal(t, 2, found[0].EndLine)
+	require.Equal(t, 12, found[0].EndColumn)
 }
 
 func TestNoEngineLoggingNamesTheConfiguredLogger(t *testing.T) {
 	config := engineLoggingConfig()
 	config.NoEngineLogging.Logger = "Log"
 	found := lintSourceWithConfig(t, config, "no-engine-logging", "func a():\n\tprint(\"p\")\n")
-	if len(found) != 1 {
-		t.Fatalf("got %d diagnostics, want 1", len(found))
-	}
+	require.Len(t, found, 1)
 	want := `"print" writes to the engine output directly; use "Log" instead`
-	if found[0].Message != want {
-		t.Fatalf("message = %q, want %q", found[0].Message, want)
-	}
+	require.Equal(t, want, found[0].Message)
 }
 
 // A logger's own method may be named like the engine function it replaces. The
@@ -157,16 +151,14 @@ func TestNoEngineLoggingRejectsAMalformedFunctionName(t *testing.T) {
 		config := DefaultConfig()
 		config.NoEngineLogging.Functions = []string{name}
 		err := config.Validate()
-		if err == nil || !strings.Contains(err.Error(), "no-engine-logging") {
-			t.Errorf("Validate() with %q = %v, want a configuration error", name, err)
-		}
+		assert.Error(t, err)
+		assert.ErrorContains(t, err, "no-engine-logging")
 	}
 }
 
 func TestNoEngineLoggingDefaultsAreNotSharedBetweenConfigs(t *testing.T) {
 	first := DefaultConfig()
 	first.NoEngineLogging.Functions[0] = "replaced"
-	if second := DefaultConfig(); second.NoEngineLogging.Functions[0] == "replaced" {
-		t.Fatal("DefaultConfig() shares its function list between calls")
-	}
+	second := DefaultConfig()
+	require.NotEqual(t, "replaced", second.NoEngineLogging.Functions[0], "DefaultConfig() shares its function list between calls")
 }

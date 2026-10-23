@@ -1,8 +1,10 @@
 package lint
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // docstringConfig enables missing-docstring for the named member kinds.
@@ -162,12 +164,8 @@ enum Kind { C, D }
 func TestMissingDocstringNamesTheMemberAndItsKind(t *testing.T) {
 	found := lintSourceWithConfig(t, docstringConfig(docKindConst), "missing-docstring", `const MAX_THINGS = 3
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %d diagnostics, want 1", len(found))
-	}
-	if !strings.Contains(found[0].Message, `Constant "MAX_THINGS"`) {
-		t.Errorf("message %q does not name the constant", found[0].Message)
-	}
+	require.Len(t, found, 1)
+	assert.Contains(t, found[0].Message, `Constant "MAX_THINGS"`)
 }
 
 func TestMissingDocstringIsSuppressedByAnIgnoreComment(t *testing.T) {
@@ -177,7 +175,6 @@ func TestMissingDocstringIsSuppressedByAnIgnoreComment(t *testing.T) {
 }
 
 func TestUnknownDocstringKindIsAConfigurationError(t *testing.T) {
-	if err := docstringConfig("method").Validate(); err == nil {
-		t.Fatal("unknown member kind was accepted")
-	}
+	err := docstringConfig("method").Validate()
+	require.Error(t, err, "unknown member kind was accepted")
 }

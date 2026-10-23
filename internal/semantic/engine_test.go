@@ -2,17 +2,17 @@ package semantic
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestEngineResolvesClassesMembersAndOperators(t *testing.T) {
 	builder := NewEngineBuilder()
 	for _, builtin := range []string{"Variant", "int", "float", "Vector2", "NodePath"} {
-		if err := builder.AddBuiltin(builtin); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(builtin))
 	}
 	for _, class := range []struct {
 		name, inherits string
@@ -23,153 +23,120 @@ func TestEngineResolvesClassesMembersAndOperators(t *testing.T) {
 		{name: "Node2D", inherits: "CanvasItem"},
 		{name: "Sprite2D", inherits: "Node2D"},
 	} {
-		if err := builder.AddClass(class.name, class.inherits); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.inherits))
 	}
-	if err := builder.AddMethod("Node", "get_node", "Node", []EngineArgumentSpec{{Type: "NodePath"}}, false, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddMethod("Object", "call", "Variant", []EngineArgumentSpec{{Type: "Variant"}, {Type: "Variant", HasDefault: true}}, false, true); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddProperty("Node2D", "position", "Vector2"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddOperator("Vector2", "+", "Vector2", "Vector2"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddOperator("Vector2", "*", "float", "Vector2"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddSingleton("Engine", "Object"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddUtility("typeof", "int", []EngineArgumentSpec{{Type: "Variant"}}, false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddMethod("Node", "get_node", "Node", []EngineArgumentSpec{{Type: "NodePath"}}, false, false))
+	require.NoError(t, builder.AddMethod("Object", "call", "Variant", []EngineArgumentSpec{{Type: "Variant"}, {Type: "Variant", HasDefault: true}}, false, true))
+	require.NoError(t, builder.AddProperty("Node2D", "position", "Vector2"))
+	require.NoError(t, builder.AddOperator("Vector2", "+", "Vector2", "Vector2"))
+	require.NoError(t, builder.AddOperator("Vector2", "*", "float", "Vector2"))
+	require.NoError(t, builder.AddSingleton("Engine", "Object"))
+	require.NoError(t, builder.AddUtility("typeof", "int", []EngineArgumentSpec{{Type: "Variant"}}, false))
 
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	got := engine.Class("Sprite2D")
 	for _, want := range []string{"Sprite2D", "Node2D", "CanvasItem", "Node", "Object"} {
-		if got.Kind() != KindClass || got.Name() != want {
-			t.Fatalf("class chain at %q = %v %q (%q)", want, got.Kind(), got.Name(), got.Reason())
-		}
+		require.Equal(t, KindClass, got.Kind())
+		require.Equal(t, want, got.Name())
 		base, ok := got.Base()
 		if want == "Object" {
-			if ok {
-				t.Fatalf("Object unexpectedly has base %q", base.Name())
-			}
+			require.False(t, ok, "Object unexpectedly has base %q", base.Name())
 			break
 		}
-		if !ok {
-			t.Fatalf("%s has no base", want)
-		}
+		require.True(t, ok, "%s has no base", want)
 		got = base
 	}
 
 	getNode, ok := engine.Method("Node", "get_node")
-	if !ok {
-		t.Fatal("Node.get_node was not indexed")
-	}
-	if getNode.Owner() != "Node" || getNode.Name() != "get_node" || getNode.ReturnType().Name() != "Node" || getNode.Static() || getNode.Vararg() {
-		t.Fatalf("Node.get_node = %#v", getNode)
-	}
+	require.True(t, ok, "Node.get_node was not indexed")
+	require.Equal(t, "Node", getNode.Owner())
+	require.Equal(t, "get_node", getNode.Name())
+	require.Equal(t, "Node", getNode.ReturnType().Name())
+	require.False(t, getNode.Static())
+	require.False(t, getNode.Vararg())
 	arguments := getNode.Arguments()
-	if len(arguments) != 1 || arguments[0].Type().Name() != "NodePath" || arguments[0].HasDefault() {
-		t.Fatalf("Node.get_node arguments = %#v", arguments)
-	}
+	require.Len(t, arguments, 1)
+	require.Equal(t, "NodePath", arguments[0].Type().Name())
+	require.False(t, arguments[0].HasDefault())
 
 	call, ok := engine.Method("Object", "call")
-	if !ok || call.ReturnType().Kind() != KindVariant || !call.Vararg() || len(call.Arguments()) != 2 || !call.Arguments()[1].HasDefault() {
-		t.Fatalf("Object.call = %#v, %t", call, ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, KindVariant, call.ReturnType().Kind())
+	require.True(t, call.Vararg())
+	require.Len(t, call.Arguments(), 2)
+	require.True(t, call.Arguments()[1].HasDefault())
 	position, ok := engine.Property("Node2D", "position")
-	if !ok || position.Owner() != "Node2D" || position.Name() != "position" || position.Type().Name() != "Vector2" {
-		t.Fatalf("Node2D.position = %#v, %t", position, ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, "Node2D", position.Owner())
+	require.Equal(t, "position", position.Name())
+	require.Equal(t, "Vector2", position.Type().Name())
 	for _, operator := range []struct {
 		name, right string
 	}{{name: "+", right: "Vector2"}, {name: "*", right: "float"}} {
 		result, ok := engine.Operator("Vector2", operator.name, operator.right)
-		if !ok || result.Name() != "Vector2" {
-			t.Errorf("Vector2 %s %s = %q, %t", operator.name, operator.right, result.Name(), ok)
-		}
+		assert.True(t, ok)
+		assert.Equal(t, "Vector2", result.Name())
 	}
-	if singleton, ok := engine.Singleton("Engine"); !ok || singleton.Name() != "Object" {
-		t.Errorf("Engine singleton = %q, %t", singleton.Name(), ok)
-	}
-	if utility, ok := engine.Utility("typeof"); !ok || utility.ReturnType().Name() != "int" {
-		t.Errorf("typeof = %#v, %t", utility, ok)
-	}
+	singleton, ok := engine.Singleton("Engine")
+	assert.True(t, ok)
+	assert.Equal(t, "Object", singleton.Name())
+	utility, ok := engine.Utility("typeof")
+	assert.True(t, ok)
+	assert.Equal(t, "int", utility.ReturnType().Name())
 }
 
 func TestEngineMissingTypesAreReasonedUnknowns(t *testing.T) {
 	builder := NewEngineBuilder()
-	if err := builder.AddClass("Object", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddClass("Broken", "MissingBase"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddMethod("Object", "mystery", "MissingReturn", []EngineArgumentSpec{{Type: "MissingArgument"}}, false, false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddClass("Object", ""))
+	require.NoError(t, builder.AddClass("Broken", "MissingBase"))
+	require.NoError(t, builder.AddMethod("Object", "mystery", "MissingReturn", []EngineArgumentSpec{{Type: "MissingArgument"}}, false, false))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	for name, got := range map[string]Type{
+	for _, got := range map[string]Type{
 		"class": engine.Class("MissingClass"),
 		"type":  engine.ResolveType("MissingType"),
 	} {
-		if got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "Missing") {
-			t.Errorf("missing %s = kind %v reason %q", name, got.Kind(), got.Reason())
-		}
+		assert.Equal(t, KindUnknown, got.Kind())
+		assert.Contains(t, got.Reason(), "Missing")
 	}
 	brokenBase, ok := engine.Class("Broken").Base()
-	if !ok || brokenBase.Kind() != KindUnknown || !strings.Contains(brokenBase.Reason(), "MissingBase") {
-		t.Fatalf("Broken base = kind %v reason %q, %t", brokenBase.Kind(), brokenBase.Reason(), ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, KindUnknown, brokenBase.Kind())
+	require.Contains(t, brokenBase.Reason(), "MissingBase")
 	mystery, ok := engine.Method("Object", "mystery")
-	if !ok || mystery.ReturnType().Kind() != KindUnknown || !strings.Contains(mystery.ReturnType().Reason(), "MissingReturn") {
-		t.Fatalf("mystery return = %#v, %t", mystery, ok)
-	}
-	if argument := mystery.Arguments()[0].Type(); argument.Kind() != KindUnknown || !strings.Contains(argument.Reason(), "MissingArgument") {
-		t.Fatalf("mystery argument = kind %v reason %q", argument.Kind(), argument.Reason())
-	}
+	require.True(t, ok)
+	require.Equal(t, KindUnknown, mystery.ReturnType().Kind())
+	require.Contains(t, mystery.ReturnType().Reason(), "MissingReturn")
+	argument := mystery.Arguments()[0].Type()
+	require.Equal(t, KindUnknown, argument.Kind())
+	require.Contains(t, argument.Reason(), "MissingArgument")
 }
 
 func TestEngineResolvesContainerAndEnumSpellings(t *testing.T) {
 	builder := NewEngineBuilder()
 	for _, builtin := range []string{"Array", "Dictionary", "Callable", "Signal", "String", "int"} {
-		if err := builder.AddBuiltin(builtin); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(builtin))
 	}
-	if err := builder.AddClass("Object", ""); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddClass("Object", ""))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	array := engine.ResolveType("typedarray::Object")
-	if element, ok := array.Element(); array.Kind() != KindArray || !ok || element.Name() != "Object" {
-		t.Fatalf("typed array = kind %v element %q, %t", array.Kind(), element.Name(), ok)
-	}
+	element, ok := array.Element()
+	require.Equal(t, KindArray, array.Kind())
+	require.True(t, ok)
+	require.Equal(t, "Object", element.Name())
 	dictionary := engine.ResolveType("typeddictionary::int;String")
 	key, keyOK := dictionary.Key()
 	value, valueOK := dictionary.Value()
-	if dictionary.Kind() != KindDictionary || !keyOK || !valueOK || key.Name() != "int" || value.Name() != "String" {
-		t.Fatalf("typed dictionary = kind %v key %q/%t value %q/%t", dictionary.Kind(), key.Name(), keyOK, value.Name(), valueOK)
-	}
+	require.Equal(t, KindDictionary, dictionary.Kind())
+	require.True(t, keyOK)
+	require.True(t, valueOK)
+	require.Equal(t, "int", key.Name())
+	require.Equal(t, "String", value.Name())
 	for spelling, want := range map[string]struct {
 		kind Kind
 		name string
@@ -184,37 +151,37 @@ func TestEngineResolvesContainerAndEnumSpellings(t *testing.T) {
 	} {
 		resolved := engine.ResolveType(spelling)
 		element, ok := resolved.Element()
-		if resolved.Kind() != KindArray || !ok || element.Kind() != want.kind || (want.name != "" && element.Name() != want.name) {
-			t.Errorf("%s = kind %v element %v %q, %t", spelling, resolved.Kind(), element.Kind(), element.Name(), ok)
+		assert.Equal(t, KindArray, resolved.Kind())
+		assert.True(t, ok)
+		assert.Equal(t, want.kind, element.Kind())
+		if want.name != "" {
+			assert.Equal(t, want.name, element.Name())
 		}
 	}
 	nested := engine.ResolveType("typedarray::typeddictionary::int;String")
 	nestedDictionary, ok := nested.Element()
-	if !ok {
-		t.Fatal("nested typed dictionary has no array element")
-	}
+	require.True(t, ok, "nested typed dictionary has no array element")
 	nestedKey, keyOK := nestedDictionary.Key()
 	nestedValue, valueOK := nestedDictionary.Value()
-	if !keyOK || !valueOK || nestedKey.Name() != "int" || nestedValue.Name() != "String" {
-		t.Fatalf("nested typed dictionary = key %q/%t value %q/%t", nestedKey.Name(), keyOK, nestedValue.Name(), valueOK)
-	}
+	require.True(t, keyOK)
+	require.True(t, valueOK)
+	require.Equal(t, "int", nestedKey.Name())
+	require.Equal(t, "String", nestedValue.Name())
 	for _, spelling := range []string{"enum::Object.Mode", "bitfield::Object.Flags"} {
-		if got := engine.ResolveType(spelling); got.Kind() != KindEnum || got.Name() != strings.SplitN(spelling, "::", 2)[1] {
-			t.Errorf("%s = kind %v name %q", spelling, got.Kind(), got.Name())
-		}
+		got := engine.ResolveType(spelling)
+		assert.Equal(t, KindEnum, got.Kind())
+		assert.Equal(t, strings.SplitN(spelling, "::", 2)[1], got.Name())
 	}
-	if got := engine.ResolveType("enum::Error"); got.Kind() != KindEnum || got.Name() != "Error" {
-		t.Errorf("global enum = kind %v name %q", got.Kind(), got.Name())
-	}
+	got := engine.ResolveType("enum::Error")
+	assert.Equal(t, KindEnum, got.Kind())
+	assert.Equal(t, "Error", got.Name())
 	for _, spelling := range []string{"enum::Missing.Mode", "bitfield::Missing.Flags"} {
 		got := engine.ResolveType(spelling)
-		if got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "Missing") {
-			t.Errorf("%s = kind %v reason %q", spelling, got.Kind(), got.Reason())
-		}
+		assert.Equal(t, KindUnknown, got.Kind())
+		assert.Contains(t, got.Reason(), "Missing")
 	}
-	if engine.ResolveType("Callable").Kind() != KindCallable || engine.ResolveType("Signal").Kind() != KindSignal {
-		t.Error("Callable or Signal did not use its dedicated semantic kind")
-	}
+	assert.Equal(t, KindCallable, engine.ResolveType("Callable").Kind())
+	assert.Equal(t, KindSignal, engine.ResolveType("Signal").Kind())
 }
 
 // Godot's real producer feeds typedarray:: with PropertyInfo.hint_string at
@@ -229,38 +196,31 @@ func TestEngineResolvesEveryGodotVariantTypedArrayHint(t *testing.T) {
 		"PackedFloat32Array", "PackedFloat64Array", "PackedStringArray", "PackedVector2Array", "PackedVector3Array",
 		"PackedColorArray", "PackedVector4Array",
 	}
-	if !reflect.DeepEqual(godotVariantTypeNames, wantNames) {
-		t.Fatalf("Godot Variant::Type mapping = %#v", godotVariantTypeNames)
-	}
+	require.Equal(t, wantNames, godotVariantTypeNames)
 	builder := NewEngineBuilder()
-	if err := builder.AddClass("Object", ""); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddClass("Object", ""))
 	for _, name := range wantNames {
 		if name == "Variant" || name == "Object" {
 			continue
 		}
-		if err := builder.AddBuiltin(name); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(name))
 	}
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for code, want := range wantNames {
 		array := engine.ResolveType(fmt.Sprintf("typedarray::%d/0:", code))
 		element, ok := array.Element()
 		expected := engine.ResolveType(want)
-		if array.Kind() != KindArray || !ok || element.Kind() != expected.Kind() || element.Name() != expected.Name() {
-			t.Errorf("Variant::Type %d = array %v element %v %q, %t; want %v %q", code, array.Kind(), element.Kind(), element.Name(), ok, expected.Kind(), expected.Name())
-		}
+		assert.Equal(t, KindArray, array.Kind())
+		assert.True(t, ok)
+		assert.Equal(t, expected.Kind(), element.Kind())
+		assert.Equal(t, expected.Name(), element.Name())
 	}
 	malformed := engine.ResolveType("typedarray::999/0:")
 	element, ok := malformed.Element()
-	if !ok || element.Kind() != KindUnknown || !strings.Contains(element.Reason(), "999/0:") {
-		t.Fatalf("out-of-range Variant::Type = element %v reason %q, %t", element.Kind(), element.Reason(), ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, KindUnknown, element.Kind())
+	require.Contains(t, element.Reason(), "999/0:")
 }
 
 func TestEngineTypeNestingLimitCoversEveryConsumer(t *testing.T) {
@@ -294,12 +254,10 @@ func TestEngineTypeNestingLimitCoversEveryConsumer(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if err := test.add(NewEngineBuilder(), atLimit); err != nil {
-				t.Fatalf("at limit: %v", err)
-			}
-			if err := test.add(NewEngineBuilder(), tooDeep); err == nil || !strings.Contains(err.Error(), "nesting exceeds") {
-				t.Fatalf("over limit: %v", err)
-			}
+			require.NoError(t, test.add(NewEngineBuilder(), atLimit), "at limit")
+			err := test.add(NewEngineBuilder(), tooDeep)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "nesting exceeds")
 		})
 	}
 }
@@ -327,37 +285,28 @@ func TestEngineTypeNestingLimitCoversEveryRecursiveContainerBranch(t *testing.T)
 	}
 	for name, spellings := range tests {
 		t.Run(name, func(t *testing.T) {
-			if err := engineTypeSpelling("test", spellings.atLimit); err != nil {
-				t.Fatalf("at limit: %v", err)
-			}
-			if err := engineTypeSpelling("test", spellings.overLimit); err == nil || !strings.Contains(err.Error(), "nesting exceeds") {
-				t.Fatalf("engineTypeSpelling() = %v", err)
-			}
+			require.NoError(t, engineTypeSpelling("test", spellings.atLimit), "at limit")
+			err := engineTypeSpelling("test", spellings.overLimit)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "nesting exceeds")
 		})
 	}
 }
 
 func TestEngineTypeResolutionIsBoundedWhenCalledDirectly(t *testing.T) {
 	builder := NewEngineBuilder()
-	if err := builder.AddBuiltin("Array"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddBuiltin("Array"))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	resolved := engine.ResolveType(strings.Repeat("typedarray::", EngineTypeNestingLimit+1) + "int")
 	for depth := 0; depth < EngineTypeNestingLimit; depth++ {
 		var ok bool
 		resolved, ok = resolved.Element()
-		if !ok {
-			t.Fatalf("container depth %d is not an array", depth)
-		}
+		require.True(t, ok, "container depth %d is not an array", depth)
 	}
-	if resolved.Kind() != KindUnknown || !strings.Contains(resolved.Reason(), "nesting exceeds") {
-		t.Fatalf("bounded leaf = kind %v reason %q", resolved.Kind(), resolved.Reason())
-	}
+	require.Equal(t, KindUnknown, resolved.Kind())
+	require.Contains(t, resolved.Reason(), "nesting exceeds")
 }
 
 func TestEngineRejectsEveryDuplicateIdentity(t *testing.T) {
@@ -376,185 +325,122 @@ func TestEngineRejectsEveryDuplicateIdentity(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			builder := NewEngineBuilder()
-			if err := builder.AddBuiltin("int"); err != nil {
-				t.Fatal(err)
-			}
-			if err := builder.AddClass("Object", ""); err != nil {
-				t.Fatal(err)
-			}
-			if err := builder.AddMethod("Object", "f", "int", nil, false, false); err != nil {
-				t.Fatal(err)
-			}
-			if err := builder.AddProperty("Object", "value", "int"); err != nil {
-				t.Fatal(err)
-			}
-			if err := builder.AddOperator("int", "+", "int", "int"); err != nil {
-				t.Fatal(err)
-			}
-			if err := builder.AddSingleton("Engine", "Object"); err != nil {
-				t.Fatal(err)
-			}
-			if err := builder.AddUtility("typeof", "int", nil, false); err != nil {
-				t.Fatal(err)
-			}
-			if err := test.add(builder); err == nil || !strings.Contains(err.Error(), "duplicate") {
-				t.Fatalf("duplicate %s = %v", test.name, err)
-			}
+			require.NoError(t, builder.AddBuiltin("int"))
+			require.NoError(t, builder.AddClass("Object", ""))
+			require.NoError(t, builder.AddMethod("Object", "f", "int", nil, false, false))
+			require.NoError(t, builder.AddProperty("Object", "value", "int"))
+			require.NoError(t, builder.AddOperator("int", "+", "int", "int"))
+			require.NoError(t, builder.AddSingleton("Engine", "Object"))
+			require.NoError(t, builder.AddUtility("typeof", "int", nil, false))
+			err := test.add(builder)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "duplicate")
 		})
 	}
 }
 
 func TestEngineAddVirtualValidatesAndPublishes(t *testing.T) {
 	builder := NewEngineBuilder()
-	if err := builder.AddBuiltin("int"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddClass("Object", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddMethod("Object", "f", "int", nil, false, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddVirtual("Object", "missing"); err == nil || !strings.Contains(err.Error(), "unknown method") {
-		t.Fatalf("virtual on unknown method = %v", err)
-	}
-	if err := builder.AddVirtual("Object", "f"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddVirtual("Object", "f"); err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Fatalf("duplicate virtual = %v", err)
-	}
+	require.NoError(t, builder.AddBuiltin("int"))
+	require.NoError(t, builder.AddClass("Object", ""))
+	require.NoError(t, builder.AddMethod("Object", "f", "int", nil, false, false))
+	err := builder.AddVirtual("Object", "missing")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown method")
+	require.NoError(t, builder.AddVirtual("Object", "f"))
+	err = builder.AddVirtual("Object", "f")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duplicate")
 
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !engine.VirtualMethod("Object", "f") {
-		t.Error("Object.f is not recorded virtual")
-	}
-	if engine.VirtualMethod("Object", "missing") {
-		t.Error("Object.missing is wrongly recorded virtual")
-	}
+	require.NoError(t, err)
+	assert.True(t, engine.VirtualMethod("Object", "f"), "Object.f is not recorded virtual")
+	assert.False(t, engine.VirtualMethod("Object", "missing"), "Object.missing is wrongly recorded virtual")
 }
 
 func TestEnginePublishesOnlyExplicitBuiltinConstructors(t *testing.T) {
 	builder := NewEngineBuilder()
 	for _, name := range []string{"Vector2", "Array", "KnownButNotConstructible", "FutureValue"} {
-		if err := builder.AddBuiltin(name); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(name))
 	}
 	for _, name := range []string{"Vector2", "Array", "FutureValue"} {
-		if err := builder.AddBuiltinConstructor(name); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltinConstructor(name))
 	}
-	if err := builder.AddBuiltinConstructor("Vector2"); err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Fatalf("duplicate constructor eligibility = %v", err)
-	}
-	if err := builder.AddBuiltinConstructor("Missing"); err == nil || !strings.Contains(err.Error(), "unknown builtin") {
-		t.Fatalf("missing builtin constructor eligibility = %v", err)
-	}
+	err := builder.AddBuiltinConstructor("Vector2")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duplicate")
+	err = builder.AddBuiltinConstructor("Missing")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown builtin")
 
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for _, name := range []string{"Vector2", "Array", "FutureValue"} {
 		got, ok := engine.builtinConstructor(name)
 		want := engine.ResolveType(name)
-		if !ok || !got.Equal(want) || got.Kind() == KindUnknown {
-			t.Errorf("builtin constructor %q = %s/%t, want canonical %s", name, got, ok, want)
-		}
+		assert.True(t, ok)
+		assert.True(t, got.Equal(want))
+		assert.NotEqual(t, KindUnknown, got.Kind())
 	}
-	if got, ok := engine.builtinConstructor("KnownButNotConstructible"); ok || got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("non-constructible builtin = %s/%t (%q), want reasoned Unknown miss", got, ok, got.Reason())
-	}
+	got, ok := engine.builtinConstructor("KnownButNotConstructible")
+	require.False(t, ok)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
 
-	if err := builder.AddBuiltinConstructor("KnownButNotConstructible"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddBuiltinConstructor("KnownButNotConstructible"))
 	newer, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := engine.builtinConstructor("KnownButNotConstructible"); ok {
-		t.Fatal("builder mutation changed an already published Engine")
-	}
-	if got, ok := newer.builtinConstructor("KnownButNotConstructible"); !ok || !got.Equal(newer.ResolveType("KnownButNotConstructible")) {
-		t.Fatalf("new Engine constructor = %s/%t", got, ok)
-	}
+	require.NoError(t, err)
+	_, ok = engine.builtinConstructor("KnownButNotConstructible")
+	require.False(t, ok, "builder mutation changed an already published Engine")
+	got, ok = newer.builtinConstructor("KnownButNotConstructible")
+	require.True(t, ok)
+	require.True(t, got.Equal(newer.ResolveType("KnownButNotConstructible")))
 
 	otherBuilder := NewEngineBuilder()
-	if err := otherBuilder.AddBuiltin("Vector2"); err != nil {
-		t.Fatal(err)
-	}
-	if err := otherBuilder.AddBuiltinConstructor("Vector2"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, otherBuilder.AddBuiltin("Vector2"))
+	require.NoError(t, otherBuilder.AddBuiltinConstructor("Vector2"))
 	other, err := otherBuilder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if engine == other {
-		t.Fatal("separately built Engines share identity")
-	}
-	if got, ok := other.builtinConstructor("Vector2"); !ok || !got.Equal(other.ResolveType("Vector2")) {
-		t.Fatalf("other Engine constructor = %s/%t", got, ok)
-	}
+	require.NoError(t, err)
+	require.False(t, engine == other, "separately built Engines share identity")
+	got, ok = other.builtinConstructor("Vector2")
+	require.True(t, ok)
+	require.True(t, got.Equal(other.ResolveType("Vector2")))
 }
 
 func TestEngineBuiltinConstructorRequiresBuiltinBeforeEligibility(t *testing.T) {
 	builder := NewEngineBuilder()
 	for _, name := range []string{"", " Vector2", "Vector2 "} {
-		if err := builder.AddBuiltinConstructor(name); err == nil {
-			t.Errorf("AddBuiltinConstructor(%q) unexpectedly succeeded", name)
-		}
+		assert.Error(t, builder.AddBuiltinConstructor(name))
 	}
-	if err := builder.AddClass("Vector2", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddBuiltinConstructor("Vector2"); err == nil || !strings.Contains(err.Error(), "unknown builtin") {
-		t.Fatalf("class constructor eligibility = %v", err)
-	}
+	require.NoError(t, builder.AddClass("Vector2", ""))
+	err := builder.AddBuiltinConstructor("Vector2")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown builtin")
 }
 
 func TestEngineReturnedArgumentsCannotMutateTheIndex(t *testing.T) {
 	builder := NewEngineBuilder()
-	if err := builder.AddBuiltin("int"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddClass("Object", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddMethod("Object", "f", "int", []EngineArgumentSpec{{Type: "int"}}, false, false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddBuiltin("int"))
+	require.NoError(t, builder.AddClass("Object", ""))
+	require.NoError(t, builder.AddMethod("Object", "f", "int", []EngineArgumentSpec{{Type: "int"}}, false, false))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	method, _ := engine.Method("Object", "f")
 	arguments := method.Arguments()
 	arguments[0] = EngineArgument{}
 	again, _ := engine.Method("Object", "f")
-	if got := again.Arguments()[0].Type(); got.Name() != "int" {
-		t.Fatalf("mutated stored argument to kind %v name %q", got.Kind(), got.Name())
-	}
+	got := again.Arguments()[0].Type()
+	require.Equal(t, "int", got.Name())
 }
 
 func TestEngineRejectsInheritanceCyclesBeforePublication(t *testing.T) {
 	builder := NewEngineBuilder()
-	if err := builder.AddClass("A", "B"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddClass("B", "A"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddClass("A", "B"))
+	require.NoError(t, builder.AddClass("B", "A"))
 	engine, err := builder.Build()
-	if err == nil || engine != nil || !strings.Contains(err.Error(), "inheritance cycle") {
-		t.Fatalf("Build() = %+v, %v", engine, err)
-	}
+	require.Error(t, err)
+	require.Nil(t, engine)
+	require.Contains(t, err.Error(), "inheritance cycle")
 }
 
 func TestEngineInheritanceDepthLimitBoundary(t *testing.T) {
@@ -564,45 +450,36 @@ func TestEngineInheritanceDepthLimitBoundary(t *testing.T) {
 		parent := ""
 		for index := 0; index < count; index++ {
 			name := fmt.Sprintf("Class%04d", index)
-			if err := builder.AddClass(name, parent); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, builder.AddClass(name, parent))
 			parent = name
 		}
 		return builder.Build()
 	}
 
 	engine, err := buildChain(t, EngineInheritanceDepthLimit)
-	if err != nil || engine == nil {
-		t.Fatalf("at limit = %+v, %v", engine, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, engine)
 	resolved := engine.Class(fmt.Sprintf("Class%04d", EngineInheritanceDepthLimit-1))
 	for depth := 1; depth < EngineInheritanceDepthLimit; depth++ {
 		var ok bool
 		resolved, ok = resolved.Base()
-		if !ok {
-			t.Fatalf("class chain ended at depth %d", depth)
-		}
+		require.True(t, ok, "class chain ended at depth %d", depth)
 	}
-	if _, ok := resolved.Base(); ok {
-		t.Fatal("class chain exceeded the configured boundary")
-	}
+	_, ok := resolved.Base()
+	require.False(t, ok, "class chain exceeded the configured boundary")
 
 	engine, err = buildChain(t, EngineInheritanceDepthLimit+1)
-	if err == nil || engine != nil || !strings.Contains(err.Error(), "inheritance depth exceeds") {
-		t.Fatalf("over limit = %+v, %v", engine, err)
-	}
+	require.Error(t, err)
+	require.Nil(t, engine)
+	require.Contains(t, err.Error(), "inheritance depth exceeds")
 }
 
 func TestEngineInheritanceDepthDoesNotLimitTotalClasses(t *testing.T) {
 	builder := NewEngineBuilder()
 	for index := 0; index < EngineInheritanceDepthLimit+1; index++ {
-		if err := builder.AddClass(fmt.Sprintf("Root%04d", index), ""); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(fmt.Sprintf("Root%04d", index), ""))
 	}
 	engine, err := builder.Build()
-	if err != nil || engine == nil {
-		t.Fatalf("Build() = %+v, %v", engine, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, engine)
 }

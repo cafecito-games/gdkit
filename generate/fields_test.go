@@ -1,11 +1,12 @@
 package generate
 
 import (
-	"slices"
 	"testing"
 
 	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdparser"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSelectFieldsTakesInstanceVarsInOrder(t *testing.T) {
@@ -24,56 +25,44 @@ func TestSelectFieldsTakesInstanceVarsInOrder(t *testing.T) {
 		got = append(got, field.Name)
 	}
 	want := []string{"q", "name", "computed"}
-	if !slices.Equal(got, want) {
-		t.Errorf("fields = %v, want %v", got, want)
-	}
+	assert.Equal(t, want, got)
 }
 
 func TestSelectFieldsRecordsTheDeclaredType(t *testing.T) {
 	fields := selectFieldsOf(t, "var q: int\nvar r := 0\nvar s\n")
-	if len(fields) != 3 {
-		t.Fatalf("fields = %+v, want three", fields)
-	}
-	if fields[0].Type != "int" || fields[0].Inferred {
-		t.Errorf("q = %+v, want type int", fields[0])
-	}
+	require.Len(t, fields, 3)
+	assert.Equal(t, "int", fields[0].Type)
+	assert.False(t, fields[0].Inferred)
 	// ":=" is static typing as far as Godot is concerned, but the inferred
 	// type is not in the tree, so only the flag is recorded. deep_equals
 	// depends on the distinction.
-	if fields[1].Type != "" || !fields[1].Inferred {
-		t.Errorf("r = %+v, want inferred with no type", fields[1])
-	}
-	if fields[2].Type != "" || fields[2].Inferred {
-		t.Errorf("s = %+v, want untyped", fields[2])
-	}
+	assert.Empty(t, fields[1].Type)
+	assert.True(t, fields[1].Inferred)
+	assert.Empty(t, fields[2].Type)
+	assert.False(t, fields[2].Inferred)
 }
 
 func TestSelectFieldsSkipsVarsInsideTheRegion(t *testing.T) {
 	source := "var q: int\n\n# gdkit:generated:begin\nvar leaked: int\n# gdkit:generated:end\n"
 	fields := selectFieldsOf(t, source)
-	if len(fields) != 1 || fields[0].Name != "q" {
-		t.Errorf("fields = %+v, want only q", fields)
-	}
+	require.Len(t, fields, 1)
+	assert.Equal(t, "q", fields[0].Name)
 }
 
 func TestSelectFieldsRecordsTheLine(t *testing.T) {
 	fields := selectFieldsOf(t, "class_name Hex\nextends RefCounted\n\nvar q: int\nvar r: int\n")
-	if len(fields) != 2 || fields[0].Line != 4 || fields[1].Line != 5 {
-		t.Errorf("fields = %+v, want lines 4 and 5", fields)
-	}
+	require.Len(t, fields, 2)
+	assert.Equal(t, 4, fields[0].Line)
+	assert.Equal(t, 5, fields[1].Line)
 }
 
 func selectFieldsOf(t *testing.T, source string) []Field {
 	t.Helper()
 	file, err := gdparser.Parse([]byte(source))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	script := &project.Script{Path: "a.gd", Source: []byte(source), File: file, Lines: lineStartsOf(source)}
 	span, _, err := FindRegion([]byte(source))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return SelectFields(file.Statements, script, span)
 }
 

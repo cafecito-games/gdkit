@@ -5,33 +5,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
-	"strings"
 	"testing"
 
 	"github.com/cafecito-games/gdkit/internal/semantic"
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTrailingWhitespaceIsReportedAtTheFirstOffendingColumn(t *testing.T) {
 	assertRule(t, "trailing-whitespace", "var a := 1   \nvar b := 2\nvar c := 3\t\n", 1, 3)
 
 	found := lintSource(t, "trailing-whitespace", "var a := 1   \n")
-	if found[0].Column != 11 {
-		t.Errorf("Column = %d, want 11", found[0].Column)
-	}
-	if found[0].Path != "a.gd" {
-		t.Errorf("Path = %q, want a.gd", found[0].Path)
-	}
+	assert.Equal(t, 11, found[0].Column)
+	assert.Equal(t, "a.gd", found[0].Path)
 }
 
 func TestDiagnosticStringUsesGdlintShape(t *testing.T) {
 	diagnostic := Diagnostic{Rule: "function-name", Severity: SeverityError, Message: `Function name "doThing" is not valid`, Path: "player.gd", Line: 12, Column: 6}
 	want := `player.gd:12: Error: Function name "doThing" is not valid (function-name)`
-	if got := diagnostic.String(); got != want {
-		t.Errorf("String() = %q, want %q", got, want)
-	}
+	got := diagnostic.String()
+	assert.Equal(t, want, got)
 }
 
 func TestDisabledRuleProducesNothing(t *testing.T) {
@@ -39,20 +34,14 @@ func TestDisabledRuleProducesNothing(t *testing.T) {
 	config.Disable = []string{"trailing-whitespace"}
 	report := lintProject(t, config, map[string]string{"a.gd": "var a := 1   \n"})
 	for _, diagnostic := range report.Diagnostics {
-		if diagnostic.Rule == "trailing-whitespace" {
-			t.Fatal("a disabled rule must not fire")
-		}
+		require.NotEqual(t, "trailing-whitespace", diagnostic.Rule)
 	}
 }
 
 func TestUnparseableFileReportsOnlySourceParse(t *testing.T) {
 	report := lintProject(t, DefaultConfig(), map[string]string{"a.gd": "func (   \n"})
-	if len(report.Diagnostics) != 1 {
-		t.Fatalf("want exactly one diagnostic, got %v", report.Diagnostics)
-	}
-	if report.Diagnostics[0].Rule != "source-parse" {
-		t.Errorf("Rule = %q, want source-parse", report.Diagnostics[0].Rule)
-	}
+	require.Len(t, report.Diagnostics, 1)
+	assert.Equal(t, "source-parse", report.Diagnostics[0].Rule)
 }
 
 func TestReportSortsByPathLineColumnRule(t *testing.T) {
@@ -64,17 +53,17 @@ func TestReportSortsByPathLineColumnRule(t *testing.T) {
 	for _, diagnostic := range report.Diagnostics {
 		order = append(order, diagnostic.Path)
 	}
-	if len(order) < 3 || order[0] != "a.gd" || order[1] != "a.gd" || order[2] != "b.gd" {
-		t.Errorf("unsorted: %v", order)
-	}
+	require.Len(t, order, 3)
+	assert.Equal(t, "a.gd", order[0])
+	assert.Equal(t, "a.gd", order[1])
+	assert.Equal(t, "b.gd", order[2])
 }
 
 func TestNewRejectsAnUncompilableNamePattern(t *testing.T) {
 	config := DefaultConfig()
 	config.FunctionName = "([a-z"
-	if _, err := New(config); err == nil {
-		t.Error("New must reject an invalid regex")
-	}
+	_, err := New(config)
+	assert.Error(t, err)
 }
 
 // fakeRule reports a fixed diagnostic set, deliberately pre-filled with wrong
@@ -93,17 +82,11 @@ func (r fakeRule) Check(*Context, *project.Script) []Diagnostic { return r.diagn
 func lintWithRules(t *testing.T, config Config, rules ...Rule) Report {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "a.gd"), []byte("var a := 1\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.gd"), []byte("var a := 1\n"), 0o644))
 	linter, err := newLinter(config, rules)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	snapshot, err := project.Load(lintLoadConfig(root, config, linter))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return linter.Lint(snapshot)
 }
 
@@ -112,13 +95,11 @@ func TestDriverStampsRulePathAndSeverity(t *testing.T) {
 		Rule: "wrong", Path: "wrong.gd", Severity: SeverityWarning, Message: "m", Line: 1, Column: 1,
 	}}}
 	report := lintWithRules(t, DefaultConfig(), rule)
-	if len(report.Diagnostics) != 1 {
-		t.Fatalf("got %v", report.Diagnostics)
-	}
+	require.Len(t, report.Diagnostics, 1)
 	got := report.Diagnostics[0]
-	if got.Rule != "max-line-length" || got.Path != "a.gd" || got.Severity != SeverityError {
-		t.Errorf("not stamped: %+v", got)
-	}
+	assert.Equal(t, "max-line-length", got.Rule)
+	assert.Equal(t, "a.gd", got.Path)
+	assert.Equal(t, SeverityError, got.Severity)
 }
 
 func TestSemanticAnalyzerConstructionFollowsEnabledCollectionCapability(t *testing.T) {
@@ -182,9 +163,7 @@ func TestSemanticAnalyzerConstructionFollowsEnabledCollectionCapability(t *testi
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			linter, err := newLinter(test.config, test.rules)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			original := linter.newSemanticAnalyzer
 			constructed := 0
 			linter.newSemanticAnalyzer = func(snapshot *project.Snapshot, engine *semantic.Engine) *semantic.Analyzer {
@@ -196,12 +175,8 @@ func TestSemanticAnalyzerConstructionFollowsEnabledCollectionCapability(t *testi
 				"second.gd": "var second := [2]\n",
 			})
 			report := linter.Lint(snapshot)
-			if constructed != test.wantConstruct {
-				t.Fatalf("analyzer constructions = %d, want %d", constructed, test.wantConstruct)
-			}
-			if (report.EngineSchema != nil) != test.wantSchema {
-				t.Fatalf("engine_schema = %+v, want present=%t", report.EngineSchema, test.wantSchema)
-			}
+			require.Equal(t, test.wantConstruct, constructed)
+			require.Equal(t, test.wantSchema, report.EngineSchema != nil)
 		})
 	}
 }
@@ -210,9 +185,7 @@ func TestSemanticAnalyzerIsRunLocalAcrossSnapshots(t *testing.T) {
 	config := DefaultConfig()
 	config.Enable = []string{ruleRequireTypedCollection}
 	linter, err := newLinter(config, []Rule{typingRule{rule: ruleRequireTypedCollection}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	first := semanticSnapshot(t, "func first() -> void:\n\tvar values := [1]\n")
 	second := semanticSnapshot(t, "func second() -> void:\n\tvar values := [\"text\"]\n")
 	original := linter.newSemanticAnalyzer
@@ -224,18 +197,16 @@ func TestSemanticAnalyzerIsRunLocalAcrossSnapshots(t *testing.T) {
 
 	firstReport := linter.Lint(first)
 	secondReport := linter.Lint(second)
-	if len(seen) != 2 || seen[0] != first || seen[1] != second {
-		t.Fatalf("analyzer snapshots = %p, want first %p then second %p", seen, first, second)
-	}
-	if linter.context.analyzer != nil {
-		t.Fatal("linter retained a snapshot-specific analyzer after Lint")
-	}
-	if got := firstReport.Diagnostics; len(got) != 1 || got[0].Message != "Array has no element type; write Array[int]" {
-		t.Fatalf("first report = %+v", got)
-	}
-	if got := secondReport.Diagnostics; len(got) != 1 || got[0].Message != "Array has no element type; write Array[String]" {
-		t.Fatalf("second report = %+v", got)
-	}
+	require.Len(t, seen, 2)
+	require.Equal(t, first, seen[0])
+	require.Equal(t, second, seen[1])
+	require.Nil(t, linter.context.analyzer)
+	got := firstReport.Diagnostics
+	require.Len(t, got, 1)
+	require.Equal(t, "Array has no element type; write Array[int]", got[0].Message)
+	got = secondReport.Diagnostics
+	require.Len(t, got, 1)
+	require.Equal(t, "Array has no element type; write Array[String]", got[0].Message)
 }
 
 func semanticSnapshot(t *testing.T, source string) *project.Snapshot {
@@ -246,14 +217,10 @@ func semanticSnapshotFiles(t *testing.T, files map[string]string) *project.Snaps
 	t.Helper()
 	root := t.TempDir()
 	for path, source := range files {
-		if err := os.WriteFile(filepath.Join(root, path), []byte(source), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(root, path), []byte(source), 0o644))
 	}
 	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: []string{"."}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return snapshot
 }
 
@@ -262,9 +229,8 @@ func TestDriverAppliesSeverityOverride(t *testing.T) {
 	config.Severity = map[string]Severity{"max-line-length": SeverityWarning}
 	rule := fakeRule{name: "max-line-length", diagnostics: []Diagnostic{{Message: "m", Line: 1, Column: 1}}}
 	report := lintWithRules(t, config, rule)
-	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Severity != SeverityWarning {
-		t.Errorf("got %+v", report.Diagnostics)
-	}
+	require.Len(t, report.Diagnostics, 1)
+	assert.Equal(t, SeverityWarning, report.Diagnostics[0].Severity)
 }
 
 func TestDriverSortsSameLineDiagnosticsByRuleName(t *testing.T) {
@@ -273,40 +239,31 @@ func TestDriverSortsSameLineDiagnosticsByRuleName(t *testing.T) {
 		fakeRule{name: "mixed-tabs-and-spaces", diagnostics: diagnostics},
 		fakeRule{name: "max-line-length", diagnostics: diagnostics},
 	)
-	if len(report.Diagnostics) != 2 ||
-		report.Diagnostics[0].Rule != "max-line-length" ||
-		report.Diagnostics[1].Rule != "mixed-tabs-and-spaces" {
-		t.Errorf("unsorted: %+v", report.Diagnostics)
-	}
+	require.Len(t, report.Diagnostics, 2)
+	assert.Equal(t, "max-line-length", report.Diagnostics[0].Rule)
+	assert.Equal(t, "mixed-tabs-and-spaces", report.Diagnostics[1].Rule)
 }
 
 func TestDriverSkipsDisabledRules(t *testing.T) {
 	config := DefaultConfig()
 	config.Disable = []string{"max-line-length"}
 	rule := fakeRule{name: "max-line-length", diagnostics: []Diagnostic{{Message: "m", Line: 1, Column: 1}}}
-	if report := lintWithRules(t, config, rule); len(report.Diagnostics) != 0 {
-		t.Errorf("got %+v", report.Diagnostics)
-	}
+	report := lintWithRules(t, config, rule)
+	assert.Empty(t, report.Diagnostics)
 }
 
 func TestEmptyReportMarshalsAsAnEmptyArray(t *testing.T) {
 	report := lintWithRules(t, DefaultConfig())
 	data, err := json.Marshal(report)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `"diagnostics":[]`) {
-		t.Errorf("got %s", data)
-	}
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"diagnostics":[]`)
 }
 
 func TestRegisterRejectsReservedNames(t *testing.T) {
 	for _, name := range []string{"source-parse", "unknown-ignore"} {
 		func() {
 			defer func() {
-				if recover() == nil {
-					t.Errorf("register(%q) must panic", name)
-				}
+				assert.NotNil(t, recover(), "register(%q) must panic", name)
 			}()
 			register(fakeRule{name: name})
 		}()
@@ -316,28 +273,22 @@ func TestRegisterRejectsReservedNames(t *testing.T) {
 func writeConfigFile(t *testing.T, root, name, contents string) {
 	t.Helper()
 	absolute := filepath.Join(root, filepath.FromSlash(name))
-	if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
+	require.NoError(t, os.WriteFile(absolute, []byte(contents), 0o644))
 }
 
 func TestLoadConfigRejectsAnInvalidNamePattern(t *testing.T) {
 	root := t.TempDir()
 	writeConfigFile(t, root, DefaultConfigPath, `{"function-name": "([a-z"}`)
-	if _, err := LoadConfig(root, ""); err == nil || !strings.Contains(err.Error(), "function-name") {
-		t.Errorf("want an error naming function-name, got %v", err)
-	}
+	_, err := LoadConfig(root, "")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "function-name")
 }
 
 func TestValidateRejectsAnEmptyNamePattern(t *testing.T) {
 	config := DefaultConfig()
 	config.SignalName = ""
-	if err := config.Validate(); err == nil {
-		t.Error("an empty pattern must be rejected")
-	}
+	assert.Error(t, config.Validate())
 }
 
 func TestValidateRejectsNegativeLimits(t *testing.T) {
@@ -352,63 +303,50 @@ func TestValidateRejectsNegativeLimits(t *testing.T) {
 	for name, mutate := range mutations {
 		config := DefaultConfig()
 		mutate(&config)
-		if err := config.Validate(); err == nil || !strings.Contains(err.Error(), name) {
-			t.Errorf("%s: want an error naming it, got %v", name, err)
-		}
+		err := config.Validate()
+		require.Error(t, err, name)
+		require.Contains(t, err.Error(), name)
 	}
 }
 
 func TestLoadConfigFallsBackToDefaultsOnlyWhenNoNameIsGiven(t *testing.T) {
 	root := t.TempDir()
 	config, err := LoadConfig(root, "")
-	if err != nil {
-		t.Fatalf("implicit default path must fall back: %v", err)
-	}
-	if config.MaxLineLength != DefaultConfig().MaxLineLength {
-		t.Error("expected defaults")
-	}
-	if _, err := LoadConfig(root, DefaultConfigPath); err == nil {
-		t.Error("an explicitly named missing config must be an error")
-	}
-	if _, err := LoadConfig(root, "other.json"); err == nil {
-		t.Error("an explicitly named missing config must be an error")
-	}
+	require.NoError(t, err, "implicit default path must fall back")
+	assert.Equal(t, DefaultConfig().MaxLineLength, config.MaxLineLength)
+	_, err = LoadConfig(root, DefaultConfigPath)
+	assert.Error(t, err)
+	_, err = LoadConfig(root, "other.json")
+	assert.Error(t, err)
 }
 
 func TestLoadConfigRejectsUnknownKeys(t *testing.T) {
 	root := t.TempDir()
 	writeConfigFile(t, root, DefaultConfigPath, `{"max-line-lenght": 80}`)
 	_, err := LoadConfig(root, "")
-	if err == nil || !strings.Contains(err.Error(), "max-line-lenght") {
-		t.Errorf("want an error naming the key, got %v", err)
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "max-line-lenght")
 }
 
 func TestLoadConfigKeepsTheDefaultGodotVersionWhenTheKeyIsOmitted(t *testing.T) {
 	root := t.TempDir()
 	writeConfigFile(t, root, DefaultConfigPath, `{"max-line-length": 80}`)
 	config, err := LoadConfig(root, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if config.GodotVersion != "4.7" {
-		t.Errorf("GodotVersion = %q, want the default \"4.7\"", config.GodotVersion)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "4.7", config.GodotVersion)
 }
 
 func TestLoadConfigRejectsAnEmptyGodotVersion(t *testing.T) {
 	root := t.TempDir()
 	writeConfigFile(t, root, DefaultConfigPath, `{"godot_version": ""}`)
 	_, err := LoadConfig(root, "")
-	if err == nil || !strings.Contains(err.Error(), "godot_version") {
-		t.Errorf("want an error naming godot_version, got %v", err)
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "godot_version")
 }
 
 func TestLintSourceFailsOnUnparseableFixture(t *testing.T) {
-	if got := lintSource(t, "source-parse", "func (   \n"); len(got) != 1 {
-		t.Errorf("asking for source-parse must still work, got %v", got)
-	}
+	got := lintSource(t, "source-parse", "func (   \n")
+	assert.Len(t, got, 1)
 }
 
 func TestSourceParseReportsThePositionOfTheFailure(t *testing.T) {
@@ -423,12 +361,10 @@ func TestSourceParseReportsThePositionOfTheFailure(t *testing.T) {
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
 			got := lintSource(t, "source-parse", testCase.source)
-			if len(got) != 1 {
-				t.Fatalf("got %v, want one diagnostic", got)
-			}
-			if got[0].Line != testCase.line || got[0].Column != testCase.column || got[0].Message != testCase.message {
-				t.Fatalf("got %d:%d %q, want %d:%d %q", got[0].Line, got[0].Column, got[0].Message, testCase.line, testCase.column, testCase.message)
-			}
+			require.Len(t, got, 1)
+			require.Equal(t, testCase.line, got[0].Line)
+			require.Equal(t, testCase.column, got[0].Column)
+			require.Equal(t, testCase.message, got[0].Message)
 		})
 	}
 }
@@ -475,12 +411,9 @@ func TestNeedsSemanticAnalysisFollowsTheResolvedEnabledRules(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			linter, err := newLinter(test.config, test.rules)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := linter.NeedsSemanticAnalysis(); got != test.want {
-				t.Fatalf("NeedsSemanticAnalysis() = %t, want %t", got, test.want)
-			}
+			require.NoError(t, err)
+			got := linter.NeedsSemanticAnalysis()
+			require.Equal(t, test.want, got)
 			// The capability the load boundary reads and the one Lint acts on
 			// must be the same decision, not two caches that can drift.
 			original := linter.newSemanticAnalyzer
@@ -494,9 +427,7 @@ func TestNeedsSemanticAnalysisFollowsTheResolvedEnabledRules(t *testing.T) {
 			if test.want {
 				want = 1
 			}
-			if constructed != want {
-				t.Fatalf("analyzer constructions = %d, want %d for capability %t", constructed, want, test.want)
-			}
+			require.Equal(t, want, constructed)
 		})
 	}
 }
@@ -512,17 +443,11 @@ func TestLintReportsOnlyOnSelectedScripts(t *testing.T) {
 
 	// The excluded scripts are dependencies: walked, parsed, and indexed.
 	for _, path := range []string{"generated/gen.gd", "generated/broken.gd"} {
-		if snapshot.Scripts[path] == nil {
-			t.Fatalf("Paths = %v, want excluded dependency %s", snapshot.Paths, path)
-		}
+		require.NotNil(t, snapshot.Scripts[path])
 	}
-	if !slices.Equal(snapshot.Selected, []string{"a.gd"}) {
-		t.Fatalf("Selected = %v, want [a.gd]", snapshot.Selected)
-	}
+	require.Equal(t, []string{"a.gd"}, snapshot.Selected)
 	for _, diagnostic := range report.Diagnostics {
-		if diagnostic.Path != "a.gd" {
-			t.Errorf("diagnostic for unselected path: %+v", diagnostic)
-		}
+		assert.Equal(t, "a.gd", diagnostic.Path)
 	}
 	// Only the selected file's own rule finding and unknown-ignore survive,
 	// which pins that the loop narrowed without going silent.
@@ -531,9 +456,7 @@ func TestLintReportsOnlyOnSelectedScripts(t *testing.T) {
 		rules = append(rules, diagnostic.Rule)
 	}
 	sort.Strings(rules)
-	if !slices.Equal(rules, []string{ruleRequireTypedCollection, "unknown-ignore"}) {
-		t.Fatalf("rules = %v, want the selected file's collection and unknown-ignore findings", rules)
-	}
+	require.Equal(t, []string{ruleRequireTypedCollection, "unknown-ignore"}, rules)
 }
 
 // protoDependency declares the class, named enum, method signature, and return
@@ -562,9 +485,7 @@ func TestSelectedScriptResolvesDeclarationsOnlyInAnExcludedDependency(t *testing
 		map[string]string{"generated/proto.gd": protoDependency, "a.gd": protoConsumer})
 	var got []string
 	for _, diagnostic := range report.Diagnostics {
-		if diagnostic.Path != "a.gd" {
-			t.Fatalf("diagnostic outside the selected file: %+v", diagnostic)
-		}
+		require.Equal(t, "a.gd", diagnostic.Path)
 		got = append(got, fmt.Sprintf("%d: %s", diagnostic.Line, diagnostic.Message))
 	}
 	want := []string{
@@ -573,9 +494,7 @@ func TestSelectedScriptResolvesDeclarationsOnlyInAnExcludedDependency(t *testing
 		"4: Array has no element type; write Array[T]",
 		"5: Array has no element type; write Array[String]",
 	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("diagnostics = %v, want %v", got, want)
-	}
+	require.Equal(t, want, got)
 }
 
 // TestUnreachableDependencyFallsBackToGenericWording is the control for the
@@ -613,9 +532,8 @@ func TestParseFailedExcludedDependencyStaysSilentEvidence(t *testing.T) {
 			"a.gd":               protoConsumer,
 		})
 	script := snapshot.Scripts["generated/proto.gd"]
-	if script == nil || script.ParseError == nil {
-		t.Fatal("the fixture dependency must be in the universe and must fail to parse")
-	}
+	require.NotNil(t, script)
+	require.NotNil(t, script.ParseError)
 	// The failure is retained as evidence, so the consumer's answers are a
 	// reasoned Unknown and the rule falls back to generic wording. Nothing is
 	// reported for the unselected path.
@@ -628,16 +546,10 @@ func TestParseFailedExcludedDependencyStaysSilentEvidence(t *testing.T) {
 func assertGenericCollectionFallback(t *testing.T, report Report) {
 	t.Helper()
 	const generic = "Array has no element type; write Array[T]"
-	if len(report.Diagnostics) != 4 {
-		t.Fatalf("diagnostics = %+v, want four generic findings", report.Diagnostics)
-	}
+	require.Len(t, report.Diagnostics, 4)
 	for index, diagnostic := range report.Diagnostics {
-		if diagnostic.Path != "a.gd" {
-			t.Fatalf("diagnostic for unexpected path: %+v", diagnostic)
-		}
-		if diagnostic.Line != index+2 || diagnostic.Message != generic {
-			t.Errorf("diagnostic %d = %d: %q, want line %d generic wording",
-				index, diagnostic.Line, diagnostic.Message, index+2)
-		}
+		require.Equal(t, "a.gd", diagnostic.Path)
+		assert.Equal(t, index+2, diagnostic.Line)
+		assert.Equal(t, generic, diagnostic.Message)
 	}
 }

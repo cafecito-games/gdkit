@@ -4,40 +4,37 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWrapCarriesTheKind(t *testing.T) {
 	wrapped := Wrap(ConfigParse, errors.New("boom"))
 	labelled, ok := Of(wrapped)
-	if !ok {
-		t.Fatal("Of() found no labelled error")
-	}
-	if labelled.Kind != ConfigParse {
-		t.Errorf("Kind = %q, want %q", labelled.Kind, ConfigParse)
-	}
-	if labelled.Path != "" || labelled.Key != "" {
-		t.Errorf("Wrap set Path or Key: %+v", labelled)
-	}
+	require.True(t, ok, "Of() found no labelled error")
+	assert.Equal(t, ConfigParse, labelled.Kind)
+	assert.Empty(t, labelled.Path)
+	assert.Empty(t, labelled.Key)
 }
 
 func TestWrapPathAndWrapKey(t *testing.T) {
 	labelled, ok := Of(WrapPath(ConfigRead, "a/b.json", errors.New("boom")))
-	if !ok || labelled.Path != "a/b.json" || labelled.Key != "" {
-		t.Fatalf("WrapPath = %+v, %v", labelled, ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, "a/b.json", labelled.Path)
+	require.Empty(t, labelled.Key)
+
 	labelled, ok = Of(WrapKey(ConfigUnknownKey, "a/b.json", "x[0].y", errors.New("boom")))
-	if !ok || labelled.Path != "a/b.json" || labelled.Key != "x[0].y" {
-		t.Fatalf("WrapKey = %+v, %v", labelled, ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, "a/b.json", labelled.Path)
+	require.Equal(t, "x[0].y", labelled.Key)
 }
 
 // The message is the wrapped error's own, so text output is unchanged by
 // labelling and the JSON message cannot drift from it.
 func TestErrorMessageIsTheWrappedMessage(t *testing.T) {
 	wrapped := Wrap(ConfigInvalid, errors.New("unclassified must be \"error\" or \"ignore\""))
-	if got, want := wrapped.Error(), `unclassified must be "error" or "ignore"`; got != want {
-		t.Errorf("Error() = %q, want %q", got, want)
-	}
+	assert.Equal(t, `unclassified must be "error" or "ignore"`, wrapped.Error())
 }
 
 // A labelled error has to survive further wrapping, because a caller between
@@ -46,33 +43,22 @@ func TestOfFindsALabelDeeperInTheChain(t *testing.T) {
 	inner := errors.New("permission denied")
 	wrapped := fmt.Errorf("read config: %w", Wrap(ConfigRead, inner))
 	labelled, ok := Of(wrapped)
-	if !ok || labelled.Kind != ConfigRead {
-		t.Fatalf("Of() = %+v, %v", labelled, ok)
-	}
-	if !errors.Is(wrapped, inner) {
-		t.Error("labelling broke the error chain")
-	}
+	require.True(t, ok)
+	require.Equal(t, ConfigRead, labelled.Kind)
+	assert.ErrorIs(t, wrapped, inner, "labelling broke the error chain")
 }
 
 func TestWrapOfNilIsNil(t *testing.T) {
-	if Wrap(ConfigRead, nil) != nil {
-		t.Error("Wrap(nil) is not nil")
-	}
-	if WrapPath(ConfigRead, "p", nil) != nil {
-		t.Error("WrapPath(nil) is not nil")
-	}
-	if WrapKey(ConfigRead, "p", "k", nil) != nil {
-		t.Error("WrapKey(nil) is not nil")
-	}
+	assert.Nil(t, Wrap(ConfigRead, nil), "Wrap(nil) is not nil")
+	assert.Nil(t, WrapPath(ConfigRead, "p", nil), "WrapPath(nil) is not nil")
+	assert.Nil(t, WrapKey(ConfigRead, "p", "k", nil), "WrapKey(nil) is not nil")
 }
 
 func TestOfAnUnlabelledError(t *testing.T) {
-	if labelled, ok := Of(errors.New("plain")); ok {
-		t.Errorf("Of() = %+v, want no label", labelled)
-	}
-	if labelled, ok := Of(nil); ok {
-		t.Errorf("Of(nil) = %+v, want no label", labelled)
-	}
+	_, ok := Of(errors.New("plain"))
+	assert.False(t, ok, "Of() found a label where none was expected")
+	_, ok = Of(nil)
+	assert.False(t, ok, "Of(nil) found a label where none was expected")
 }
 
 // Kind values appear in JSON output, so a rename breaks a consumer. This pins
@@ -92,8 +78,6 @@ func TestKindValuesAreStable(t *testing.T) {
 		OutputWrite:        "output.write",
 		FileWrite:          "file.write",
 	} {
-		if kind != want {
-			t.Errorf("kind = %q, want %q", kind, want)
-		}
+		assert.Equal(t, want, kind)
 	}
 }

@@ -2,6 +2,9 @@ package project
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // loadIdentities writes files into a temp project and loads it the way uid
@@ -11,9 +14,7 @@ func loadIdentities(t *testing.T, files map[string]string) *Snapshot {
 	root := t.TempDir()
 	writeFiles(t, root, files)
 	snapshot, err := Load(Config{Root: root, HonorIgnoreFile: true, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return snapshot
 }
 
@@ -27,9 +28,7 @@ func claimOf(t *testing.T, snapshot *Snapshot, owner string) Claim {
 			found = append(found, claim)
 		}
 	}
-	if len(found) != 1 {
-		t.Fatalf("claims for %s = %+v, want exactly one", owner, found)
-	}
+	require.Len(t, found, 1)
 	return found[0]
 }
 
@@ -56,15 +55,14 @@ func TestLoadRecordsAClaimForEveryDeclarationMechanism(t *testing.T) {
 		"theme.tres":     {"uid://eee", "theme.tres", 1, ClaimHeader},
 		"icon.png":       {"uid://fff", "icon.png.import", 4, ClaimImport},
 	}
-	if len(snapshot.Claims) != len(want) {
-		t.Fatalf("claims = %+v, want %d", snapshot.Claims, len(want))
-	}
+	require.Len(t, snapshot.Claims, len(want))
 	for owner, expected := range want {
 		claim := claimOf(t, snapshot, owner)
-		if claim.UID != expected.uid || claim.Path != expected.path ||
-			claim.Line != expected.line || claim.Kind != expected.kind || claim.Ignored {
-			t.Errorf("claim for %s = %+v, want %+v", owner, claim, expected)
-		}
+		assert.Equal(t, expected.uid, claim.UID, owner)
+		assert.Equal(t, expected.path, claim.Path, owner)
+		assert.Equal(t, expected.line, claim.Line, owner)
+		assert.Equal(t, expected.kind, claim.Kind, owner)
+		assert.False(t, claim.Ignored, owner)
 	}
 }
 
@@ -76,12 +74,11 @@ func TestLoadRecordsHeaderClaimAfterLeadingComments(t *testing.T) {
 		"commented.tscn": "; retained by Godot\n\n[gd_scene format=3 uid=\"uid://b\"]\n",
 	})
 	claim := claimOf(t, snapshot, "commented.tscn")
-	if claim.UID != "uid://b" || claim.Path != "commented.tscn" || claim.Line != 3 || claim.Kind != ClaimHeader {
-		t.Fatalf("leading-comment header claim = %+v, want uid://b at commented.tscn:3", claim)
-	}
-	if snapshot.IdentityIncomplete {
-		t.Fatal("a header after leading comments must remain complete identity evidence")
-	}
+	require.Equal(t, "uid://b", claim.UID)
+	require.Equal(t, "commented.tscn", claim.Path)
+	require.Equal(t, 3, claim.Line)
+	require.Equal(t, ClaimHeader, claim.Kind)
+	require.False(t, snapshot.IdentityIncomplete)
 }
 
 // A declaration no decoder accepts is still a declaration: uid reports on it,
@@ -92,12 +89,8 @@ func TestLoadKeepsADeclarationVerbatim(t *testing.T) {
 		"a.gd.uid":  "nonsense\n",
 		"main.tscn": "[gd_scene format=3 uid=\"uid://b_local_screen\"]\n",
 	})
-	if got := claimOf(t, snapshot, "a.gd").UID; got != "nonsense" {
-		t.Errorf("sidecar claim = %q, want it verbatim", got)
-	}
-	if got := claimOf(t, snapshot, "main.tscn").UID; got != "uid://b_local_screen" {
-		t.Errorf("header claim = %q, want it verbatim", got)
-	}
+	assert.Equal(t, "nonsense", claimOf(t, snapshot, "a.gd").UID)
+	assert.Equal(t, "uid://b_local_screen", claimOf(t, snapshot, "main.tscn").UID)
 }
 
 func TestLoadRecordsAnIgnoredClaimAsAClaimant(t *testing.T) {
@@ -108,18 +101,12 @@ func TestLoadRecordsAnIgnoredClaimAsAClaimant(t *testing.T) {
 		"addons/vendor/panel.tscn":   "[gd_scene format=3 uid=\"uid://ccc\"]\n",
 	})
 	for _, owner := range []string{"addons/vendor/thing.gd", "addons/vendor/panel.tscn"} {
-		if claim := claimOf(t, snapshot, owner); !claim.Ignored {
-			t.Errorf("claim for %s = %+v, want it marked ignored", owner, claim)
-		}
+		assert.True(t, claimOf(t, snapshot, owner).Ignored, owner)
 	}
 	// It is a claimant but not something uid speaks for, so it stays out of
 	// the sidecar list and out of the resolved table.
-	if len(snapshot.Sidecars) != 0 {
-		t.Errorf("Sidecars = %+v, want none", snapshot.Sidecars)
-	}
-	if len(snapshot.UIDs) != 0 {
-		t.Errorf("UIDs = %v, want none", snapshot.UIDs)
-	}
+	assert.Len(t, snapshot.Sidecars, 0)
+	assert.Len(t, snapshot.UIDs, 0)
 }
 
 func TestLoadRecordsExternalResourceReferences(t *testing.T) {
@@ -132,14 +119,10 @@ func TestLoadRecordsExternalResourceReferences(t *testing.T) {
 [node name="Main" type="Node"]
 `,
 	})
-	if len(snapshot.References) != 1 {
-		t.Fatalf("references = %+v, want one", snapshot.References)
-	}
+	require.Len(t, snapshot.References, 1)
 	reference := snapshot.References[0]
 	want := Reference{UID: "uid://ccc", Target: "player.gd", Path: "main.tscn", Line: 3, Kind: ReferenceExternal}
-	if reference != want {
-		t.Errorf("reference = %+v, want %+v", reference, want)
-	}
+	assert.Equal(t, want, reference)
 }
 
 func TestLoadRecordsScriptLoadReferences(t *testing.T) {
@@ -166,13 +149,9 @@ func ready() -> void:
 		{UID: "uid://ccc", Path: "player.gd", Line: 8, Kind: ReferenceLoad},
 		{UID: "uid://ddd", Path: "player.gd", Line: 9, Kind: ReferenceLoad},
 	}
-	if len(got) != len(want) {
-		t.Fatalf("references = %+v, want %+v", got, want)
-	}
+	require.Len(t, got, len(want))
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("reference %d = %+v, want %+v", i, got[i], want[i])
-		}
+		assert.Equal(t, want[i], got[i])
 	}
 }
 
@@ -187,9 +166,7 @@ func TestLoadSkipsReferencesInIgnoredFiles(t *testing.T) {
 `,
 		"addons/panel.gd": "extends Node\n\nconst X := preload(\"uid://nope\")\n",
 	})
-	if len(snapshot.References) != 0 {
-		t.Fatalf("references = %+v, want none", snapshot.References)
-	}
+	require.Len(t, snapshot.References, 0)
 }
 
 // The other four tools read a resource's header and nothing else, so leaving
@@ -202,16 +179,11 @@ func TestLoadWithoutIdentitiesCollectsNothing(t *testing.T) {
 		"main.tscn":     "[gd_scene format=3 uid=\"uid://ddd\"]\n\n[ext_resource type=\"Script\" uid=\"uid://ccc\" path=\"res://player.gd\" id=\"1\"]\n",
 	})
 	snapshot, err := Load(Config{Root: root, HonorIgnoreFile: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(snapshot.Claims) != 0 || len(snapshot.References) != 0 {
-		t.Fatalf("claims = %+v, references = %+v, want neither", snapshot.Claims, snapshot.References)
-	}
+	require.NoError(t, err)
+	require.Len(t, snapshot.Claims, 0)
+	require.Len(t, snapshot.References, 0)
 	// The header is still indexed, which is what the other tools rely on.
-	if snapshot.UIDs["uid://ddd"] != "main.tscn" {
-		t.Errorf("UIDs = %v, want the header indexed", snapshot.UIDs)
-	}
+	assert.Equal(t, "main.tscn", snapshot.UIDs["uid://ddd"])
 }
 
 func TestResourceAttributeMatchesWholeKeys(t *testing.T) {
@@ -227,8 +199,6 @@ func TestResourceAttributeMatchesWholeKeys(t *testing.T) {
 		"none": "",
 	}
 	for key, want := range cases {
-		if got := resourceAttribute(line, key); got != want {
-			t.Errorf("resourceAttribute(%q) = %q, want %q", key, got, want)
-		}
+		assert.Equal(t, want, resourceAttribute(line, key), key)
 	}
 }

@@ -1,12 +1,13 @@
 package semantic
 
 import (
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/cafecito-games/gdparser/ast"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInterfacesResolveImplicitEngineChainAndDirectMembers(t *testing.T) {
@@ -17,62 +18,48 @@ func TestInterfacesResolveImplicitEngineChainAndDirectMembers(t *testing.T) {
 
 	interfaces := BuildInterfaces(index, engine)
 	player, ok := interfaces.Class("player.gd")
-	if !ok {
-		t.Fatal("Player interface was not published")
-	}
-	if !player.Complete() {
-		t.Fatalf("Player interface is incomplete: %s", player.Cause())
-	}
+	require.True(t, ok, "Player interface was not published")
+	require.True(t, player.Complete())
 
 	chain := player.Type()
 	for _, want := range []string{"player.gd", "RefCounted", "Object"} {
-		if chain.Kind() != KindClass || chain.Name() != want {
-			t.Fatalf("chain at %q = %v %q (%q)", want, chain.Kind(), chain.Name(), chain.Reason())
-		}
+		require.Equal(t, KindClass, chain.Kind())
+		require.Equal(t, want, chain.Name())
 		base, hasBase := chain.Base()
 		if want == "Object" {
-			if hasBase {
-				t.Fatalf("Object unexpectedly has base %q", base.Name())
-			}
+			require.False(t, hasBase, "Object unexpectedly has base %q", base.Name())
 			break
 		}
-		if !hasBase {
-			t.Fatalf("%s has no base", want)
-		}
+		require.True(t, hasBase, "%s has no base", want)
 		chain = base
 	}
 
 	result := player.Lookup("health")
-	if result.State() != LookupFound {
-		t.Fatalf("health lookup state = %s (%s)", result.State(), result.Reason())
-	}
+	require.Equal(t, LookupFound, result.State())
 	member, found := result.Member()
-	if !found || member.Kind() != MemberVariable || member.Type().Kind() != KindBuiltin || member.Type().Name() != "int" || member.DeclaringClassID() != "player.gd" || member.Line() != 2 || member.Column() != 5 {
-		t.Fatalf("health lookup = %#v, found %t", member, found)
-	}
-	if missing := player.Lookup("missing"); missing.State() != LookupAbsent {
-		t.Fatalf("missing lookup state = %s (%s)", missing.State(), missing.Reason())
-	}
+	require.True(t, found)
+	require.Equal(t, MemberVariable, member.Kind())
+	require.Equal(t, KindBuiltin, member.Type().Kind())
+	require.Equal(t, "int", member.Type().Name())
+	require.Equal(t, "player.gd", member.DeclaringClassID())
+	require.Equal(t, 2, member.Line())
+	require.Equal(t, 5, member.Column())
+	missing := player.Lookup("missing")
+	require.Equal(t, LookupAbsent, missing.State())
 }
 
 func interfaceTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	builder := NewEngineBuilder()
-	if err := builder.AddBuiltin("int"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddBuiltin("int"))
 	for _, class := range []struct{ name, parent string }{
 		{name: "Object"},
 		{name: "RefCounted", parent: "Object"},
 	} {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return engine
 }
 
@@ -82,15 +69,11 @@ func TestInterfacesResolveDeclarationKindsAndSignatures(t *testing.T) {
 		"friend.gd": "class_name Friend\nclass Inner:\n\tpass\n",
 		"player.gd": "class_name Player extends CharacterBody2D\nvar explicit: float\nvar inferred := 10\nvar dynamic\nvar unresolved = fetch()\nvar float_literal := 1.5\nvar string_literal := \"message\"\nvar string_name_literal := &\"label\"\nvar node_path_literal := ^\"child\"\nvar boolean_literal := true\nvar null_literal := null\nvar collection_literal := []\nvar operator_literal := 1 + 2\nvar identifier_literal = LIMIT\nstatic var static_field: int\nconst LIMIT := 10\nconst TYPED: String = \"typed\"\nconst BAD = fetch()\nvar array: Array[Dictionary[String, int]]\nvar friend: Friend\nvar nested: Friend.Inner\nvar inner: Inner\nvar mode: Mode\nvar native: Node\nclass Inner:\n\tpass\nenum Mode { ONE }\nenum { FLAG }\nsignal changed(typed: int, dynamic_parameter)\n@abstract\nfunc abstracted(typed: int, dynamic_parameter, inferred_parameter := 3, ...rest: Array) -> void\nfunc typed_signature(friend_value: Friend, nested_value: Friend.Inner, local_value: Inner, mode_value: Mode, node_value: Node, table: Dictionary[String, Array[int]]) -> Friend:\n\tpass\nstatic func static_value() -> String:\n\tpass\nfunc no_return():\n\tpass\nfunc untyped_rest(...rest):\n\tpass\nfunc invalid_rest(...rest: String):\n\tpass\nfunc invalid_typed_array_rest(...rest: Array[String]):\n\tpass\n",
 	}))
-	if len(index.ParseFailures) != 0 {
-		t.Fatalf("fixture did not parse: %v", index.ParseFailures)
-	}
+	require.Empty(t, index.ParseFailures, "fixture did not parse")
 
 	interfaces := BuildInterfaces(index, engine)
 	player, ok := interfaces.Class("player.gd")
-	if !ok {
-		t.Fatal("Player interface was not published")
-	}
+	require.True(t, ok, "Player interface was not published")
 	assertClassChain(t, player.Type(), "player.gd", "CharacterBody2D", "Node2D", "CanvasItem", "Node", "Object")
 	for name, want := range map[string]struct {
 		kind     MemberKind
@@ -121,63 +104,60 @@ func TestInterfacesResolveDeclarationKindsAndSignatures(t *testing.T) {
 		"typed_signature":     {kind: MemberMethod, typeKind: KindCallable},
 	} {
 		member := interfaceMember(t, player, name)
-		if member.Kind() != want.kind || member.Type().Kind() != want.typeKind || member.Type().Name() != want.typeName {
-			t.Errorf("%s = kind %s type %v %q, want %s %v %q", name, member.Kind(), member.Type().Kind(), member.Type().Name(), want.kind, want.typeKind, want.typeName)
-		}
+		assert.Equal(t, want.kind, member.Kind())
+		assert.Equal(t, want.typeKind, member.Type().Kind())
+		assert.Equal(t, want.typeName, member.Type().Name())
 	}
 
-	if interfaceMember(t, player, "LIMIT").Const() != true || interfaceMember(t, player, "FLAG").Const() != true {
-		t.Error("constants lost their metadata")
-	}
-	if !interfaceMember(t, player, "TYPED").Const() {
-		t.Error("typed constant lost const metadata")
-	}
-	if interfaceMember(t, player, "Inner").Type().Meta() != true {
-		t.Error("inner class declaration did not expose a meta-class")
-	}
+	assert.True(t, interfaceMember(t, player, "LIMIT").Const())
+	assert.True(t, interfaceMember(t, player, "FLAG").Const())
+	assert.True(t, interfaceMember(t, player, "TYPED").Const())
+	assert.True(t, interfaceMember(t, player, "Inner").Type().Meta())
 	for _, name := range []string{"unresolved", "null_literal", "collection_literal", "operator_literal", "identifier_literal", "BAD"} {
-		if got := interfaceMember(t, player, name).Type(); got.Kind() != KindUnknown || got.Reason() == "" {
-			t.Errorf("%s = kind %v reason %q, want reasoned Unknown", name, got.Kind(), got.Reason())
-		}
+		got := interfaceMember(t, player, name).Type()
+		assert.Equal(t, KindUnknown, got.Kind())
+		assert.NotEmpty(t, got.Reason())
 	}
 
 	array := interfaceMember(t, player, "array").Type()
 	element, hasElement := array.Element()
 	key, hasKey := element.Key()
 	value, hasValue := element.Value()
-	if array.Kind() != KindArray || !hasElement || element.Kind() != KindDictionary || !hasKey || !hasValue || key.Name() != "String" || value.Name() != "int" {
-		t.Fatalf("nested container = %s; element=%s/%t key=%s/%t value=%s/%t", array, element, hasElement, key, hasKey, value, hasValue)
-	}
+	require.Equal(t, KindArray, array.Kind())
+	require.True(t, hasElement)
+	require.Equal(t, KindDictionary, element.Kind())
+	require.True(t, hasKey)
+	require.True(t, hasValue)
+	require.Equal(t, "String", key.Name())
+	require.Equal(t, "int", value.Name())
 
 	abstracted := interfaceMember(t, player, "abstracted")
-	if !abstracted.Abstract() || abstracted.Static() || !abstracted.Variadic() {
-		t.Fatalf("abstracted metadata = abstract %t static %t variadic %t", abstracted.Abstract(), abstracted.Static(), abstracted.Variadic())
-	}
+	require.True(t, abstracted.Abstract())
+	require.False(t, abstracted.Static())
+	require.True(t, abstracted.Variadic())
 	returnType, hasReturn := abstracted.ReturnType()
-	if !hasReturn || returnType.Kind() != KindVoid {
-		t.Fatalf("abstracted return = %v %t", returnType, hasReturn)
-	}
+	require.True(t, hasReturn)
+	require.Equal(t, KindVoid, returnType.Kind())
 	parameters := abstracted.Parameters()
-	if len(parameters) != 4 || parameters[0].Type().Name() != "int" || parameters[1].Type().Kind() != KindVariant || parameters[2].Type().Name() != "int" || !parameters[2].HasDefault() || !parameters[3].Variadic() {
-		t.Fatalf("abstracted parameters = %#v", parameters)
-	}
-	if parameters[3].Type().Kind() != KindArray {
-		t.Fatalf("rest parameter type = %s", parameters[3].Type())
-	}
-	if _, typedRest := parameters[3].Type().Element(); typedRest {
-		t.Fatal("typed rest parameter was not retained as an untyped Array")
-	}
-	if static := interfaceMember(t, player, "static_value"); !static.Static() || static.Abstract() {
-		t.Fatalf("static method metadata = static %t abstract %t", static.Static(), static.Abstract())
-	}
-	if static := interfaceMember(t, player, "static_field"); !static.Static() {
-		t.Fatal("static field lost static metadata")
-	}
+	require.Len(t, parameters, 4)
+	require.Equal(t, "int", parameters[0].Type().Name())
+	require.Equal(t, KindVariant, parameters[1].Type().Kind())
+	require.Equal(t, "int", parameters[2].Type().Name())
+	require.True(t, parameters[2].HasDefault())
+	require.True(t, parameters[3].Variadic())
+	require.Equal(t, KindArray, parameters[3].Type().Kind())
+	_, typedRest := parameters[3].Type().Element()
+	require.False(t, typedRest, "typed rest parameter was not retained as an untyped Array")
+	staticMethod := interfaceMember(t, player, "static_value")
+	require.True(t, staticMethod.Static())
+	require.False(t, staticMethod.Abstract())
+	staticField := interfaceMember(t, player, "static_field")
+	require.True(t, staticField.Static(), "static field lost static metadata")
 	signature := interfaceMember(t, player, "typed_signature")
 	returned, hasReturned := signature.ReturnType()
-	if !hasReturned || returned.Kind() != KindClass || returned.Name() != "friend.gd" {
-		t.Fatalf("typed signature return = %s/%t", returned, hasReturned)
-	}
+	require.True(t, hasReturned)
+	require.Equal(t, KindClass, returned.Kind())
+	require.Equal(t, "friend.gd", returned.Name())
 	for at, want := range []struct {
 		kind Kind
 		name string
@@ -190,41 +170,41 @@ func TestInterfacesResolveDeclarationKindsAndSignatures(t *testing.T) {
 		{kind: KindDictionary},
 	} {
 		parameter := signature.Parameters()[at].Type()
-		if parameter.Kind() != want.kind || parameter.Name() != want.name {
-			t.Errorf("typed signature parameter %d = %v %q, want %v %q", at, parameter.Kind(), parameter.Name(), want.kind, want.name)
-		}
+		assert.Equal(t, want.kind, parameter.Kind())
+		assert.Equal(t, want.name, parameter.Name())
 	}
 	table := signature.Parameters()[5].Type()
 	tableKey, tableKeyOK := table.Key()
 	tableValue, tableValueOK := table.Value()
 	arrayElement, arrayElementOK := tableValue.Element()
-	if !tableKeyOK || !tableValueOK || !arrayElementOK || tableKey.Name() != "String" || tableValue.Kind() != KindArray || arrayElement.Name() != "int" {
-		t.Fatalf("typed signature nested parameter = %s", table)
-	}
+	require.True(t, tableKeyOK)
+	require.True(t, tableValueOK)
+	require.True(t, arrayElementOK)
+	require.Equal(t, "String", tableKey.Name())
+	require.Equal(t, KindArray, tableValue.Kind())
+	require.Equal(t, "int", arrayElement.Name())
 	noReturn, hasReturn := interfaceMember(t, player, "no_return").ReturnType()
-	if !hasReturn || noReturn.Kind() != KindUnknown || noReturn.Reason() == "" {
-		t.Fatalf("omitted method return = %v %t", noReturn, hasReturn)
-	}
+	require.True(t, hasReturn)
+	require.Equal(t, KindUnknown, noReturn.Kind())
+	require.NotEmpty(t, noReturn.Reason())
 	changed := interfaceMember(t, player, "changed")
-	if parameters := changed.Parameters(); len(parameters) != 2 || parameters[0].Type().Name() != "int" || parameters[1].Type().Kind() != KindVariant {
-		t.Fatalf("signal parameters = %#v", parameters)
-	}
+	changedParameters := changed.Parameters()
+	require.Len(t, changedParameters, 2)
+	require.Equal(t, "int", changedParameters[0].Type().Name())
+	require.Equal(t, KindVariant, changedParameters[1].Type().Kind())
 	untypedRest := interfaceMember(t, player, "untyped_rest")
-	if !untypedRest.Variadic() {
-		t.Fatal("untyped rest method lost variadic metadata")
-	}
+	require.True(t, untypedRest.Variadic(), "untyped rest method lost variadic metadata")
 	untypedParameters := untypedRest.Parameters()
-	if len(untypedParameters) != 1 || !untypedParameters[0].Variadic() || untypedParameters[0].Type().Kind() != KindArray {
-		t.Fatalf("untyped rest parameter = %#v", untypedParameters)
-	}
-	if _, typed := untypedParameters[0].Type().Element(); typed {
-		t.Fatal("untyped rest parameter became Array[Variant]")
-	}
+	require.Len(t, untypedParameters, 1)
+	require.True(t, untypedParameters[0].Variadic())
+	require.Equal(t, KindArray, untypedParameters[0].Type().Kind())
+	_, typed := untypedParameters[0].Type().Element()
+	require.False(t, typed, "untyped rest parameter became Array[Variant]")
 	for _, name := range []string{"invalid_rest", "invalid_typed_array_rest"} {
 		invalidRest := interfaceMember(t, player, name).Parameters()
-		if len(invalidRest) != 1 || invalidRest[0].Type().Kind() != KindUnknown || !strings.Contains(invalidRest[0].Type().Reason(), "Array") {
-			t.Errorf("%s parameter = %#v, want reasoned Unknown", name, invalidRest)
-		}
+		assert.Len(t, invalidRest, 1)
+		assert.Equal(t, KindUnknown, invalidRest[0].Type().Kind())
+		assert.Contains(t, invalidRest[0].Type().Reason(), "Array")
 	}
 }
 
@@ -238,14 +218,11 @@ func TestInterfacesResolveScopedAndFailClosedAnnotations(t *testing.T) {
 	})
 	source.resolved["holder.gd\x00res://loaded.gd"] = "loaded.gd"
 	index := BuildIndex(source)
-	if len(index.ParseFailures) != 0 {
-		t.Fatalf("fixture did not parse: %v", index.ParseFailures)
-	}
+	require.Empty(t, index.ParseFailures, "fixture did not parse")
 	interfaces := BuildInterfaces(index, engine)
 	holder, ok := interfaces.Class("holder.gd")
-	if !ok || !holder.Complete() {
-		t.Fatalf("holder interface = %#v, present %t", holder, ok)
-	}
+	require.True(t, ok)
+	require.True(t, holder.Complete())
 	for name, want := range map[string]struct {
 		kind Kind
 		name string
@@ -259,37 +236,32 @@ func TestInterfacesResolveScopedAndFailClosedAnnotations(t *testing.T) {
 		"plain_dictionary": {kind: KindDictionary},
 	} {
 		got := interfaceMember(t, holder, name).Type()
-		if got.Kind() != want.kind || got.Name() != want.name {
-			t.Errorf("%s = %v %q (%q), want %v %q", name, got.Kind(), got.Name(), got.Reason(), want.kind, want.name)
-		}
+		assert.Equal(t, want.kind, got.Kind())
+		assert.Equal(t, want.name, got.Name())
 	}
-	if _, typed := interfaceMember(t, holder, "plain_array").Type().Element(); typed {
-		t.Error("bare Array annotation became typed")
-	}
-	if _, typed := interfaceMember(t, holder, "plain_dictionary").Type().Key(); typed {
-		t.Error("bare Dictionary annotation became typed")
-	}
+	_, typed := interfaceMember(t, holder, "plain_array").Type().Element()
+	assert.False(t, typed)
+	_, typed = interfaceMember(t, holder, "plain_dictionary").Type().Key()
+	assert.False(t, typed)
 	for _, name := range []string{"ambiguous", "unknown"} {
 		got := interfaceMember(t, holder, name).Type()
-		if got.Kind() != KindUnknown || !strings.Contains(got.Reason(), map[string]string{"ambiguous": "Duplicate", "unknown": "MissingType"}[name]) {
-			t.Errorf("%s = %v (%q), want original unresolved spelling", name, got.Kind(), got.Reason())
-		}
+		assert.Equal(t, KindUnknown, got.Kind())
+		assert.Contains(t, got.Reason(), map[string]string{"ambiguous": "Duplicate", "unknown": "MissingType"}[name])
 	}
 
 	nested := interfaces.ResolveType("holder.gd", "Array[Dictionary[String, int]]")
 	element, hasElement := nested.Element()
-	if nested.Kind() != KindArray || !hasElement || element.Kind() != KindDictionary {
-		t.Fatalf("nested annotation = %s", nested)
-	}
+	require.Equal(t, KindArray, nested.Kind())
+	require.True(t, hasElement)
+	require.Equal(t, KindDictionary, element.Kind())
 	// The Engine boundary deliberately carries no engine enum declarations. A
 	// qualified engine spelling therefore cannot be proven here, even where it
 	// happens to name a real Godot enum; user-declared named enums above cover
 	// successful named-enum resolution.
 	for _, spelling := range []string{"Array[int", "Callable[int]", "MissingType", "Node.ProcessMode", "Node.ProcesMode", "int.Whatever"} {
 		got := interfaces.ResolveType("holder.gd", spelling)
-		if got.Kind() != KindUnknown || !strings.Contains(got.Reason(), spelling) {
-			t.Errorf("ResolveType(%q) = %v (%q), want reasoned Unknown retaining spelling", spelling, got.Kind(), got.Reason())
-		}
+		assert.Equal(t, KindUnknown, got.Kind())
+		assert.Contains(t, got.Reason(), spelling)
 	}
 }
 
@@ -309,28 +281,24 @@ func TestInterfacesRejectVoidOutsideMethodReturns(t *testing.T) {
 	} {
 		t.Run("parser rejects "+testCase.name, func(t *testing.T) {
 			parsed := sources(t, map[string]string{"voids.gd": testCase.source})
-			if len(parsed.ParseFailures()) != 1 || parsed.ParseFailures()[0] != "voids.gd" {
-				t.Fatalf("ParseFailures = %v, want voids.gd", parsed.ParseFailures())
-			}
+			require.Len(t, parsed.ParseFailures(), 1)
+			require.Equal(t, "voids.gd", parsed.ParseFailures()[0])
 		})
 	}
 
 	index := BuildIndex(sources(t, map[string]string{
 		"voids.gd": "class_name Voids\nfunc returns_void() -> void:\n\tpass\n",
 	}))
-	if len(index.ParseFailures) != 0 {
-		t.Fatalf("return fixture did not parse: %v", index.ParseFailures)
-	}
+	require.Empty(t, index.ParseFailures, "return fixture did not parse")
 	interfaces := BuildInterfaces(index, richInterfaceTestEngine(t))
 	class := requireInterface(t, interfaces, "voids.gd")
 	returned, hasReturned := interfaceMember(t, class, "returns_void").ReturnType()
-	if !hasReturned || returned.Kind() != KindVoid {
-		t.Fatalf("explicit void return = %v %q (%q), present %t", returned.Kind(), returned.Name(), returned.Reason(), hasReturned)
-	}
+	require.True(t, hasReturned)
+	require.Equal(t, KindVoid, returned.Kind())
 	for _, spelling := range []string{"void", "Array[void]", "Dictionary[void, int]", "Dictionary[int, void]", "Array[Dictionary[String, Array[void]]]"} {
-		if got := interfaces.ResolveType("voids.gd", spelling); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "void") {
-			t.Errorf("ResolveType(%q) = %v %q (%q), want void-specific Unknown", spelling, got.Kind(), got.Name(), got.Reason())
-		}
+		got := interfaces.ResolveType("voids.gd", spelling)
+		assert.Equal(t, KindUnknown, got.Kind())
+		assert.Contains(t, got.Reason(), "void")
 	}
 }
 
@@ -341,12 +309,13 @@ func TestInterfacesGlobalTypeResolutionFailsClosedOnIncompleteIndex(t *testing.T
 			"broken.gd": "func (\n",
 		}))
 		interfaces := BuildInterfaces(index, interfaceTestEngine(t))
-		if got := interfaces.ResolveType("", "Global"); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "Global") || !strings.Contains(got.Reason(), "broken.gd") {
-			t.Fatalf("global class across parse failure = %v %q (%q), want reasoned Unknown", got.Kind(), got.Name(), got.Reason())
-		}
-		if got := interfaces.ResolveType("", "int"); got.Kind() != KindBuiltin || got.Name() != "int" {
-			t.Fatalf("grounded builtin across parse failure = %v %q (%q)", got.Kind(), got.Name(), got.Reason())
-		}
+		got := interfaces.ResolveType("", "Global")
+		require.Equal(t, KindUnknown, got.Kind())
+		require.Contains(t, got.Reason(), "Global")
+		require.Contains(t, got.Reason(), "broken.gd")
+		got = interfaces.ResolveType("", "int")
+		require.Equal(t, KindBuiltin, got.Kind())
+		require.Equal(t, "int", got.Name())
 	})
 
 	t.Run("duplicate global class remains ambiguous", func(t *testing.T) {
@@ -354,25 +323,23 @@ func TestInterfacesGlobalTypeResolutionFailsClosedOnIncompleteIndex(t *testing.T
 			"first.gd":  "class_name Duplicate\n",
 			"second.gd": "class_name Duplicate\n",
 		})), interfaceTestEngine(t))
-		if got := interfaces.ResolveType("", "Duplicate"); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "Duplicate") {
-			t.Fatalf("duplicate global class = %v %q (%q), want reasoned Unknown", got.Kind(), got.Name(), got.Reason())
-		}
+		got := interfaces.ResolveType("", "Duplicate")
+		require.Equal(t, KindUnknown, got.Kind())
+		require.Contains(t, got.Reason(), "Duplicate")
 	})
 }
 
 func TestInterfacesLookupIsNearestAndTriState(t *testing.T) {
-	if zero := (LookupResult{}); zero.State() != LookupUnknown || zero.Reason() != "" {
-		t.Fatalf("zero lookup result = %s (%q), want fail-closed unknown", zero.State(), zero.Reason())
-	}
+	zero := LookupResult{}
+	require.Equal(t, LookupUnknown, zero.State())
+	require.Empty(t, zero.Reason())
 	engine := lookupInterfaceTestEngine(t)
 	index := BuildIndex(sources(t, map[string]string{
 		"base.gd":    "class_name Base extends Node\nvar inherited: int\nvar shadowed: int\n",
 		"derived.gd": "class_name Derived extends Base\nfunc shadowed() -> void:\n\tpass\nvar duplicate: int\n",
 		"broken.gd":  "class_name Broken extends \"res://missing.gd\"\nvar direct: int\n",
 	}))
-	if len(index.ParseFailures) != 0 {
-		t.Fatalf("fixture did not parse: %v", index.ParseFailures)
-	}
+	require.Empty(t, index.ParseFailures, "fixture did not parse")
 	// gdparser rejects duplicate declarations in source before BuildIndex can
 	// represent them. The interface boundary still receives a public Index, so
 	// preserve the fail-closed contract for a malformed or externally built
@@ -386,49 +353,54 @@ func TestInterfacesLookupIsNearestAndTriState(t *testing.T) {
 	}
 	interfaces := BuildInterfaces(index, engine)
 	derived, ok := interfaces.Class("derived.gd")
-	if !ok || !derived.Complete() {
-		t.Fatalf("Derived interface = %#v, %t", derived, ok)
-	}
+	require.True(t, ok)
+	require.True(t, derived.Complete())
 
 	inherited := interfaceMember(t, derived, "inherited")
-	if inherited.Kind() != MemberVariable || inherited.DeclaringClassID() != "base.gd" {
-		t.Fatalf("inherited = %#v", inherited)
-	}
+	require.Equal(t, MemberVariable, inherited.Kind())
+	require.Equal(t, "base.gd", inherited.DeclaringClassID())
 	shadowed := interfaceMember(t, derived, "shadowed")
-	if shadowed.Kind() != MemberMethod || shadowed.DeclaringClassID() != "derived.gd" {
-		t.Fatalf("nearest incompatible shadow = %#v", shadowed)
-	}
+	require.Equal(t, MemberMethod, shadowed.Kind())
+	require.Equal(t, "derived.gd", shadowed.DeclaringClassID())
 	engineMethod := interfaceMember(t, derived, "engine_only")
 	engineMethodReturn, hasEngineMethodReturn := engineMethod.ReturnType()
-	if engineMethod.Kind() != MemberEngineMethod || engineMethod.EngineOwner() != "Object" || !hasEngineMethodReturn || engineMethodReturn.Name() != "int" || !engineMethod.Static() || !engineMethod.Variadic() || engineMethod.Line() != 0 || engineMethod.Column() != 0 {
-		t.Fatalf("engine method = %#v", engineMethod)
-	}
-	if parameters := engineMethod.Parameters(); len(parameters) != 1 || parameters[0].Name() != "" || parameters[0].Type().Name() != "int" || !parameters[0].HasDefault() {
-		t.Fatalf("engine method parameters = %#v", parameters)
-	}
-	if engineProperty := interfaceMember(t, derived, "engine_property"); engineProperty.Kind() != MemberEngineProperty || engineProperty.EngineOwner() != "Object" || engineProperty.Type().Name() != "int" {
-		t.Fatalf("engine property = %#v", engineProperty)
-	}
-	if result := derived.Lookup("duplicate"); result.State() != LookupUnknown || result.Reason() == "" {
-		t.Fatalf("duplicate direct declaration = %s (%q)", result.State(), result.Reason())
-	}
-	if result := derived.Lookup("conflict"); result.State() != LookupUnknown || result.Reason() == "" {
-		t.Fatalf("conflicting engine declaration = %s (%q)", result.State(), result.Reason())
-	}
-	if result := derived.Lookup("missing"); result.State() != LookupAbsent {
-		t.Fatalf("complete-chain miss = %s (%q)", result.State(), result.Reason())
-	}
+	require.Equal(t, MemberEngineMethod, engineMethod.Kind())
+	require.Equal(t, "Object", engineMethod.EngineOwner())
+	require.True(t, hasEngineMethodReturn)
+	require.Equal(t, "int", engineMethodReturn.Name())
+	require.True(t, engineMethod.Static())
+	require.True(t, engineMethod.Variadic())
+	require.Equal(t, 0, engineMethod.Line())
+	require.Equal(t, 0, engineMethod.Column())
+	engineMethodParameters := engineMethod.Parameters()
+	require.Len(t, engineMethodParameters, 1)
+	require.Empty(t, engineMethodParameters[0].Name())
+	require.Equal(t, "int", engineMethodParameters[0].Type().Name())
+	require.True(t, engineMethodParameters[0].HasDefault())
+	engineProperty := interfaceMember(t, derived, "engine_property")
+	require.Equal(t, MemberEngineProperty, engineProperty.Kind())
+	require.Equal(t, "Object", engineProperty.EngineOwner())
+	require.Equal(t, "int", engineProperty.Type().Name())
+	duplicateResult := derived.Lookup("duplicate")
+	require.Equal(t, LookupUnknown, duplicateResult.State())
+	require.NotEmpty(t, duplicateResult.Reason())
+	conflictResult := derived.Lookup("conflict")
+	require.Equal(t, LookupUnknown, conflictResult.State())
+	require.NotEmpty(t, conflictResult.Reason())
+	missingResult := derived.Lookup("missing")
+	require.Equal(t, LookupAbsent, missingResult.State())
 
 	broken, ok := interfaces.Class("broken.gd")
-	if !ok || broken.Complete() || broken.Cause() == "" {
-		t.Fatalf("Broken interface = %#v, %t", broken, ok)
-	}
-	if direct := interfaceMember(t, broken, "direct"); direct.Kind() != MemberVariable || direct.DeclaringClassID() != "broken.gd" || direct.Type().Name() != "int" {
-		t.Fatalf("direct member on incomplete class = %#v", direct)
-	}
-	if result := broken.Lookup("missing"); result.State() != LookupUnknown || result.Reason() == "" {
-		t.Fatalf("incomplete-chain miss = %s (%q)", result.State(), result.Reason())
-	}
+	require.True(t, ok)
+	require.False(t, broken.Complete())
+	require.NotEmpty(t, broken.Cause())
+	direct := interfaceMember(t, broken, "direct")
+	require.Equal(t, MemberVariable, direct.Kind())
+	require.Equal(t, "broken.gd", direct.DeclaringClassID())
+	require.Equal(t, "int", direct.Type().Name())
+	brokenMissing := broken.Lookup("missing")
+	require.Equal(t, LookupUnknown, brokenMissing.State())
+	require.NotEmpty(t, brokenMissing.Reason())
 }
 
 func TestInterfacesLookupBaseKeepsUnifiedPrecedenceAndFailureState(t *testing.T) {
@@ -440,20 +412,17 @@ func TestInterfacesLookupBaseKeepsUnifiedPrecedenceAndFailureState(t *testing.T)
 
 	for _, name := range []string{"instance", "shared"} {
 		result := interfaces.LookupBase("child.gd", name)
-		if result.State() != LookupFound {
-			t.Fatalf("LookupBase(%q) = %s (%s), want found", name, result.State(), result.Reason())
-		}
+		require.Equal(t, LookupFound, result.State())
 		member, ok := result.Member()
-		if !ok || member.DeclaringClassID() != "base.gd" || member.Name() != name {
-			t.Fatalf("LookupBase(%q) = %#v, found %t", name, member, ok)
-		}
+		require.True(t, ok)
+		require.Equal(t, "base.gd", member.DeclaringClassID())
+		require.Equal(t, name, member.Name())
 	}
-	if result := interfaces.LookupBase("child.gd", "missing"); result.State() != LookupAbsent {
-		t.Fatalf("complete missing base member = %s (%s), want absent", result.State(), result.Reason())
-	}
-	if result := interfaces.LookupBase("broken.gd", "missing"); result.State() != LookupUnknown || result.Reason() == "" {
-		t.Fatalf("incomplete base member = %s (%q), want reasoned unknown", result.State(), result.Reason())
-	}
+	completeMiss := interfaces.LookupBase("child.gd", "missing")
+	require.Equal(t, LookupAbsent, completeMiss.State())
+	incompleteMiss := interfaces.LookupBase("broken.gd", "missing")
+	require.Equal(t, LookupUnknown, incompleteMiss.State())
+	require.NotEmpty(t, incompleteMiss.Reason())
 }
 
 func TestInterfacesFailClosedForIncompleteChains(t *testing.T) {
@@ -470,26 +439,23 @@ func TestInterfacesFailClosedForIncompleteChains(t *testing.T) {
 		}))
 		interfaces := BuildInterfaces(index, engine)
 		class := requireInterface(t, interfaces, "ambiguous.gd")
-		if class.Complete() || !strings.Contains(class.Cause(), "Duplicate") {
-			t.Fatalf("ambiguous class completeness = %t (%q)", class.Complete(), class.Cause())
-		}
+		require.False(t, class.Complete())
+		require.Contains(t, class.Cause(), "Duplicate")
 		owners := class.Owners()
-		if len(owners) != 1 || owners[0].ClassID() != "ambiguous.gd" {
-			t.Fatalf("ambiguous owners = %#v; engine Duplicate must not be used", owners)
-		}
+		require.Len(t, owners, 1)
+		require.Equal(t, "ambiguous.gd", owners[0].ClassID())
 		base, hasBase := class.Type().Base()
-		if !hasBase || base.Kind() != KindUnknown || !strings.Contains(base.Reason(), "Duplicate") {
-			t.Fatalf("ambiguous base = %s/%t (%q)", base, hasBase, base.Reason())
-		}
-		if direct := interfaceMember(t, class, "direct"); direct.Type().Name() != "int" {
-			t.Fatalf("direct declaration was not independently resolved: %#v", direct)
-		}
-		if result := class.Lookup("missing"); result.State() != LookupUnknown || !strings.Contains(result.Reason(), "Duplicate") {
-			t.Fatalf("ambiguous base miss = %s (%q)", result.State(), result.Reason())
-		}
-		if got := interfaces.ResolveType("ambiguous.gd", "Duplicate"); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "Duplicate") {
-			t.Fatalf("ambiguous annotation became engine type: %v (%q)", got.Kind(), got.Reason())
-		}
+		require.True(t, hasBase)
+		require.Equal(t, KindUnknown, base.Kind())
+		require.Contains(t, base.Reason(), "Duplicate")
+		direct := interfaceMember(t, class, "direct")
+		require.Equal(t, "int", direct.Type().Name())
+		ambiguousMiss := class.Lookup("missing")
+		require.Equal(t, LookupUnknown, ambiguousMiss.State())
+		require.Contains(t, ambiguousMiss.Reason(), "Duplicate")
+		got := interfaces.ResolveType("ambiguous.gd", "Duplicate")
+		require.Equal(t, KindUnknown, got.Kind())
+		require.Contains(t, got.Reason(), "Duplicate")
 	})
 
 	t.Run("project cycle and parse failure terminate", func(t *testing.T) {
@@ -499,39 +465,36 @@ func TestInterfacesFailClosedForIncompleteChains(t *testing.T) {
 			"b.gd": "class_name B extends A\n",
 		}))
 		cyclic := requireInterface(t, BuildInterfaces(cycleIndex, engine), "a.gd")
-		if cyclic.Complete() || !strings.Contains(cyclic.Cause(), "cycle") {
-			t.Fatalf("cyclic class completeness = %t (%q)", cyclic.Complete(), cyclic.Cause())
-		}
+		require.False(t, cyclic.Complete())
+		require.Contains(t, cyclic.Cause(), "cycle")
 		cycleBase, hasCycleBase := cyclic.Type().Base()
-		if !hasCycleBase || cycleBase.Kind() != KindUnknown || !strings.Contains(cycleBase.Reason(), "cycle") {
-			t.Fatalf("cyclic type base = %s/%t (%q)", cycleBase, hasCycleBase, cycleBase.Reason())
-		}
+		require.True(t, hasCycleBase)
+		require.Equal(t, KindUnknown, cycleBase.Kind())
+		require.Contains(t, cycleBase.Reason(), "cycle")
 		for attempt := 0; attempt < 3; attempt++ {
-			if result := cyclic.Lookup("missing"); result.State() != LookupUnknown || !strings.Contains(result.Reason(), "cycle") {
-				t.Fatalf("cyclic miss attempt %d = %s (%q)", attempt, result.State(), result.Reason())
-			}
+			cyclicMiss := cyclic.Lookup("missing")
+			require.Equal(t, LookupUnknown, cyclicMiss.State())
+			require.Contains(t, cyclicMiss.Reason(), "cycle")
 		}
 
 		source := sources(t, map[string]string{"good.gd": "class_name Good\nvar direct: int\n"})
 		source.paths = append(source.paths, "broken.gd")
 		source.failures = append(source.failures, "broken.gd")
 		parseFailed := requireInterface(t, BuildInterfaces(BuildIndex(source), lookupInterfaceTestEngine(t)), "good.gd")
-		if parseFailed.Complete() || !strings.Contains(parseFailed.Cause(), "broken.gd") {
-			t.Fatalf("parse-failed class completeness = %t (%q)", parseFailed.Complete(), parseFailed.Cause())
-		}
+		require.False(t, parseFailed.Complete())
+		require.Contains(t, parseFailed.Cause(), "broken.gd")
 		parseBase, hasParseBase := parseFailed.Type().Base()
-		if !hasParseBase || parseBase.Kind() != KindUnknown || !strings.Contains(parseBase.Reason(), "broken.gd") {
-			t.Fatalf("parse-failed type base = %s/%t (%q)", parseBase, hasParseBase, parseBase.Reason())
-		}
-		if direct := interfaceMember(t, parseFailed, "direct"); direct.Type().Name() != "int" {
-			t.Fatalf("parse failure prevented known intrinsic type: %#v", direct)
-		}
-		if result := parseFailed.Lookup("missing"); result.State() != LookupUnknown || !strings.Contains(result.Reason(), "broken.gd") {
-			t.Fatalf("parse-failed miss = %s (%q)", result.State(), result.Reason())
-		}
-		if result := parseFailed.Lookup("engine_only"); result.State() != LookupUnknown || !strings.Contains(result.Reason(), "broken.gd") {
-			t.Fatalf("parse failure exposed an unproven engine member: %s (%q)", result.State(), result.Reason())
-		}
+		require.True(t, hasParseBase)
+		require.Equal(t, KindUnknown, parseBase.Kind())
+		require.Contains(t, parseBase.Reason(), "broken.gd")
+		parseDirect := interfaceMember(t, parseFailed, "direct")
+		require.Equal(t, "int", parseDirect.Type().Name())
+		parseMissing := parseFailed.Lookup("missing")
+		require.Equal(t, LookupUnknown, parseMissing.State())
+		require.Contains(t, parseMissing.Reason(), "broken.gd")
+		parseEngineOnly := parseFailed.Lookup("engine_only")
+		require.Equal(t, LookupUnknown, parseEngineOnly.State())
+		require.Contains(t, parseEngineOnly.Reason(), "broken.gd")
 	})
 
 	t.Run("unavailable and malformed engine chains stay incomplete", func(t *testing.T) {
@@ -559,19 +522,17 @@ func TestInterfacesFailClosedForIncompleteChains(t *testing.T) {
 		} {
 			t.Run(name, func(t *testing.T) {
 				class := requireInterface(t, BuildInterfaces(index, testCase.engine), "plain.gd")
-				if class.Complete() || !strings.Contains(class.Cause(), testCase.wantCause) {
-					t.Fatalf("completeness = %t (%q), want cause containing %q", class.Complete(), class.Cause(), testCase.wantCause)
-				}
+				require.False(t, class.Complete())
+				require.Contains(t, class.Cause(), testCase.wantCause)
 				base, hasBase := class.Type().Base()
-				if !hasBase || base.Kind() != KindUnknown || !strings.Contains(base.Reason(), testCase.wantCause) {
-					t.Fatalf("type base = %s/%t (%q), want unknown containing %q", base, hasBase, base.Reason(), testCase.wantCause)
-				}
-				if literal := interfaceMember(t, class, "literal"); literal.Type().Name() != "int" {
-					t.Fatalf("literal direct declaration = %#v", literal)
-				}
-				if result := class.Lookup("missing"); result.State() != LookupUnknown || !strings.Contains(result.Reason(), testCase.wantCause) {
-					t.Fatalf("incomplete engine miss = %s (%q)", result.State(), result.Reason())
-				}
+				require.True(t, hasBase)
+				require.Equal(t, KindUnknown, base.Kind())
+				require.Contains(t, base.Reason(), testCase.wantCause)
+				literal := interfaceMember(t, class, "literal")
+				require.Equal(t, "int", literal.Type().Name())
+				incompleteEngineMiss := class.Lookup("missing")
+				require.Equal(t, LookupUnknown, incompleteEngineMiss.State())
+				require.Contains(t, incompleteEngineMiss.Reason(), testCase.wantCause)
 			})
 		}
 
@@ -579,13 +540,12 @@ func TestInterfacesFailClosedForIncompleteChains(t *testing.T) {
 			"external.gd": "class_name External extends MissingNative\nvar literal := 3\n",
 		}))
 		externalClass := requireInterface(t, BuildInterfaces(external, interfaceTestEngine(t)), "external.gd")
-		if externalClass.Complete() || !strings.Contains(externalClass.Cause(), "MissingNative") {
-			t.Fatalf("absent external engine class completeness = %t (%q)", externalClass.Complete(), externalClass.Cause())
-		}
+		require.False(t, externalClass.Complete())
+		require.Contains(t, externalClass.Cause(), "MissingNative")
 		externalBase, hasExternalBase := externalClass.Type().Base()
-		if !hasExternalBase || externalBase.Kind() != KindUnknown || !strings.Contains(externalBase.Reason(), "MissingNative") {
-			t.Fatalf("absent external engine type base = %s/%t (%q)", externalBase, hasExternalBase, externalBase.Reason())
-		}
+		require.True(t, hasExternalBase)
+		require.Equal(t, KindUnknown, externalBase.Kind())
+		require.Contains(t, externalBase.Reason(), "MissingNative")
 	})
 }
 
@@ -674,18 +634,18 @@ func TestInterfacesBlockGlobalTypeFallbackAcrossIncompleteAncestry(t *testing.T)
 			}
 			interfaces := BuildInterfaces(BuildIndex(sources(t, files)), testCase.engine(t))
 			scoped := requireInterface(t, interfaces, "scoped.gd")
-			if scoped.Complete() || !strings.Contains(scoped.Cause(), testCase.wantCause) {
-				t.Fatalf("scoped interface completeness = %t (%q), want incomplete cause containing %q", scoped.Complete(), scoped.Cause(), testCase.wantCause)
-			}
+			require.False(t, scoped.Complete())
+			require.Contains(t, scoped.Cause(), testCase.wantCause)
 
 			// A direct lexical declaration remains usable before the incomplete
 			// ancestry segment; only a miss must not fall through to Global.
-			if got := interfaces.ResolveType("scoped.gd", "Local"); got.Kind() != KindClass || got.Name() != "scoped.gd#Local" {
-				t.Fatalf("direct Local = %v %q (%q)", got.Kind(), got.Name(), got.Reason())
-			}
-			if got := interfaces.ResolveType("scoped.gd", "Global"); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "Global") || !strings.Contains(got.Reason(), testCase.wantCause) {
-				t.Fatalf("Global fell through incomplete ancestry = %v %q (%q), want reasoned Unknown containing %q", got.Kind(), got.Name(), got.Reason(), testCase.wantCause)
-			}
+			local := interfaces.ResolveType("scoped.gd", "Local")
+			require.Equal(t, KindClass, local.Kind())
+			require.Equal(t, "scoped.gd#Local", local.Name())
+			global := interfaces.ResolveType("scoped.gd", "Global")
+			require.Equal(t, KindUnknown, global.Kind())
+			require.Contains(t, global.Reason(), "Global")
+			require.Contains(t, global.Reason(), testCase.wantCause)
 		})
 	}
 }
@@ -694,20 +654,17 @@ func TestInterfacesDoNotWalkFunctionAccessorOrLambdaBodies(t *testing.T) {
 	index := BuildIndex(sources(t, map[string]string{
 		"body.gd": "class_name Body\nvar exposed: int:\n\tget:\n\t\tvar getter_hidden := 1\n\t\treturn getter_hidden\n\tset(value):\n\t\tvar setter_hidden := 2\n\t\texposed = value\nfunc outer():\n\tvar function_hidden := 3\n\tvar closure = func():\n\t\tvar lambda_hidden := 4\n\t\treturn lambda_hidden\n",
 	}))
-	if len(index.ParseFailures) != 0 {
-		t.Fatalf("fixture did not parse: %v", index.ParseFailures)
-	}
+	require.Empty(t, index.ParseFailures, "fixture did not parse")
 	class := requireInterface(t, BuildInterfaces(index, interfaceTestEngine(t)), "body.gd")
-	if direct := class.DirectMembers(); len(direct) != 2 || direct[0].Name() != "exposed" || direct[1].Name() != "outer" {
-		t.Fatalf("direct members = %#v", direct)
-	}
-	if exposed := interfaceMember(t, class, "exposed"); exposed.Type().Name() != "int" {
-		t.Fatalf("header type was not retained: %#v", exposed)
-	}
+	direct := class.DirectMembers()
+	require.Len(t, direct, 2)
+	require.Equal(t, "exposed", direct[0].Name())
+	require.Equal(t, "outer", direct[1].Name())
+	exposed := interfaceMember(t, class, "exposed")
+	require.Equal(t, "int", exposed.Type().Name())
 	for _, hidden := range []string{"getter_hidden", "setter_hidden", "function_hidden", "closure", "lambda_hidden"} {
-		if result := class.Lookup(hidden); result.State() != LookupAbsent {
-			t.Errorf("body-local %q changed shallow lookup to %s (%q)", hidden, result.State(), result.Reason())
-		}
+		result := class.Lookup(hidden)
+		assert.Equal(t, LookupAbsent, result.State())
 	}
 }
 
@@ -717,15 +674,14 @@ func TestInterfacesAreDeterministicImmutableAndSafeForConcurrentReads(t *testing
 	}))
 	first := BuildInterfaces(index, richInterfaceTestEngine(t))
 	second := BuildInterfaces(index, richInterfaceTestEngine(t))
-	if !reflect.DeepEqual(first.ClassIDs(), second.ClassIDs()) {
-		t.Fatalf("class IDs differ: %v / %v", first.ClassIDs(), second.ClassIDs())
-	}
+	require.Equal(t, second.ClassIDs(), first.ClassIDs())
 	for _, id := range first.ClassIDs() {
 		left, right := requireInterface(t, first, id), requireInterface(t, second, id)
-		if !left.Type().Equal(right.Type()) || left.Complete() != right.Complete() || left.Cause() != right.Cause() ||
-			!reflect.DeepEqual(left.Owners(), right.Owners()) || !reflect.DeepEqual(left.DirectMembers(), right.DirectMembers()) {
-			t.Fatalf("repeated interface resolution for %q differed", id)
-		}
+		require.True(t, left.Type().Equal(right.Type()))
+		require.Equal(t, right.Complete(), left.Complete())
+		require.Equal(t, right.Cause(), left.Cause())
+		require.Equal(t, right.Owners(), left.Owners())
+		require.Equal(t, right.DirectMembers(), left.DirectMembers())
 	}
 
 	alpha := requireInterface(t, first, "alpha.gd")
@@ -742,24 +698,23 @@ func TestInterfacesAreDeterministicImmutableAndSafeForConcurrentReads(t *testing
 	index.Classes["alpha.gd"].ParentID = "missing.gd"
 	index.Classes["alpha.gd"].ID = "mutated-index"
 
-	if again := interfaceMember(t, alpha, "field"); again.Name() != "field" || again.Type().Name() != "int" {
-		t.Fatalf("caller mutation changed cached field: %#v", again)
-	}
-	if again := interfaceMember(t, alpha, "call"); len(again.Parameters()) != 2 || again.Parameters()[0].Name() != "value" {
-		t.Fatalf("caller mutation changed cached parameters: %#v", again)
-	}
-	if owners := alpha.Owners(); len(owners) == 0 || owners[0].ClassID() != "alpha.gd" {
-		t.Fatalf("caller mutation changed cached owners: %#v", owners)
-	}
-	if ids := first.ClassIDs(); len(ids) != 1 || ids[0] != "alpha.gd" {
-		t.Fatalf("caller mutation changed cached IDs: %#v", ids)
-	}
-	if result := first.Lookup("alpha.gd", "missing"); result.State() != LookupAbsent {
-		t.Fatalf("post-publication input mutation changed lookup: %s (%q)", result.State(), result.Reason())
-	}
-	if resolved := first.ResolveType("alpha.gd", "Alpha"); resolved.Kind() != KindClass || resolved.Name() != "alpha.gd" {
-		t.Fatalf("post-publication input mutation changed type resolution: %v %q (%q)", resolved.Kind(), resolved.Name(), resolved.Reason())
-	}
+	againField := interfaceMember(t, alpha, "field")
+	require.Equal(t, "field", againField.Name())
+	require.Equal(t, "int", againField.Type().Name())
+	againCall := interfaceMember(t, alpha, "call")
+	require.Len(t, againCall.Parameters(), 2)
+	require.Equal(t, "value", againCall.Parameters()[0].Name())
+	cachedOwners := alpha.Owners()
+	require.NotEmpty(t, cachedOwners)
+	require.Equal(t, "alpha.gd", cachedOwners[0].ClassID())
+	cachedIDs := first.ClassIDs()
+	require.Len(t, cachedIDs, 1)
+	require.Equal(t, "alpha.gd", cachedIDs[0])
+	mutationLookup := first.Lookup("alpha.gd", "missing")
+	require.Equal(t, LookupAbsent, mutationLookup.State())
+	resolved := first.ResolveType("alpha.gd", "Alpha")
+	require.Equal(t, KindClass, resolved.Kind())
+	require.Equal(t, "alpha.gd", resolved.Name())
 
 	const readers = 24
 	const readsPerReader = 100
@@ -782,16 +737,14 @@ func TestInterfacesAreDeterministicImmutableAndSafeForConcurrentReads(t *testing
 	readersDone.Wait()
 	close(problems)
 	for problem := range problems {
-		t.Error(problem)
+		assert.Fail(t, problem)
 	}
 }
 
 func TestInterfacesLookupMemberBridgesReceiverKindsAndTriState(t *testing.T) {
 	builder := NewEngineBuilder()
 	for _, builtin := range []string{"int", "Array", "Dictionary", "Callable", "Signal"} {
-		if err := builder.AddBuiltin(builtin); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(builtin))
 	}
 	for _, class := range []struct{ name, parent string }{
 		{name: "Object"},
@@ -799,9 +752,7 @@ func TestInterfacesLookupMemberBridgesReceiverKindsAndTriState(t *testing.T) {
 		{name: "Node", parent: "Object"},
 		{name: "Broken", parent: "MissingParent"},
 	} {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
 	for _, method := range []struct {
 		owner, name string
@@ -815,17 +766,11 @@ func TestInterfacesLookupMemberBridgesReceiverKindsAndTriState(t *testing.T) {
 		{owner: "Signal", name: "connect"},
 		{owner: "Object", name: "conflict"},
 	} {
-		if err := builder.AddMethod(method.owner, method.name, "int", nil, false, false); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddMethod(method.owner, method.name, "int", nil, false, false))
 	}
-	if err := builder.AddProperty("Object", "conflict", "int"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddProperty("Object", "conflict", "int"))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	interfaces := BuildInterfaces(BuildIndex(sources(t, map[string]string{
 		"player.gd": "class_name Player\nvar field: int\n",
 	})), engine)
@@ -860,35 +805,29 @@ func TestInterfacesLookupMemberBridgesReceiverKindsAndTriState(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			result := interfaces.LookupMember(testCase.receiver, testCase.member)
-			if result.State() != testCase.state {
-				t.Fatalf("LookupMember(%s, %q) = %s (%q), want %s", testCase.receiver, testCase.member, result.State(), result.Reason(), testCase.state)
-			}
+			require.Equal(t, testCase.state, result.State())
 			if testCase.state == LookupFound {
 				member, ok := result.Member()
-				if !ok || member.Kind() != testCase.kind {
-					t.Fatalf("LookupMember(%s, %q) member = %#v, %t; want %s", testCase.receiver, testCase.member, member, ok, testCase.kind)
-				}
+				require.True(t, ok)
+				require.Equal(t, testCase.kind, member.Kind())
 			}
 		})
 	}
-	if result := player.Lookup("conflict"); result.State() != LookupUnknown {
-		t.Fatalf("user lookup inherited engine direct collision = %s (%q), want unknown", result.State(), result.Reason())
-	}
+	playerConflict := player.Lookup("conflict")
+	require.Equal(t, LookupUnknown, playerConflict.State())
 
 	withoutEngine := BuildInterfaces(BuildIndex(sources(t, map[string]string{
 		"plain.gd": "class_name Plain\n",
 	})), nil)
-	if result := withoutEngine.LookupMember(Array(nil), "append"); result.State() != LookupUnknown || !strings.Contains(result.Reason(), "unavailable") {
-		t.Fatalf("unavailable builtin engine = %s (%q), want reasoned unknown", result.State(), result.Reason())
-	}
+	unavailableResult := withoutEngine.LookupMember(Array(nil), "append")
+	require.Equal(t, LookupUnknown, unavailableResult.State())
+	require.Contains(t, unavailableResult.Reason(), "unavailable")
 }
 
 func TestInterfacesLookupMetaMemberFiltersStaticFactsAndPreservesOwnerChains(t *testing.T) {
 	builder := NewEngineBuilder()
 	for _, builtin := range []string{"int", "String"} {
-		if err := builder.AddBuiltin(builtin); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(builtin))
 	}
 	for _, class := range []struct{ name, parent string }{
 		{name: "Object"},
@@ -896,9 +835,7 @@ func TestInterfacesLookupMetaMemberFiltersStaticFactsAndPreservesOwnerChains(t *
 		{name: "Node", parent: "Object"},
 		{name: "Broken", parent: "Missing"},
 	} {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
 	for _, method := range []struct {
 		owner, name string
@@ -909,17 +846,11 @@ func TestInterfacesLookupMetaMemberFiltersStaticFactsAndPreservesOwnerChains(t *
 		{owner: "Node", name: "instance_engine"},
 		{owner: "Broken", name: "direct_static", static: true},
 	} {
-		if err := builder.AddMethod(method.owner, method.name, "int", nil, method.static, false); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddMethod(method.owner, method.name, "int", nil, method.static, false))
 	}
-	if err := builder.AddProperty("Node", "engine_property", "int"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddProperty("Node", "engine_property", "int"))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	interfaces := BuildInterfaces(BuildIndex(sources(t, map[string]string{
 		"base.gd":  "class_name Base\nconst ANSWER = 42\nstatic var static_field: int\nvar instance_field: int\nstatic func static_method() -> int:\n\tpass\nfunc instance_method() -> int:\n\tpass\nsignal changed\nenum Named { VALUE }\nenum { ANON }\nclass Inner:\n\tpass\n",
 		"child.gd": "class_name Child extends Base\nvar static_field: int\n",
@@ -928,14 +859,11 @@ func TestInterfacesLookupMetaMemberFiltersStaticFactsAndPreservesOwnerChains(t *
 	assertResult := func(t *testing.T, receiver Type, name string, want LookupState, wantKind MemberKind) {
 		t.Helper()
 		got := interfaces.LookupMetaMember(receiver, name)
-		if got.State() != want {
-			t.Fatalf("LookupMetaMember(%s, %q) = %s (%q), want %s", receiver, name, got.State(), got.Reason(), want)
-		}
+		require.Equal(t, want, got.State())
 		if want == LookupFound {
 			member, ok := got.Member()
-			if !ok || member.Kind() != wantKind {
-				t.Fatalf("LookupMetaMember(%s, %q) member = %#v, %t; want %s", receiver, name, member, ok, wantKind)
-			}
+			require.True(t, ok)
+			require.Equal(t, wantKind, member.Kind())
 		}
 	}
 
@@ -979,25 +907,19 @@ func TestInterfacesLookupNamedEnumMembersRequiresExactProvenance(t *testing.T) {
 	build := func(t *testing.T, files map[string]string, receiver Type, enumName string) (*InterfaceSet, Member, *namedEnumObjectProvenance) {
 		t.Helper()
 		source := sources(t, files)
-		if failures := source.ParseFailures(); len(failures) != 0 {
-			t.Fatalf("real parser fixture failed: %v", failures)
-		}
+		require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 		interfaces := BuildInterfaces(BuildIndex(source), reducerTestEngine(t))
 		selected := interfaces.LookupMetaMember(receiver, enumName)
-		if selected.State() != LookupFound {
-			t.Fatalf("LookupMetaMember(%s, %q) = %s (%q), want found", receiver, enumName, selected.State(), selected.Reason())
-		}
+		require.Equal(t, LookupFound, selected.State())
 		member, ok := selected.Member()
-		if !ok || member.Kind() != MemberEnum {
-			t.Fatalf("selected named enum = %#v, %t", member, ok)
-		}
+		require.True(t, ok)
+		require.Equal(t, MemberEnum, member.Kind())
 		return interfaces, member, interfaces.namedEnumObject(receiver, member)
 	}
 	assertUnknown := func(t *testing.T, got namedEnumMemberLookup) {
 		t.Helper()
-		if got.state != LookupUnknown || strings.TrimSpace(got.reason) == "" {
-			t.Fatalf("named enum lookup = %s (%q), want reasoned Unknown", got.state, got.reason)
-		}
+		require.Equal(t, LookupUnknown, got.state)
+		require.NotEmpty(t, strings.TrimSpace(got.reason))
 	}
 
 	files := map[string]string{
@@ -1007,12 +929,10 @@ func TestInterfacesLookupNamedEnumMembersRequiresExactProvenance(t *testing.T) {
 	receiver := Class("child.gd", nil, true)
 	interfaces, _, provenance := build(t, files, receiver, "Mode")
 	found := interfaces.lookupNamedEnumMember(provenance, "IDLE")
-	if found.state != LookupFound || !found.typeValue.Equal(Enum("base.gd.Mode")) {
-		t.Fatalf("found named enum member = %s %s (%q), want base.gd.Mode", found.state, found.typeValue, found.reason)
-	}
-	if absent := interfaces.lookupNamedEnumMember(provenance, "MISSING"); absent.state != LookupAbsent {
-		t.Fatalf("missing named enum member = %s (%q), want absent", absent.state, absent.reason)
-	}
+	require.Equal(t, LookupFound, found.state)
+	require.True(t, found.typeValue.Equal(Enum("base.gd.Mode")))
+	absent := interfaces.lookupNamedEnumMember(provenance, "MISSING")
+	require.Equal(t, LookupAbsent, absent.state)
 
 	t.Run("foreign snapshot", func(t *testing.T) {
 		foreign, _, _ := build(t, files, receiver, "Mode")
@@ -1035,16 +955,13 @@ func TestInterfacesLookupNamedEnumMembersRequiresExactProvenance(t *testing.T) {
 		source := sources(t, map[string]string{
 			"duplicate.gd": "class_name Duplicate\nenum Mode { IDLE }\n",
 		})
-		if failures := source.ParseFailures(); len(failures) != 0 {
-			t.Fatalf("real parser fixture failed: %v", failures)
-		}
+		require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 		index := BuildIndex(source)
 		index.Classes["duplicate.gd"].Declarations = append(index.Classes["duplicate.gd"].Declarations, index.Classes["duplicate.gd"].Declarations[0])
 		duplicate := BuildInterfaces(index, reducerTestEngine(t))
 		got := duplicate.LookupMetaMember(Class("duplicate.gd", nil, true), "Mode")
-		if got.State() != LookupUnknown || strings.TrimSpace(got.Reason()) == "" {
-			t.Fatalf("duplicate named enum selection = %s (%q), want reasoned Unknown", got.State(), got.Reason())
-		}
+		require.Equal(t, LookupUnknown, got.State())
+		require.NotEmpty(t, strings.TrimSpace(got.Reason()))
 	})
 	t.Run("duplicate enum member names", func(t *testing.T) {
 		duplicate, _, duplicateProvenance := build(t, map[string]string{
@@ -1078,9 +995,7 @@ func TestInterfacesLookupNamedEnumMembersRequiresExactProvenance(t *testing.T) {
 			"base.gd":  "class_name Base\nenum Mode { IDLE }\n",
 			"other.gd": "class_name Other\n",
 		})
-		if failures := source.ParseFailures(); len(failures) != 0 {
-			t.Fatalf("real parser fixture failed: %v", failures)
-		}
+		require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 		index := BuildIndex(source)
 		declaration := index.Classes["base.gd"].Declarations[0]
 		index.Classes["other.gd"].Declarations = append(index.Classes["other.gd"].Declarations, Declaration{
@@ -1089,9 +1004,8 @@ func TestInterfacesLookupNamedEnumMembersRequiresExactProvenance(t *testing.T) {
 		shared := BuildInterfaces(index, reducerTestEngine(t))
 		selected := shared.LookupMetaMember(Class("base.gd", nil, true), "Mode")
 		member, ok := selected.Member()
-		if selected.State() != LookupFound || !ok {
-			t.Fatalf("shared-node fixture selection = %s %#v, %t", selected.State(), member, ok)
-		}
+		require.Equal(t, LookupFound, selected.State())
+		require.True(t, ok)
 		sharedProvenance := shared.namedEnumObject(Class("base.gd", nil, true), member)
 		assertUnknown(t, shared.lookupNamedEnumMember(sharedProvenance, "IDLE"))
 	})
@@ -1108,9 +1022,8 @@ func TestInterfacesLookupNamedEnumMembersRequiresExactProvenance(t *testing.T) {
 		index.Classes["missing.gd"] = nil
 		withNilClass := BuildInterfaces(index, reducerTestEngine(t))
 		got := withNilClass.LookupMetaMember(Class("missing.gd", nil, true), "Mode")
-		if got.State() != LookupUnknown || strings.TrimSpace(got.Reason()) == "" {
-			t.Fatalf("nil class meta lookup = %s (%q), want reasoned Unknown", got.State(), got.Reason())
-		}
+		require.Equal(t, LookupUnknown, got.State())
+		require.NotEmpty(t, strings.TrimSpace(got.Reason()))
 	})
 	t.Run("malformed retained node", func(t *testing.T) {
 		malformed, _, malformedProvenance := build(t, files, receiver, "Mode")
@@ -1144,47 +1057,34 @@ func buildInterfaceEngine(t *testing.T, builtins []string, classes []interfaceEn
 	t.Helper()
 	builder := NewEngineBuilder()
 	for _, builtin := range builtins {
-		if err := builder.AddBuiltin(builtin); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(builtin))
 	}
 	for _, class := range classes {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return engine
 }
 
 func requireInterface(t *testing.T, interfaces *InterfaceSet, id string) *ClassInterface {
 	t.Helper()
 	class, ok := interfaces.Class(id)
-	if !ok {
-		t.Fatalf("interface %q was not published", id)
-	}
+	require.True(t, ok, "interface %q was not published", id)
 	return class
 }
 
 func assertClassChain(t *testing.T, resolved Type, want ...string) {
 	t.Helper()
 	for index, name := range want {
-		if resolved.Kind() != KindClass || resolved.Name() != name {
-			t.Fatalf("chain at %d = %v %q (%q), want class %q", index, resolved.Kind(), resolved.Name(), resolved.Reason(), name)
-		}
+		require.Equal(t, KindClass, resolved.Kind())
+		require.Equal(t, name, resolved.Name())
 		base, hasBase := resolved.Base()
 		if index == len(want)-1 {
-			if hasBase {
-				t.Fatalf("chain root %q unexpectedly has base %q", name, base.Name())
-			}
+			require.False(t, hasBase, "chain root %q unexpectedly has base %q", name, base.Name())
 			return
 		}
-		if !hasBase {
-			t.Fatalf("chain class %q has no base", name)
-		}
+		require.True(t, hasBase, "chain class %q has no base", name)
 		resolved = base
 	}
 }
@@ -1192,13 +1092,9 @@ func assertClassChain(t *testing.T, resolved Type, want ...string) {
 func interfaceMember(t *testing.T, class *ClassInterface, name string) Member {
 	t.Helper()
 	result := class.Lookup(name)
-	if result.State() != LookupFound {
-		t.Fatalf("Lookup(%q) = %s (%s)", name, result.State(), result.Reason())
-	}
+	require.Equal(t, LookupFound, result.State())
 	member, ok := result.Member()
-	if !ok {
-		t.Fatalf("Lookup(%q) returned no member", name)
-	}
+	require.True(t, ok, "Lookup(%q) returned no member", name)
 	return member
 }
 
@@ -1206,9 +1102,7 @@ func richInterfaceTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	builder := NewEngineBuilder()
 	for _, builtin := range []string{"int", "float", "String", "StringName", "NodePath", "bool", "Array", "Dictionary", "Callable", "Signal"} {
-		if err := builder.AddBuiltin(builtin); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(builtin))
 	}
 	for _, class := range []struct{ name, parent string }{
 		{name: "Object"},
@@ -1218,14 +1112,10 @@ func richInterfaceTestEngine(t *testing.T) *Engine {
 		{name: "Node2D", parent: "CanvasItem"},
 		{name: "CharacterBody2D", parent: "Node2D"},
 	} {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return engine
 }
 
@@ -1233,33 +1123,21 @@ func lookupInterfaceTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	builder := NewEngineBuilder()
 	for _, builtin := range []string{"int", "Array", "Dictionary"} {
-		if err := builder.AddBuiltin(builtin); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(builtin))
 	}
 	for _, class := range []struct{ name, parent string }{
 		{name: "Object"},
 		{name: "RefCounted", parent: "Object"},
 		{name: "Node", parent: "Object"},
 	} {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
-	if err := builder.AddMethod("Object", "engine_only", "int", []EngineArgumentSpec{{Type: "int", HasDefault: true}}, true, true); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddMethod("Object", "conflict", "int", nil, false, false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddMethod("Object", "engine_only", "int", []EngineArgumentSpec{{Type: "int", HasDefault: true}}, true, true))
+	require.NoError(t, builder.AddMethod("Object", "conflict", "int", nil, false, false))
 	for _, property := range []string{"engine_property", "conflict"} {
-		if err := builder.AddProperty("Object", property, "int"); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddProperty("Object", property, "int"))
 	}
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return engine
 }

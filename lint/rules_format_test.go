@@ -3,6 +3,9 @@ package lint
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFormatMaxLineLengthCountsRunesNotBytes(t *testing.T) {
@@ -13,9 +16,8 @@ func TestFormatMaxLineLengthCountsRunesNotBytes(t *testing.T) {
 
 	// 100 accented runes is 200 bytes but exactly at the limit.
 	atLimit := "#" + strings.Repeat("é", 99) + "\n"
-	if found := lintSource(t, "max-line-length", atLimit); len(found) != 0 {
-		t.Errorf("a 100-rune line must not fire: %v", found)
-	}
+	found := lintSource(t, "max-line-length", atLimit)
+	assert.Empty(t, found)
 }
 
 // TestFormatMaxLineLengthSparesIrreducibleLines pins the measurement that
@@ -83,12 +85,8 @@ func TestFormatMaxFileLinesFiresOnceOnTheLastLine(t *testing.T) {
 			found = append(found, diagnostic)
 		}
 	}
-	if len(found) != 1 {
-		t.Fatalf("max-file-lines fired %d times, want 1: %v", len(found), found)
-	}
-	if found[0].Line != 5 {
-		t.Errorf("Line = %d, want 5", found[0].Line)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 5, found[0].Line)
 }
 
 func TestFormatMixedTabsAndSpacesAllowsAFilePerStyle(t *testing.T) {
@@ -114,15 +112,12 @@ func TestFormatMaxLineLengthExpandsTabsToTheConfiguredWidth(t *testing.T) {
 			found = append(found, diagnostic)
 		}
 	}
-	if len(found) != 1 || found[0].Line != 1 {
-		t.Fatalf("max-line-length = %v, want one diagnostic on line 1", found)
-	}
+	require.Len(t, found, 1)
+	require.Equal(t, 1, found[0].Line)
 }
 
 func TestFormatTabCharactersIsNotARule(t *testing.T) {
-	if IsRule("tab-characters") {
-		t.Error("tab-characters is a max-line-length setting, not a rule")
-	}
+	assert.False(t, IsRule("tab-characters"))
 }
 
 // The whitespace sits inside comments so the parser accepts it. gdlint splits
@@ -176,9 +171,7 @@ func TestDeeperIndentedCommentsStillParse(t *testing.T) {
 	}
 	report := lintProject(t, DefaultConfig(), sources)
 	for _, diagnostic := range report.Diagnostics {
-		if diagnostic.Rule == "source-parse" {
-			t.Errorf("%s failed to parse: %s", diagnostic.Path, diagnostic.Message)
-		}
+		assert.NotEqual(t, "source-parse", diagnostic.Rule, "%s failed to parse: %s", diagnostic.Path, diagnostic.Message)
 	}
 }
 
@@ -201,8 +194,6 @@ func TestFormerlyUnparseableFormsStillParse(t *testing.T) {
 	}
 	report := lintProject(t, DefaultConfig(), sources)
 	for _, diagnostic := range report.Diagnostics {
-		if diagnostic.Rule == "source-parse" {
-			t.Errorf("%s failed to parse: %s", diagnostic.Path, diagnostic.Message)
-		}
+		assert.NotEqual(t, "source-parse", diagnostic.Rule, "%s failed to parse: %s", diagnostic.Path, diagnostic.Message)
 	}
 }

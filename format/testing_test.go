@@ -8,6 +8,7 @@ import (
 	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdparser/ast"
 	gdformat "github.com/cafecito-games/gdparser/format"
+	"github.com/stretchr/testify/require"
 )
 
 // loadProject writes files into a temp project and loads it with config's
@@ -22,17 +23,13 @@ func loadProjectInto(t testing.TB, root string, config Config, files map[string]
 	t.Helper()
 	for name, contents := range files {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(absolute, []byte(contents), 0o644)
+		require.NoError(t, err)
 	}
 	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return snapshot
 }
 
@@ -41,9 +38,7 @@ func formatProject(t *testing.T, config Config, files map[string]string) (Report
 	t.Helper()
 	snapshot := loadProject(t, config, files)
 	formatter, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return formatter.Format(snapshot), snapshot
 }
 
@@ -52,12 +47,8 @@ func formatProject(t *testing.T, config Config, files map[string]string) (Report
 func formatSource(t *testing.T, config Config, source string) string {
 	t.Helper()
 	report, _ := formatProject(t, config, map[string]string{"a.gd": source})
-	if report.HasDiagnostics() {
-		t.Fatalf("fixture did not format: %s", report.Diagnostics[0])
-	}
-	if len(report.Results) != 1 {
-		t.Fatalf("got %d results, want 1", len(report.Results))
-	}
+	require.False(t, report.HasDiagnostics(), "fixture did not format")
+	require.Len(t, report.Results, 1)
 	if !report.Results[0].Changed {
 		return source
 	}
@@ -70,9 +61,7 @@ func formatForged(t *testing.T, source, forged string) Report {
 	t.Helper()
 	snapshot := loadProject(t, DefaultConfig(), map[string]string{"a.gd": source})
 	formatter, err := New(DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	formatter.emit = func(*ast.File, gdformat.Options) string { return forged }
 	return formatter.Format(snapshot)
 }
@@ -81,12 +70,9 @@ func formatForged(t *testing.T, source, forged string) Report {
 // want.
 func assertRefused(t *testing.T, report Report, want Diagnostic) {
 	t.Helper()
-	if len(report.Results) != 0 {
-		t.Fatalf("results = %+v (%q), want none", report.Results, report.Results[0].Formatted)
-	}
-	if len(report.Diagnostics) != 1 || report.Diagnostics[0] != want {
-		t.Fatalf("diagnostics = %+v, want %+v", report.Diagnostics, want)
-	}
+	require.Empty(t, report.Results)
+	require.Len(t, report.Diagnostics, 1)
+	require.Equal(t, want, report.Diagnostics[0])
 }
 
 // formatForgedPastTheTreeCheck is formatForged with the tree comparison stood
@@ -96,9 +82,7 @@ func formatForgedPastTheTreeCheck(t *testing.T, source, forged string) Report {
 	t.Helper()
 	snapshot := loadProject(t, DefaultConfig(), map[string]string{"a.gd": source})
 	formatter, err := New(DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	formatter.emit = func(*ast.File, gdformat.Options) string { return forged }
 	formatter.verifyTree = func(string, *ast.File, []byte, gdformat.Options) error { return nil }
 	return formatter.Format(snapshot)

@@ -4,11 +4,11 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/cafecito-games/gdkit/format"
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/stretchr/testify/require"
 )
 
 // loadProject writes files into a temp project and loads it the way generate
@@ -18,20 +18,14 @@ func loadProject(t *testing.T, files map[string]string) *project.Snapshot {
 	root := t.TempDir()
 	for name, contents := range files {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
+		require.NoError(t, os.WriteFile(absolute, []byte(contents), 0o644))
 	}
 	snapshot, err := project.Load(project.Config{
 		Root:      root,
 		Selection: &project.Selection{SourceRoots: []string{"."}, HonorIgnoreFile: true},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return snapshot
 }
 
@@ -52,9 +46,7 @@ func planProject(t *testing.T, config Config, files map[string]string) (Plan, *p
 	t.Helper()
 	snapshot := loadSelected(t, config, files)
 	generator, err := New(config, format.DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return generator.Check(snapshot), snapshot
 }
 
@@ -71,9 +63,7 @@ func loadSelected(t *testing.T, config Config, files map[string]string) *project
 			HonorIgnoreFile: true,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return snapshot
 }
 
@@ -96,12 +86,8 @@ func writeInto(t *testing.T, root string, files map[string]string) {
 	t.Helper()
 	for name, contents := range files {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
+		require.NoError(t, os.WriteFile(absolute, []byte(contents), 0o644))
 	}
 }
 
@@ -119,22 +105,15 @@ func applyOnce(t *testing.T, config Config, files map[string]string) map[string]
 			HonorIgnoreFile: true,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	generator, err := New(config, format.DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Apply(snapshot, generator.Check(snapshot), false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	_, err = Apply(snapshot, generator.Check(snapshot), false)
+	require.NoError(t, err)
 	out := map[string]string{}
 	for name := range files {
 		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		out[name] = string(contents)
 	}
 	return out
@@ -148,7 +127,7 @@ func assertDiagnostic(t *testing.T, report Report, rule string) Diagnostic {
 			return diagnostic
 		}
 	}
-	t.Fatalf("diagnostics = %+v, want one with rule %s", report.Diagnostics, rule)
+	require.FailNow(t, "no diagnostic with rule %s", rule)
 	return Diagnostic{}
 }
 
@@ -160,5 +139,3 @@ func osReadFile(root, name string) (string, error) {
 	contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
 	return string(contents), err
 }
-
-func contains(haystack, needle string) bool { return strings.Contains(haystack, needle) }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/stretchr/testify/require"
 )
 
 // loadProject writes files into a temp project, loads it the way the uid
@@ -16,17 +17,11 @@ func loadProject(t *testing.T, files map[string]string) (*project.Snapshot, stri
 	root := t.TempDir()
 	for name, contents := range files {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
+		require.NoError(t, os.WriteFile(absolute, []byte(contents), 0o644))
 	}
 	snapshot, err := project.Load(project.Config{Root: root, HonorIgnoreFile: true, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return snapshot, root
 }
 
@@ -83,8 +78,6 @@ func pathsOf(diagnostics []Diagnostic) []string {
 func readFile(t *testing.T, root, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return string(data)
 }

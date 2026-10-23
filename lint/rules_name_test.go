@@ -1,6 +1,10 @@
 package lint
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // Every expectation below was confirmed against gdlint from
 // godot-gdscript-toolkit.
@@ -30,9 +34,7 @@ func TestNameRulesFireOnBadNames(t *testing.T) {
 		t.Run(test.rule, func(t *testing.T) {
 			assertRule(t, test.rule, test.source, test.lines...)
 			found := lintSource(t, test.rule, test.source)
-			if found[0].Message != test.message {
-				t.Fatalf("message = %q, want %q", found[0].Message, test.message)
-			}
+			require.Equal(t, test.message, found[0].Message)
 		})
 	}
 }
@@ -199,24 +201,17 @@ func TestNameDiagnosticsPointAtTheIdentifier(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.rule, func(t *testing.T) {
 			found := lintSource(t, test.rule, test.source)
-			if len(found) != 1 {
-				t.Fatalf("got %d diagnostics, want 1", len(found))
-			}
-			if found[0].Column != test.column {
-				t.Fatalf("column = %d, want %d", found[0].Column, test.column)
-			}
-			if found[0].EndColumn <= found[0].Column {
-				t.Fatalf("end column %d is not after column %d", found[0].EndColumn, found[0].Column)
-			}
+			require.Len(t, found, 1)
+			require.Equal(t, test.column, found[0].Column)
+			require.False(t, found[0].EndColumn <= found[0].Column)
 		})
 	}
 }
 
 func TestNameColumnCountsRunes(t *testing.T) {
 	found := lintSource(t, "function-variable-name", "func f():\n\tvar text = \"éé\"; var Bad = 2\n")
-	if len(found) != 1 || found[0].Column != 23 {
-		t.Fatalf("got %+v, want one diagnostic at rune column 23", found)
-	}
+	require.Len(t, found, 1)
+	require.Equal(t, 23, found[0].Column)
 }
 
 func TestNameRulesHonorConfiguredPatterns(t *testing.T) {

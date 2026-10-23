@@ -4,25 +4,20 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdparser/ast"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDecodeResourceLiteralAcceptsParsedGDScriptStringForms(t *testing.T) {
 	source := sources(t, map[string]string{
 		"loader.gd": "class_name Loader\nfunc run():\n\tvar regular := \"res://actors/enemy.gd\"\n\tvar escaped := \"res://actors/\\u0065nemy.gd\"\n\tvar raw := r\"res://actors/enemy.gd\"\n\tvar triple := \"\"\"res://actors/enemy.gd\"\"\"\n\tvar raw_triple := r\"\"\"res://actors/enemy.gd\"\"\"\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures())
 	file := source.File("loader.gd")
 	for _, name := range []string{"regular", "escaped", "raw", "triple", "raw_triple"} {
 		t.Run(name, func(t *testing.T) {
 			got, err := decodeResourceLiteral(reducerVariableValue(t, file, name))
-			if err != nil {
-				t.Fatalf("decodeResourceLiteral() error = %v", err)
-			}
-			if want := "res://actors/enemy.gd"; got != want {
-				t.Fatalf("decodeResourceLiteral() = %q, want %q", got, want)
-			}
+			require.NoError(t, err)
+			require.Equal(t, "res://actors/enemy.gd", got)
 		})
 	}
 }
@@ -39,26 +34,28 @@ func TestDecodeResourceLiteralFailsClosedForNonStringAndMalformedShapes(t *testi
 		{name: "unpaired surrogate", expression: &ast.Literal{Kind: ast.StringLiteral, Raw: `"res://enemy\ud800.gd"`, Quote: '"'}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got, err := decodeResourceLiteral(testCase.expression); err == nil || got != "" {
-				t.Fatalf("decodeResourceLiteral() = %q, %v; want malformed input rejection", got, err)
-			}
+			got, err := decodeResourceLiteral(testCase.expression)
+			require.Error(t, err)
+			require.Empty(t, got)
 		})
 	}
 }
 
 func TestResourceResolutionUsesClosedImmutableVocabulary(t *testing.T) {
 	found := FoundResource(ResourceScript, "res://actors/enemy.gd", "actors/enemy.gd", ResourceLiteralPath)
-	if found.State() != ResourceFound || found.Kind() != ResourceScript ||
-		found.Requested() != "res://actors/enemy.gd" || found.Path() != "actors/enemy.gd" ||
-		found.Provenance() != ResourceLiteralPath || found.Reason() != "" {
-		t.Fatalf("found resolution = %#v", found)
-	}
+	require.Equal(t, ResourceFound, found.State())
+	require.Equal(t, ResourceScript, found.Kind())
+	require.Equal(t, "res://actors/enemy.gd", found.Requested())
+	require.Equal(t, "actors/enemy.gd", found.Path())
+	require.Equal(t, ResourceLiteralPath, found.Provenance())
+	require.Empty(t, found.Reason())
 	failed := UnresolvedResource(ResourceAmbiguousUID, ResourceUnknown, "uid://enemy", ResourceUIDClaim, "uid://enemy has multiple claimants")
-	if failed.State() != ResourceAmbiguousUID || failed.Kind() != ResourceUnknown ||
-		failed.Requested() != "uid://enemy" || failed.Path() != "" ||
-		failed.Provenance() != ResourceUIDClaim || failed.Reason() == "" {
-		t.Fatalf("failed resolution = %#v", failed)
-	}
+	require.Equal(t, ResourceAmbiguousUID, failed.State())
+	require.Equal(t, ResourceUnknown, failed.Kind())
+	require.Equal(t, "uid://enemy", failed.Requested())
+	require.Empty(t, failed.Path())
+	require.Equal(t, ResourceUIDClaim, failed.Provenance())
+	require.NotEmpty(t, failed.Reason())
 	for _, state := range []ResourceState{
 		ResourceFound,
 		ResourceMissing,
@@ -67,30 +64,20 @@ func TestResourceResolutionUsesClosedImmutableVocabulary(t *testing.T) {
 		ResourceAmbiguousUID,
 		ResourceUnsupportedKind,
 	} {
-		if state.String() == "" {
-			t.Fatalf("resource state %d is not closed", state)
-		}
+		require.NotEmpty(t, state.String())
 	}
 	for _, kind := range []ResourceKind{ResourceUnknown, ResourceScript, ResourceScene, ResourceText, ResourceImported} {
-		if kind.String() == "" {
-			t.Fatalf("resource kind %d is not closed", kind)
-		}
+		require.NotEmpty(t, kind.String())
 	}
 	for _, provenance := range []ResourceProvenance{ResourceProvenanceUnknown, ResourceLiteralPath, ResourceUIDClaim} {
-		if provenance.String() == "" {
-			t.Fatalf("resource provenance %d is not closed", provenance)
-		}
+		require.NotEmpty(t, provenance.String())
 	}
 	for _, malformed := range []ResourceResolution{
 		FoundResource(ResourceImported, "res://icon.png", "icon.png", ResourceLiteralPath),
 		UnresolvedResource(ResourceUnsupportedKind, ResourceUnknown, "res://icon.png", ResourceLiteralPath, "unsupported"),
 		UnresolvedResource(ResourceMissing, ResourceUnknown, "res://missing.gd", ResourceProvenanceUnknown, "missing"),
 	} {
-		if problem := resourceResolutionProblem(malformed); problem == "" {
-			t.Fatalf("malformed resolution %#v was accepted", malformed)
-		}
+		require.NotEmpty(t, resourceResolutionProblem(malformed))
 	}
-	if problem := resourceResolutionProblem(ResourceResolution{state: ResourceState(99)}); problem == "" {
-		t.Fatal("invalid resource-resolution state was accepted")
-	}
+	require.NotEmpty(t, resourceResolutionProblem(ResourceResolution{state: ResourceState(99)}))
 }

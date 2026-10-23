@@ -1,10 +1,10 @@
 package format
 
 import (
-	"strings"
 	"testing"
 
 	gdformat "github.com/cafecito-games/gdparser/format"
+	"github.com/stretchr/testify/require"
 )
 
 func TestVerifyAcceptsIntendedNormalisations(t *testing.T) {
@@ -23,9 +23,8 @@ func TestVerifyAcceptsIntendedNormalisations(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			if err := verify("a.gd", []byte(testCase.source), []byte(testCase.formatted), gdformat.GodotStyle()); err != nil {
-				t.Fatalf("verify rejected an intended normalisation: %v", err)
-			}
+			err := verify("a.gd", []byte(testCase.source), []byte(testCase.formatted), gdformat.GodotStyle())
+			require.NoError(t, err, "verify rejected an intended normalisation")
 		})
 	}
 }
@@ -46,9 +45,8 @@ func TestVerifyRejectsChangedMeaning(t *testing.T) {
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
 			err := verify("a.gd", []byte(testCase.source), []byte(testCase.formatted), gdformat.GodotStyle())
-			if err == nil || !strings.HasPrefix(err.Error(), testCase.want) {
-				t.Fatalf("error = %v, want %q", err, testCase.want)
-			}
+			require.Error(t, err)
+			require.ErrorContains(t, err, testCase.want)
 		})
 	}
 }
@@ -67,19 +65,16 @@ func TestVerifyFollowsOptions(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			if err := verify("a.gd", []byte(testCase.source), []byte(testCase.formatted), preserve); err == nil {
-				t.Fatal("verify accepted a rewrite the options do not ask for")
-			}
-			if err := verify("a.gd", []byte(testCase.source), []byte(testCase.source), preserve); err != nil {
-				t.Fatalf("verify rejected preserved source: %v", err)
-			}
+			err := verify("a.gd", []byte(testCase.source), []byte(testCase.formatted), preserve)
+			require.Error(t, err, "verify accepted a rewrite the options do not ask for")
+			err = verify("a.gd", []byte(testCase.source), []byte(testCase.source), preserve)
+			require.NoError(t, err, "verify rejected preserved source")
 		})
 	}
 }
 
 func TestVerifyReportsUnparseableSource(t *testing.T) {
 	err := verify("a.gd", []byte("var = = 1\n"), []byte("var a = 1\n"), gdformat.GodotStyle())
-	if err == nil || !strings.HasPrefix(err.Error(), "source does not parse: ") {
-		t.Fatalf("error = %v", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "source does not parse: ")
 }

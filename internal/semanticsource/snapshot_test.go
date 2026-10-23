@@ -4,12 +4,13 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
 	"github.com/cafecito-games/gdkit/internal/semantic"
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const godotThemeBinaryFixture = "UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAABgAAAFRoZW1lAAAAAAAAAAAAAwAAAPzo8aEmmiAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lABMAAABkZWZhdWx0X2Jhc2Vfc2NhbGUADQAAAGRlZmF1bHRfZm9udAASAAAAZGVmYXVsdF9mb250X3NpemUABwAAAHNjcmlwdAAAAAAAAQAAABQAAABsb2NhbDovL1RoZW1lX2I3NGl2AAUBAAAAAAAABgAAAFRoZW1lAAEAAAAFAAAAAQAAAFJTUkM="
@@ -33,60 +34,42 @@ func TestSnapshotUsesFullUniverseAndResolvesStaticScriptPaths(t *testing.T) {
 	}
 	for name, contents := range files {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(absolute, []byte(contents), 0o644)
+		require.NoError(t, err)
 	}
 	snapshot, err := project.Load(project.Config{Root: root, Selection: &project.Selection{
 		SourceRoots:     []string{"."},
 		Exclude:         []string{"generated/**"},
 		HonorIgnoreFile: true,
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for _, unselected := range []string{"hidden.gd", "generated/gen.gd", "generated/broken.gd"} {
-		if slices.Contains(snapshot.Selected, unselected) {
-			t.Fatalf("fixture did not exclude %s from Selected", unselected)
-		}
+		require.NotContains(t, snapshot.Selected, unselected)
 	}
 	source := NewSnapshot(snapshot)
 	for _, unselected := range []string{"hidden.gd", "generated/gen.gd"} {
-		if !slices.Contains(source.Paths(), unselected) {
-			t.Fatalf("Paths = %v, want unselected file %s in the full universe", source.Paths(), unselected)
-		}
+		require.Contains(t, source.Paths(), unselected)
 	}
 	index := semantic.BuildIndex(source)
-	if index.Classes["hidden.gd"] == nil {
-		t.Error("ignored class was dropped from semantic index")
-	}
-	if index.Classes["generated/gen.gd"] == nil {
-		t.Error("excluded class was dropped from semantic index")
-	}
+	require.NotNil(t, index.Classes["hidden.gd"])
+	require.NotNil(t, index.Classes["generated/gen.gd"])
 	for _, test := range []struct{ from, target, want string }{
 		{"nested/sub.gd", "../base.gd", "base.gd"},
 		{"nested/sub.gd", "res://base.gd", "base.gd"},
 		{"nested/sub.gd", "uid://base", "base.gd"},
 	} {
-		if got, ok := source.ResolvePath(test.from, test.target); !ok || got != test.want {
-			t.Errorf("ResolvePath(%q, %q) = %q, %v", test.from, test.target, got, ok)
-		}
+		got, ok := source.ResolvePath(test.from, test.target)
+		require.True(t, ok)
+		require.Equal(t, test.want, got)
 	}
-	if _, ok := source.ResolvePath("base.gd", "res://gone.gd"); ok {
-		t.Error("missing path resolved")
-	}
-	if _, ok := source.ResolvePath("base.gd", "uid://gone"); ok {
-		t.Error("missing UID resolved")
-	}
-	if source.Autoloads()["GameState"] != "base.gd" {
-		t.Errorf("Autoloads = %v", source.Autoloads())
-	}
-	if !slices.Equal(source.ParseFailures(), []string{"broken.gd", "generated/broken.gd"}) {
-		t.Errorf("ParseFailures = %v", source.ParseFailures())
-	}
+	_, ok := source.ResolvePath("base.gd", "res://gone.gd")
+	assert.False(t, ok)
+	_, ok = source.ResolvePath("base.gd", "uid://gone")
+	assert.False(t, ok)
+	assert.Equal(t, "base.gd", source.Autoloads()["GameState"])
+	assert.Equal(t, []string{"broken.gd", "generated/broken.gd"}, source.ParseFailures())
 }
 
 func TestSnapshotResolvesImmutableResourceInventoryAndUIDClaims(t *testing.T) {
@@ -107,17 +90,13 @@ func TestSnapshotResolvesImmutableResourceInventoryAndUIDClaims(t *testing.T) {
 	}
 	for name, contents := range files {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(absolute, []byte(contents), 0o644)
+		require.NoError(t, err)
 	}
 	snapshot, err := project.Load(project.Config{Root: root, HonorIgnoreFile: true, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	source := NewSnapshot(snapshot)
 	var resolver semantic.ResourceResolver = source
 	for _, testCase := range []struct {
@@ -153,18 +132,17 @@ func TestSnapshotResolvesImmutableResourceInventoryAndUIDClaims(t *testing.T) {
 				from = "scripts/loader.gd"
 			}
 			got := resolver.ResolvePreloadResource(from, testCase.target)
-			if got.State() != testCase.state || got.Kind() != testCase.kind || got.Path() != testCase.path || got.Provenance() != testCase.provenance {
-				t.Fatalf("ResolvePreloadResource(%q) = state=%s kind=%s path=%q provenance=%s reason=%q", testCase.target, got.State(), got.Kind(), got.Path(), got.Provenance(), got.Reason())
+			require.Equal(t, testCase.state, got.State())
+			require.Equal(t, testCase.kind, got.Kind())
+			require.Equal(t, testCase.path, got.Path())
+			require.Equal(t, testCase.provenance, got.Provenance())
+			if got.State() != semantic.ResourceFound {
+				require.NotEmpty(t, strings.TrimSpace(got.Reason()))
 			}
-			if got.State() != semantic.ResourceFound && strings.TrimSpace(got.Reason()) == "" {
-				t.Fatalf("ResolvePreloadResource(%q) returned an unexplained non-found result", testCase.target)
+			if testCase.reason != "" {
+				require.Equal(t, testCase.reason, got.Reason())
 			}
-			if testCase.reason != "" && got.Reason() != testCase.reason {
-				t.Fatalf("ResolvePreloadResource(%q) reason = %q, want deterministic %q", testCase.target, got.Reason(), testCase.reason)
-			}
-			if strings.Contains(got.Reason(), root) {
-				t.Fatalf("ResolvePreloadResource(%q) leaked host root in reason %q", testCase.target, got.Reason())
-			}
+			require.NotContains(t, got.Reason(), root)
 		})
 	}
 }
@@ -179,24 +157,18 @@ func TestSnapshotFailsClosedForLeadingCommentHeaderUIDCollision(t *testing.T) {
 		"scene.tscn": "; retained by Godot\n\n[gd_scene format=3 uid=\"uid://b\"]\n",
 	} {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(absolute, []byte(contents), 0o644)
+		require.NoError(t, err)
 	}
 	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.IdentityIncomplete {
-		t.Fatal("leading-comment text resource unexpectedly made claim evidence incomplete")
-	}
+	require.NoError(t, err)
+	require.False(t, snapshot.IdentityIncomplete, "leading-comment text resource unexpectedly made claim evidence incomplete")
 	got := NewSnapshot(snapshot).ResolveLoadResource("loader.gd", "uid://b")
-	if got.State() != semantic.ResourceAmbiguousUID || got.Provenance() != semantic.ResourceUIDClaim || got.Reason() != "resource UID has multiple captured claimants: scene.tscn, target.gd" {
-		t.Fatalf("leading-comment UID collision = state=%s provenance=%s reason=%q, want fail-closed ambiguity", got.State(), got.Provenance(), got.Reason())
-	}
+	require.Equal(t, semantic.ResourceAmbiguousUID, got.State())
+	require.Equal(t, semantic.ResourceUIDClaim, got.Provenance())
+	require.Equal(t, "resource UID has multiple captured claimants: scene.tscn, target.gd", got.Reason())
 }
 
 func TestSnapshotDistinguishesRelativePreloadAndLoad(t *testing.T) {
@@ -207,26 +179,22 @@ func TestSnapshotDistinguishesRelativePreloadAndLoad(t *testing.T) {
 		"nested/loader.gd": "class_name Loader\n",
 	} {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(absolute, []byte(contents), 0o644)
+		require.NoError(t, err)
 	}
 	snapshot, err := project.Load(project.Config{Root: root})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	source := NewSnapshot(snapshot)
 	preloaded := source.ResolvePreloadResource("nested/loader.gd", "target.gd")
-	if preloaded.State() != semantic.ResourceFound || preloaded.Kind() != semantic.ResourceScript || preloaded.Path() != "nested/target.gd" {
-		t.Fatalf("relative preload = state=%s kind=%s path=%q reason=%q, want nested target", preloaded.State(), preloaded.Kind(), preloaded.Path(), preloaded.Reason())
-	}
+	require.Equal(t, semantic.ResourceFound, preloaded.State())
+	require.Equal(t, semantic.ResourceScript, preloaded.Kind())
+	require.Equal(t, "nested/target.gd", preloaded.Path())
 	loaded := source.ResolveLoadResource("nested/loader.gd", "target.gd")
-	if loaded.State() != semantic.ResourceFound || loaded.Kind() != semantic.ResourceScript || loaded.Path() != "target.gd" {
-		t.Fatalf("relative load = state=%s kind=%s path=%q reason=%q, want project-root target", loaded.State(), loaded.Kind(), loaded.Path(), loaded.Reason())
-	}
+	require.Equal(t, semantic.ResourceFound, loaded.State())
+	require.Equal(t, semantic.ResourceScript, loaded.Kind())
+	require.Equal(t, "target.gd", loaded.Path())
 }
 
 func TestSnapshotResourceResolutionDoesNotConsultDiskAfterConstruction(t *testing.T) {
@@ -236,26 +204,21 @@ func TestSnapshotResourceResolutionDoesNotConsultDiskAfterConstruction(t *testin
 		"theme.tres": "[gd_resource type=\"Theme\" format=3 uid=\"uid://b\"]\n",
 	} {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(absolute, []byte(contents), 0o644)
+		require.NoError(t, err)
 	}
 	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	source := NewSnapshot(snapshot)
-	if err := os.Remove(filepath.Join(root, "theme.tres")); err != nil {
-		t.Fatal(err)
-	}
+	err = os.Remove(filepath.Join(root, "theme.tres"))
+	require.NoError(t, err)
 	for _, target := range []string{"res://theme.tres", "uid://b"} {
 		got := source.ResolvePreloadResource("loader.gd", target)
-		if got.State() != semantic.ResourceFound || got.Kind() != semantic.ResourceText || got.Path() != "theme.tres" {
-			t.Fatalf("ResolvePreloadResource(%q) after disk removal = state=%s kind=%s path=%q reason=%q", target, got.State(), got.Kind(), got.Path(), got.Reason())
-		}
+		require.Equal(t, semantic.ResourceFound, got.State())
+		require.Equal(t, semantic.ResourceText, got.Kind())
+		require.Equal(t, "theme.tres", got.Path())
 	}
 }
 
@@ -267,24 +230,18 @@ func TestSnapshotDoesNotUseUIDWinnerMapWithoutClaimEvidence(t *testing.T) {
 		"target.gd.uid": "uid://b\n",
 	} {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(absolute, []byte(contents), 0o644)
+		require.NoError(t, err)
 	}
 	snapshot, err := project.Load(project.Config{Root: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.UIDs["uid://b"] != "target.gd" {
-		t.Fatalf("fixture did not produce the compatibility winner map: %v", snapshot.UIDs)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "target.gd", snapshot.UIDs["uid://b"])
 	got := NewSnapshot(snapshot).ResolvePreloadResource("loader.gd", "uid://b")
-	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "not requested") {
-		t.Fatalf("UID without claim evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
-	}
+	require.Equal(t, semantic.ResourceInvalid, got.State())
+	require.Equal(t, semantic.ResourceUIDClaim, got.Provenance())
+	require.Contains(t, got.Reason(), "not requested")
 }
 
 func TestSnapshotFailsClosedForIncompleteIdentityClaimEvidence(t *testing.T) {
@@ -297,9 +254,9 @@ func TestSnapshotFailsClosedForIncompleteIdentityClaimEvidence(t *testing.T) {
 		IdentityIncomplete: true,
 	})
 	got := source.ResolvePreloadResource("loader.gd", "uid://b")
-	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "incomplete") {
-		t.Fatalf("incomplete UID evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
-	}
+	require.Equal(t, semantic.ResourceInvalid, got.State())
+	require.Equal(t, semantic.ResourceUIDClaim, got.Provenance())
+	require.Contains(t, got.Reason(), "incomplete")
 }
 
 func TestSnapshotFailsClosedForProducerNarrowedIdentityEvidence(t *testing.T) {
@@ -312,24 +269,18 @@ func TestSnapshotFailsClosedForProducerNarrowedIdentityEvidence(t *testing.T) {
 		"excluded/other.gd.uid": "uid://b\n",
 	} {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(absolute, []byte(contents), 0o644)
+		require.NoError(t, err)
 	}
 	snapshot, err := project.Load(project.Config{Root: root, Exclude: []string{"excluded/**"}, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !snapshot.IdentityIncomplete {
-		t.Fatal("fixture did not retain narrowed identity evidence")
-	}
+	require.NoError(t, err)
+	require.True(t, snapshot.IdentityIncomplete, "fixture did not retain narrowed identity evidence")
 	got := NewSnapshot(snapshot).ResolvePreloadResource("loader.gd", "uid://b")
-	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "incomplete") {
-		t.Fatalf("narrowed UID evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
-	}
+	require.Equal(t, semantic.ResourceInvalid, got.State())
+	require.Equal(t, semantic.ResourceUIDClaim, got.Provenance())
+	require.Contains(t, got.Reason(), "incomplete")
 }
 
 func TestSnapshotFailsClosedForProducerSymlinkedClaimEvidence(t *testing.T) {
@@ -341,30 +292,23 @@ func TestSnapshotFailsClosedForProducerSymlinkedClaimEvidence(t *testing.T) {
 		"target.gd.uid": "uid://b\n",
 	} {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(absolute, []byte(contents), 0o644)
+		require.NoError(t, err)
 	}
-	if err := os.WriteFile(filepath.Join(outside, "other.gd.uid"), []byte("uid://b\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	err := os.WriteFile(filepath.Join(outside, "other.gd.uid"), []byte("uid://b\n"), 0o644)
+	require.NoError(t, err)
 	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
 		t.Skipf("symlinks are unavailable in this test environment: %v", err)
 	}
 	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !snapshot.IdentityIncomplete {
-		t.Fatal("fixture did not retain omitted symlinked claim evidence")
-	}
+	require.NoError(t, err)
+	require.True(t, snapshot.IdentityIncomplete, "fixture did not retain omitted symlinked claim evidence")
 	got := NewSnapshot(snapshot).ResolvePreloadResource("loader.gd", "uid://b")
-	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "incomplete") {
-		t.Fatalf("symlinked UID evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
-	}
+	require.Equal(t, semantic.ResourceInvalid, got.State())
+	require.Equal(t, semantic.ResourceUIDClaim, got.Provenance())
+	require.Contains(t, got.Reason(), "incomplete")
 }
 
 func TestSnapshotFailsClosedForProducerBinaryResourceClaimEvidence(t *testing.T) {
@@ -372,9 +316,7 @@ func TestSnapshotFailsClosedForProducerBinaryResourceClaimEvidence(t *testing.T)
 	// after ResourceSaver.set_uid. Its non-.res extension proves this fixture
 	// reaches the opaque binary-header path rather than the suffix fallback.
 	data, err := base64.StdEncoding.DecodeString(godotThemeBinaryFixture)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	root := t.TempDir()
 	for name, contents := range map[string]string{
 		"loader.gd":     "class_name Loader\n",
@@ -382,34 +324,25 @@ func TestSnapshotFailsClosedForProducerBinaryResourceClaimEvidence(t *testing.T)
 		"target.gd.uid": "uid://knq6ium74go7\n",
 	} {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(absolute, []byte(contents), 0o644)
+		require.NoError(t, err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "opaque.theme"), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	err = os.WriteFile(filepath.Join(root, "opaque.theme"), data, 0o644)
+	require.NoError(t, err)
 	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !snapshot.IdentityIncomplete {
-		t.Fatal("real binary resource did not make UID evidence incomplete")
-	}
+	require.NoError(t, err)
+	require.True(t, snapshot.IdentityIncomplete, "real binary resource did not make UID evidence incomplete")
 	got := NewSnapshot(snapshot).ResolveLoadResource("loader.gd", "uid://knq6ium74go7")
-	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "incomplete") {
-		t.Fatalf("binary-resource UID evidence = state=%s provenance=%s reason=%q, want fail-closed incomplete result", got.State(), got.Provenance(), got.Reason())
-	}
+	require.Equal(t, semantic.ResourceInvalid, got.State())
+	require.Equal(t, semantic.ResourceUIDClaim, got.Provenance())
+	require.Contains(t, got.Reason(), "incomplete")
 }
 
 func TestSnapshotResolvesUIDPastGeneratedMetadata(t *testing.T) {
 	data, err := base64.StdEncoding.DecodeString(godotThemeBinaryFixture)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	root := t.TempDir()
 	for name, contents := range map[string]string{
 		"loader.gd":     "class_name Loader\n",
@@ -417,31 +350,23 @@ func TestSnapshotResolvesUIDPastGeneratedMetadata(t *testing.T) {
 		"target.gd.uid": "uid://b\n",
 	} {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(absolute, []byte(contents), 0o644)
+		require.NoError(t, err)
 	}
 	cachePath := filepath.Join(root, ".godot", "imported", "opaque.theme")
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cachePath, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	err = os.MkdirAll(filepath.Dir(cachePath), 0o755)
+	require.NoError(t, err)
+	err = os.WriteFile(cachePath, data, 0o644)
+	require.NoError(t, err)
 	snapshot, err := project.Load(project.Config{Root: root, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.IdentityIncomplete {
-		t.Fatal("generated metadata made project identity evidence incomplete")
-	}
+	require.NoError(t, err)
+	require.False(t, snapshot.IdentityIncomplete, "generated metadata made project identity evidence incomplete")
 	got := NewSnapshot(snapshot).ResolveLoadResource("loader.gd", "uid://b")
-	if got.State() != semantic.ResourceFound || got.Kind() != semantic.ResourceScript || got.Path() != "target.gd" {
-		t.Fatalf("UID past generated metadata = state=%s kind=%s path=%q reason=%q", got.State(), got.Kind(), got.Path(), got.Reason())
-	}
+	require.Equal(t, semantic.ResourceFound, got.State())
+	require.Equal(t, semantic.ResourceScript, got.Kind())
+	require.Equal(t, "target.gd", got.Path())
 }
 
 func TestSnapshotRejectsUnknownResourceInventoryKinds(t *testing.T) {
@@ -451,9 +376,9 @@ func TestSnapshotRejectsUnknownResourceInventoryKinds(t *testing.T) {
 		Resources: []project.Resource{{Path: "mystery.asset", Kind: project.ResourceKind(99)}},
 	})
 	got := source.ResolvePreloadResource("loader.gd", "res://mystery.asset")
-	if got.State() != semantic.ResourceMissing || got.Kind() != semantic.ResourceUnknown || !strings.Contains(got.Reason(), "inventory") {
-		t.Fatalf("unknown resource kind = state=%s kind=%s reason=%q, want missing Unknown inventory result", got.State(), got.Kind(), got.Reason())
-	}
+	require.Equal(t, semantic.ResourceMissing, got.State())
+	require.Equal(t, semantic.ResourceUnknown, got.Kind())
+	require.Contains(t, got.Reason(), "inventory")
 }
 
 func TestSnapshotFailsClosedForMalformedCapturedClaimEvidence(t *testing.T) {
@@ -465,9 +390,9 @@ func TestSnapshotFailsClosedForMalformedCapturedClaimEvidence(t *testing.T) {
 		IdentityEvidence: true,
 	})
 	got := source.ResolvePreloadResource("loader.gd", "uid://b")
-	if got.State() != semantic.ResourceInvalid || got.Provenance() != semantic.ResourceUIDClaim || !strings.Contains(got.Reason(), "malformed") {
-		t.Fatalf("malformed claim evidence = state=%s provenance=%s reason=%q", got.State(), got.Provenance(), got.Reason())
-	}
+	require.Equal(t, semantic.ResourceInvalid, got.State())
+	require.Equal(t, semantic.ResourceUIDClaim, got.Provenance())
+	require.Contains(t, got.Reason(), "malformed")
 }
 
 func TestSnapshotCopiesProviderCollections(t *testing.T) {
@@ -486,21 +411,19 @@ func TestSnapshotCopiesProviderCollections(t *testing.T) {
 	snapshot.Autoloads["A"] = "changed.gd"
 	snapshot.Resources[1] = project.Resource{Path: "changed.tres", Kind: project.ResourceImported}
 	snapshot.Claims[0] = project.Claim{UID: "uid://b", Owner: "changed.tres", Path: "changed.tres", Line: 1, Kind: project.ClaimHeader}
-	if !slices.Equal(source.Paths(), []string{"a.gd"}) {
-		t.Errorf("Paths = %v", source.Paths())
-	}
-	if got, ok := source.ResolvePath("x.gd", "uid://a"); !ok || got != "a.gd" {
-		t.Errorf("UID resolution = %q, %v", got, ok)
-	}
-	if source.Autoloads()["A"] != "a.gd" {
-		t.Errorf("Autoloads = %v", source.Autoloads())
-	}
-	if got := source.ResolvePreloadResource("a.gd", "res://theme.tres"); got.State() != semantic.ResourceFound || got.Kind() != semantic.ResourceText || got.Path() != "theme.tres" {
-		t.Errorf("resource inventory copy = state=%s kind=%s path=%q", got.State(), got.Kind(), got.Path())
-	}
-	if got := source.ResolvePreloadResource("a.gd", "uid://b"); got.State() != semantic.ResourceFound || got.Kind() != semantic.ResourceText || got.Path() != "theme.tres" {
-		t.Errorf("UID claim copy = state=%s kind=%s path=%q reason=%q", got.State(), got.Kind(), got.Path(), got.Reason())
-	}
+	assert.Equal(t, []string{"a.gd"}, source.Paths())
+	path, ok := source.ResolvePath("x.gd", "uid://a")
+	assert.True(t, ok)
+	assert.Equal(t, "a.gd", path)
+	assert.Equal(t, "a.gd", source.Autoloads()["A"])
+	resource := source.ResolvePreloadResource("a.gd", "res://theme.tres")
+	assert.Equal(t, semantic.ResourceFound, resource.State())
+	assert.Equal(t, semantic.ResourceText, resource.Kind())
+	assert.Equal(t, "theme.tres", resource.Path())
+	claim := source.ResolvePreloadResource("a.gd", "uid://b")
+	assert.Equal(t, semantic.ResourceFound, claim.State())
+	assert.Equal(t, semantic.ResourceText, claim.Kind())
+	assert.Equal(t, "theme.tres", claim.Path())
 }
 
 // TestSnapshotExposesAClassMountedThroughADirectorySymlink is the adapter half
@@ -517,19 +440,15 @@ func TestSnapshotExposesAClassMountedThroughADirectorySymlink(t *testing.T) {
 		"nested/pack_entry.gd": "class_name PackEntry\n",
 	} {
 		absolute := filepath.Join(external, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+		require.NoError(t, err)
+		err = os.WriteFile(absolute, []byte(contents), 0o644)
+		require.NoError(t, err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "pack_view.gd"), []byte("class_name PackView\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "addons"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	err := os.WriteFile(filepath.Join(root, "pack_view.gd"), []byte("class_name PackView\n"), 0o644)
+	require.NoError(t, err)
+	err = os.MkdirAll(filepath.Join(root, "addons"), 0o755)
+	require.NoError(t, err)
 	if err := os.Symlink(external, filepath.Join(root, "addons", "worldmap_runtime")); err != nil {
 		t.Skipf("symlinks are unavailable in this test environment: %v", err)
 	}
@@ -539,48 +458,30 @@ func TestSnapshotExposesAClassMountedThroughADirectorySymlink(t *testing.T) {
 		FollowDirectorySymlinks: true,
 		Selection:               &project.Selection{SourceRoots: []string{"."}, Exclude: []string{"addons/**"}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	source := NewSnapshot(loaded)
 	logical := "addons/worldmap_runtime/pack_manifest.gd"
 	paths := source.Paths()
-	if !slices.Contains(paths, logical) || !slices.Contains(paths, "addons/worldmap_runtime/nested/pack_entry.gd") {
-		t.Fatalf("SourceSet paths = %v, want the mount's scripts under their logical paths", paths)
-	}
+	require.Contains(t, paths, logical)
+	require.Contains(t, paths, "addons/worldmap_runtime/nested/pack_entry.gd")
 	// The mount is excluded from lint actions, so it must be a dependency and
 	// not an action: in the universe, out of Selected.
-	if slices.Contains(loaded.Selected, logical) {
-		t.Errorf("an excluded mounted dependency entered Selected: %v", loaded.Selected)
-	}
-	if source.File(logical) == nil {
-		t.Fatalf("File(%q) = nil", logical)
-	}
+	assert.NotContains(t, loaded.Selected, logical)
+	require.NotNil(t, source.File(logical))
 	// This is the acceptance case: semantic analysis resolves the mounted
 	// class, and resolves it to the logical mount path Godot loads it by.
 	index := semantic.BuildIndex(source)
 	declared := index.ClassByName("PackManifest")
-	if declared == nil {
-		t.Fatal("PackManifest did not resolve out of the mounted addon")
-	}
-	if declared.Path != logical {
-		t.Fatalf("PackManifest resolved to %q, want the logical mount path %q", declared.Path, logical)
-	}
-	if nested := index.ClassByName("PackEntry"); nested == nil ||
-		nested.Path != "addons/worldmap_runtime/nested/pack_entry.gd" {
-		t.Fatalf("PackEntry resolved to %+v, want the nested logical path", nested)
-	}
+	require.NotNil(t, declared)
+	require.Equal(t, logical, declared.Path)
+	nested := index.ClassByName("PackEntry")
+	require.NotNil(t, nested)
+	require.Equal(t, "addons/worldmap_runtime/nested/pack_entry.gd", nested.Path)
 	// The external host directory is validation evidence the loader discarded.
 	// Nothing the adapter exposes may name it.
 	for _, path := range paths {
-		if strings.Contains(path, external) {
-			t.Fatalf("SourceSet path leaked the canonical host path: %q", path)
-		}
-		if source.File(path) == nil {
-			t.Errorf("File(%q) = nil for a published path", path)
-		}
+		require.NotContains(t, path, external)
+		assert.NotNil(t, source.File(path))
 	}
-	if source.File(filepath.Join(external, "pack_manifest.gd")) != nil {
-		t.Error("the canonical host path resolved as a SourceSet key")
-	}
+	assert.Nil(t, source.File(filepath.Join(external, "pack_manifest.gd")))
 }

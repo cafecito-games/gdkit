@@ -8,14 +8,15 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func mustParse(t *testing.T, source string) *Matcher {
 	t.Helper()
 	matcher, err := Parse([]byte(source))
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", source, err)
-	}
+	require.NoError(t, err)
 	return matcher
 }
 
@@ -141,21 +142,16 @@ func TestIgnored(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			matcher := mustParse(t, test.source)
-			if got := matcher.Ignored(test.path, test.isDirectory); got != test.want {
-				t.Errorf("Ignored(%q, %v) with %q = %v, want %v", test.path, test.isDirectory, test.source, got, test.want)
-			}
+			got := matcher.Ignored(test.path, test.isDirectory)
+			assert.Equal(t, test.want, got)
 		})
 	}
 }
 
 func TestNilMatcherIgnoresNothing(t *testing.T) {
 	var matcher *Matcher
-	if matcher.Ignored("addons/a.gd", false) {
-		t.Error("a nil Matcher must ignore nothing")
-	}
-	if matcher.HasNegation() {
-		t.Error("a nil Matcher has no negation")
-	}
+	assert.False(t, matcher.Ignored("addons/a.gd", false), "a nil Matcher must ignore nothing")
+	assert.False(t, matcher.HasNegation(), "a nil Matcher has no negation")
 }
 
 func TestHasNegation(t *testing.T) {
@@ -170,9 +166,8 @@ func TestHasNegation(t *testing.T) {
 		{"# !comment\n", false},
 	}
 	for _, test := range tests {
-		if got := mustParse(t, test.source).HasNegation(); got != test.want {
-			t.Errorf("HasNegation() with %q = %v, want %v", test.source, got, test.want)
-		}
+		got := mustParse(t, test.source).HasNegation()
+		assert.Equal(t, test.want, got)
 	}
 }
 
@@ -195,15 +190,9 @@ func TestParseErrorsNameTheLine(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			matcher, err := Parse([]byte(test.source))
-			if err == nil {
-				t.Fatalf("Parse(%q) succeeded, want an error", test.source)
-			}
-			if matcher != nil {
-				t.Errorf("Parse(%q) returned a matcher alongside its error", test.source)
-			}
-			if !strings.HasPrefix(err.Error(), test.want) {
-				t.Errorf("error = %q, want prefix %q", err, test.want)
-			}
+			require.Error(t, err)
+			assert.Nil(t, matcher)
+			assert.True(t, strings.HasPrefix(err.Error(), test.want))
 		})
 	}
 }
@@ -344,23 +333,22 @@ func TestIgnoredAgreesWithGit(t *testing.T) {
 			}
 			for _, path := range paths {
 				absolute := filepath.Join(root, filepath.FromSlash(path))
-				if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(absolute, nil, 0o644); err != nil {
-					t.Fatal(err)
-				}
+				err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+				require.NoError(t, err)
+				err = os.WriteFile(absolute, nil, 0o644)
+				require.NoError(t, err)
 			}
-			if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(source), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(source), 0o644)
+			require.NoError(t, err)
 			check := exec.Command(git, "-C", root, "check-ignore", "-z", "--stdin")
 			check.Env = environment
 			check.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
 			output, err := check.Output()
 			// check-ignore exits 1 when no path is ignored.
-			if exitError, ok := err.(*exec.ExitError); err != nil && (!ok || exitError.ExitCode() != 1) {
-				t.Fatalf("git check-ignore: %v", err)
+			if err != nil {
+				var exitError *exec.ExitError
+				require.ErrorAs(t, err, &exitError, "git check-ignore")
+				require.Equal(t, 1, exitError.ExitCode(), "git check-ignore")
 			}
 			var want []string
 			for _, path := range bytes.Split(output, []byte{0}) {
@@ -377,9 +365,7 @@ func TestIgnoredAgreesWithGit(t *testing.T) {
 			}
 			slices.Sort(want)
 			slices.Sort(got)
-			if !slices.Equal(got, want) {
-				t.Errorf("ignored paths differ from git\n got: %q\nwant: %q", got, want)
-			}
+			assert.Equal(t, want, got, "ignored paths differ from git")
 		})
 	}
 }

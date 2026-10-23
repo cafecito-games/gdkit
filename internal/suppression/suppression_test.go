@@ -1,8 +1,10 @@
 package suppression
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMatch(t *testing.T) {
@@ -25,15 +27,12 @@ func TestMatch(t *testing.T) {
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
 			offset, names, ok := Match(testCase.kind, testCase.line)
-			if ok != (testCase.names != nil) {
-				t.Fatalf("ok = %v", ok)
-			}
+			require.Equal(t, testCase.names != nil, ok)
 			if !ok {
 				return
 			}
-			if offset != testCase.offset || !reflect.DeepEqual(names, testCase.names) {
-				t.Fatalf("got offset %d names %q, want %d %q", offset, names, testCase.offset, testCase.names)
-			}
+			require.Equal(t, testCase.offset, offset)
+			require.Equal(t, testCase.names, names)
 		})
 	}
 }
@@ -45,8 +44,7 @@ func TestStandsAlone(t *testing.T) {
 		"var x = 1  # gdlint:ignore = a": false,
 		"func f():  # gdlint:ignore = a": false,
 	} {
-		if got := StandsAlone(line); got != want {
-			t.Errorf("StandsAlone(%q) = %v, want %v", line, got, want)
-		}
+		got := StandsAlone(line)
+		assert.Equal(t, want, got)
 	}
 }

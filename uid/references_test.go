@@ -1,8 +1,10 @@
 package uid
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // scene renders a .tscn with the given identity and ext_resource lines, which
@@ -30,24 +32,14 @@ func TestCheckReportsAReferenceNoFileClaims(t *testing.T) {
 		"main.tscn":     scene("uid://ddd", external("uid://xxx", "player.gd", "1_a")),
 		"theme.tres":    "[gd_resource type=\"Theme\" format=3 uid=\"uid://eee\"]\n\n" + external("uid://xxy", "player.gd", "1_b") + "\n",
 	})
-	if got := rules(report); !reflect.DeepEqual(got, []string{RuleDangling, RuleDangling, RuleDangling}) {
-		t.Fatalf("rules = %v, want three %s (%v)", got, RuleDangling, report.Diagnostics)
-	}
+	require.Equal(t, []string{RuleDangling, RuleDangling, RuleDangling}, rules(report))
 	want := []string{"loader.gd", "main.tscn", "theme.tres"}
-	if got := paths(report); !reflect.DeepEqual(got, want) {
-		t.Fatalf("paths = %v, want %v", got, want)
-	}
+	require.Equal(t, want, paths(report))
 	// The two that name a path can be repaired from it; the preload cannot,
 	// because nothing in the script says what was meant.
-	if got := pathsOf(withRule(report.Rewritable(), RuleDangling)); !reflect.DeepEqual(got, []string{"main.tscn", "theme.tres"}) {
-		t.Errorf("Rewritable() = %v, want the two that name a path", got)
-	}
-	if got := pathsOf(report.Reported()); !reflect.DeepEqual(got, []string{"loader.gd"}) {
-		t.Errorf("Reported() = %v, want the preload", got)
-	}
-	if got := report.Diagnostics[0].Line; got != 3 {
-		t.Errorf("preload line = %d, want 3", got)
-	}
+	assert.Equal(t, []string{"main.tscn", "theme.tres"}, pathsOf(withRule(report.Rewritable(), RuleDangling)))
+	assert.Equal(t, []string{"loader.gd"}, pathsOf(report.Reported()))
+	assert.Equal(t, 3, report.Diagnostics[0].Line)
 }
 
 // load and ResourceLoader.load are references too, and none of the three names
@@ -66,12 +58,8 @@ func ready() -> void:
 `,
 		"loader.gd.uid": "uid://bbb\n",
 	})
-	if got := rules(report); !reflect.DeepEqual(got, []string{RuleDangling, RuleDangling, RuleDangling}) {
-		t.Fatalf("rules = %v, want three %s", got, RuleDangling)
-	}
-	if got := len(report.Reported()); got != 3 {
-		t.Errorf("Reported() has %d diagnostics, want 3", got)
-	}
+	require.Equal(t, []string{RuleDangling, RuleDangling, RuleDangling}, rules(report))
+	assert.Len(t, report.Reported(), 3)
 }
 
 // A reference holding text no decoder accepts resolves to nothing, which is
@@ -83,9 +71,7 @@ func TestCheckReportsAnUndecodableReferenceAsDangling(t *testing.T) {
 		"player.gd.uid": "uid://bbb\n",
 		"main.tscn":     scene("uid://ccc", external("uid://b_local_screen", "player.gd", "1_a")),
 	})
-	if got := rules(report); !reflect.DeepEqual(got, []string{RuleDangling}) {
-		t.Fatalf("rules = %v, want one %s", got, RuleDangling)
-	}
+	require.Equal(t, []string{RuleDangling}, rules(report))
 }
 
 func TestCheckReportsAReferenceThatResolvesToAnotherFile(t *testing.T) {
@@ -98,16 +84,12 @@ func TestCheckReportsAReferenceThatResolvesToAnotherFile(t *testing.T) {
 		// it resolves and loads the wrong script, with no warning at all.
 		"main.tscn": scene("uid://ddd", external("uid://ccc", "player.gd", "1_a")),
 	})
-	if got := rules(report); !reflect.DeepEqual(got, []string{RuleCrossed}) {
-		t.Fatalf("rules = %v, want one %s (%v)", got, RuleCrossed, report.Diagnostics)
-	}
+	require.Equal(t, []string{RuleCrossed}, rules(report))
 	diagnostic := report.Diagnostics[0]
-	if diagnostic.Path != "main.tscn" || diagnostic.Line != 3 || diagnostic.Target != "player.gd" {
-		t.Errorf("diagnostic = %+v, want it at main.tscn:3 naming player.gd", diagnostic)
-	}
-	if !diagnostic.repairable {
-		t.Error("the reference names a path with an identity of its own, so it is repairable")
-	}
+	assert.Equal(t, "main.tscn", diagnostic.Path)
+	assert.Equal(t, 3, diagnostic.Line)
+	assert.Equal(t, "player.gd", diagnostic.Target)
+	assert.True(t, diagnostic.repairable)
 }
 
 func TestCheckPassesAProjectWhoseReferencesResolve(t *testing.T) {
@@ -122,9 +104,7 @@ func TestCheckPassesAProjectWhoseReferencesResolve(t *testing.T) {
 			external("uid://bbb", "player.gd", "1_a"),
 			"[ext_resource type=\"Texture2D\" uid=\"uid://eee\" path=\"res://icon.png\" id=\"2_b\"]"),
 	})
-	if report.HasDiagnostics() {
-		t.Fatalf("diagnostics = %v, want none", report.Diagnostics)
-	}
+	require.False(t, report.HasDiagnostics())
 }
 
 // Padding makes two texts name one identifier, and Godot resolves both, so a
@@ -135,9 +115,7 @@ func TestCheckAcceptsAPaddedReference(t *testing.T) {
 		"player.gd.uid": "uid://b\n",
 		"main.tscn":     scene("uid://ccc", external("uid://aab", "player.gd", "1_a")),
 	})
-	if report.HasDiagnostics() {
-		t.Fatalf("diagnostics = %v, want none", report.Diagnostics)
-	}
+	require.False(t, report.HasDiagnostics())
 }
 
 func TestCheckReportsAMalformedIdentityWhereverItIsDeclared(t *testing.T) {
@@ -158,22 +136,14 @@ func TestCheckReportsAMalformedIdentityWhereverItIsDeclared(t *testing.T) {
 				"icon.png.import":     "[remap]\n\nuid=\"" + text + "\"\n",
 			})
 			want := []string{"icon.png", "main.tscn", "shader.gdshader", "theme.tres"}
-			if got := paths(report); !reflect.DeepEqual(got, want) {
-				t.Fatalf("paths = %v, want %v", got, want)
-			}
+			require.Equal(t, want, paths(report))
 			for _, diagnostic := range report.Diagnostics {
-				if diagnostic.Rule != RuleMalformed {
-					t.Errorf("%s: rule = %s, want %s", diagnostic.Path, diagnostic.Rule, RuleMalformed)
-				}
-				if diagnostic.UID != text {
-					t.Errorf("%s: UID = %q, want %q", diagnostic.Path, diagnostic.UID, text)
-				}
+				assert.Equal(t, RuleMalformed, diagnostic.Rule, diagnostic.Path)
+				assert.Equal(t, text, diagnostic.UID, diagnostic.Path)
 			}
 			// Every one of them can be reissued, which is what makes the
 			// references to them fixable in the same run.
-			if got := len(report.Repairs()); got != len(want) {
-				t.Errorf("Repairs() has %d diagnostics, want %d", got, len(want))
-			}
+			assert.Len(t, report.Repairs(), len(want))
 		})
 	}
 }
@@ -190,9 +160,7 @@ func TestCheckResolvesAgainstAnIgnoredClaimant(t *testing.T) {
 			external("uid://fff", "addons/vendor/plugin.gd", "1_a"),
 			"[ext_resource type=\"PackedScene\" uid=\"uid://ggg\" path=\"res://addons/vendor/panel.tscn\" id=\"2_b\"]"),
 	})
-	if report.HasDiagnostics() {
-		t.Fatalf("diagnostics = %v, want none", report.Diagnostics)
-	}
+	require.False(t, report.HasDiagnostics())
 }
 
 // withRule narrows a group to one rule, so a test can speak about the dangling

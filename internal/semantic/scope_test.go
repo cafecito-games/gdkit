@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdparser/ast"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBindingKindsHaveStableVocabulary(t *testing.T) {
@@ -33,17 +35,13 @@ func TestBindingKindsHaveStableVocabulary(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, testCase := range cases {
-		if got := testCase.kind.String(); got != testCase.want {
-			t.Errorf("%d.String() = %q, want %q", testCase.kind, got, testCase.want)
-		}
-		if seen[testCase.want] {
-			t.Errorf("binding vocabulary repeats %q", testCase.want)
-		}
+		got := testCase.kind.String()
+		assert.Equal(t, testCase.want, got)
+		assert.False(t, seen[testCase.want])
 		seen[testCase.want] = true
 	}
-	if got, want := BindingKind(255).String(), fmt.Sprintf("BindingKind(%d)", 255); got != want {
-		t.Fatalf("unknown binding kind = %q, want %q", got, want)
-	}
+	got, want := BindingKind(255).String(), fmt.Sprintf("BindingKind(%d)", 255)
+	require.Equal(t, want, got)
 }
 
 func TestScopesRespectDeclarationPointsAndBlockLifetimes(t *testing.T) {
@@ -55,36 +53,25 @@ func TestScopesRespectDeclarationPointsAndBlockLifetimes(t *testing.T) {
 	file := source.File("player.gd")
 
 	before := scopeIdentifiersNamed(t, file, "before")
-	if len(before) != 1 {
-		t.Fatalf("before identifiers = %d, want 1", len(before))
-	}
+	require.Len(t, before, 1)
 	scopeRequireUnknown(t, scopes, before[0], "before declaration")
 
 	value := scopeIdentifiersNamed(t, file, "value")
-	if len(value) != 1 {
-		t.Fatalf("value identifiers = %d, want 1", len(value))
-	}
+	require.Len(t, value, 1)
 	parameter := scopeRequireBinding(t, scopes, value[0], BindingParameter)
-	if parameter.Type().Kind() != KindBuiltin || parameter.Type().Name() != "int" {
-		t.Fatalf("parameter type = %v %q (%q)", parameter.Type().Kind(), parameter.Type().Name(), parameter.Type().Reason())
-	}
+	require.Equal(t, KindBuiltin, parameter.Type().Kind())
+	require.Equal(t, "int", parameter.Type().Name())
 
 	branch := scopeIdentifiersNamed(t, file, "branch")
-	if len(branch) != 2 {
-		t.Fatalf("branch identifiers = %d, want 2", len(branch))
-	}
+	require.Len(t, branch, 2)
 	scopeRequireBinding(t, scopes, branch[0], BindingLocal)
 	scopeRequireUnknown(t, scopes, branch[1], "branch expired")
 
 	local := scopeIdentifiersNamed(t, file, "local")
-	if len(local) != 2 {
-		t.Fatalf("local identifiers = %d, want 2", len(local))
-	}
+	require.Len(t, local, 2)
 	first := scopeRequireBinding(t, scopes, local[0], BindingLocal)
 	second := scopeRequireBinding(t, scopes, local[1], BindingLocal)
-	if first.ID() != second.ID() {
-		t.Fatalf("local binding identity changed: %v / %v", first.ID(), second.ID())
-	}
+	require.Equal(t, second.ID(), first.ID())
 }
 
 func TestScopesHandleParametersLambdasAndAccessors(t *testing.T) {
@@ -96,23 +83,18 @@ func TestScopesHandleParametersLambdasAndAccessors(t *testing.T) {
 	file := source.File("player.gd")
 
 	member := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "property", 4), BindingMember)
-	if member.Type().Kind() != KindBuiltin || member.Type().Name() != "int" {
-		t.Fatalf("getter member type = %v %q (%q)", member.Type().Kind(), member.Type().Name(), member.Type().Reason())
-	}
+	require.Equal(t, KindBuiltin, member.Type().Kind())
+	require.Equal(t, "int", member.Type().Name())
 	scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "next", 6), BindingSetter)
 
 	first := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "first", 7), BindingParameter)
-	if first.Slot() != 0 {
-		t.Fatalf("first parameter slot = %d, want 0", first.Slot())
-	}
+	require.Equal(t, 0, first.Slot())
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "later", 7), "later parameter default")
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "self_default", 7), "self parameter default")
 
 	lambdaParameter := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "captured", 12), BindingParameter)
 	outerLocal := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "captured", 14), BindingLocal)
-	if lambdaParameter.ID() == outerLocal.ID() {
-		t.Fatal("lambda parameter did not shadow the captured outer local")
-	}
+	require.False(t, lambdaParameter.ID() == outerLocal.ID(), "lambda parameter did not shadow the captured outer local")
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "named", 13), "lambda debug name")
 }
 
@@ -123,9 +105,7 @@ func TestScopesLetDefaultLambdasCaptureEarlierParameters(t *testing.T) {
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
 	file := source.File("player.gd")
 	captured := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "first", 2), BindingParameter)
-	if captured.Slot() != 0 {
-		t.Fatalf("captured parameter slot = %d, want 0", captured.Slot())
-	}
+	require.Equal(t, 0, captured.Slot())
 }
 
 func TestScopesKeepStaticPropertyAccessorsStatic(t *testing.T) {
@@ -180,15 +160,14 @@ func TestScopesIsolateEveryControlFlowBodyAndMatchCase(t *testing.T) {
 		scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, testCase.name, testCase.line), "expired control-flow binding")
 	}
 	item := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "item", 18), BindingFor)
-	if item.Type().Kind() != KindBuiltin || item.Type().Name() != "int" {
-		t.Fatalf("for binding type = %v %q (%q)", item.Type().Kind(), item.Type().Name(), item.Type().Reason())
-	}
+	require.Equal(t, KindBuiltin, item.Type().Kind())
+	require.Equal(t, "int", item.Type().Name())
 	left := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "left", 22), BindingMatch)
 	right := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "right", 23), BindingMatch)
 	lone := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "lone", 25), BindingMatch)
-	if left.ID() == right.ID() || left.ID() == lone.ID() || right.ID() == lone.ID() {
-		t.Fatalf("match binding identities collided: left=%v right=%v lone=%v", left.ID(), right.ID(), lone.ID())
-	}
+	require.False(t, left.ID() == right.ID())
+	require.False(t, left.ID() == lone.ID())
+	require.False(t, right.ID() == lone.ID())
 }
 
 func TestScopesKeepSiblingBranchesIsolated(t *testing.T) {
@@ -207,9 +186,7 @@ func TestScopesInstallMatchBindingsBeforeTheirGuard(t *testing.T) {
 	file := source.File("player.gd")
 	guard := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "captured", 4), BindingMatch)
 	body := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "captured", 5), BindingMatch)
-	if guard.ID() != body.ID() {
-		t.Fatalf("match binding changed between guard and body: %v / %v", guard.ID(), body.ID())
-	}
+	require.Equal(t, body.ID(), guard.ID())
 }
 
 func TestScopesFailClosedForMalformedDuplicateBindings(t *testing.T) {
@@ -308,13 +285,9 @@ func TestScopesFailClosedForUnsupportedStatementBoundaries(t *testing.T) {
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeNamespaceEngine(t)))
 	unsupportedStatement := function.Body[0]
 	unsupportedScope, ok := scopes.ScopeAt(unsupportedStatement)
-	if !ok {
-		t.Fatal("unsupported statement was not indexed")
-	}
+	require.True(t, ok, "unsupported statement was not indexed")
 	const unsupportedReason = "unsupported nested *ast.EnumDeclaration has no established lexical scope boundary"
-	if unsupportedScope.blocked != unsupportedReason {
-		t.Fatalf("unsupported statement scope reason = %q, want %q", unsupportedScope.blocked, unsupportedReason)
-	}
+	require.Equal(t, unsupportedReason, unsupportedScope.blocked)
 	scopeRequireUnknown(t, scopes, unsupportedUse, "unsupported nested enum")
 	scopeRequireUnknown(t, scopes, accessorUse, "unsupported local accessor")
 	for _, testCase := range []struct {
@@ -381,9 +354,7 @@ func TestScopesUseStaticContextForConstantInitializers(t *testing.T) {
 	source := sources(t, map[string]string{
 		"player.gd": "class_name Player\nvar field: int\nconst SELF_VALUE = self\nconst FIELD_VALUE = field\nfunc run():\n\tconst LOCAL_SELF = self\n\tconst LOCAL_FIELD = field\nfunc values(parameter):\n\tvar mutable = 1\n\tconst FROM_PARAMETER = parameter\n\tconst FROM_MUTABLE = mutable\n\tconst FIRST = 1\n\tconst FROM_CONST = FIRST\n",
 	})
-	if got := source.ParseFailures(); len(got) != 0 {
-		t.Fatalf("constant fixture did not parse: %v", got)
-	}
+	require.Empty(t, source.ParseFailures(), "constant fixture did not parse")
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeStaticEngine(t)))
 	file := source.File("player.gd")
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "self", 3), "constant self")
@@ -400,9 +371,7 @@ func TestScopesDoNotResolveSuperInConstantInitializers(t *testing.T) {
 		"base.gd":  "class_name Base\nstatic func inherited():\n\tpass\n",
 		"child.gd": "class_name Child extends Base\nstatic func inherited():\n\tconst VALUE = super()\n",
 	})
-	if got := source.ParseFailures(); len(got) != 0 {
-		t.Fatalf("constant super fixture did not parse: %v", got)
-	}
+	require.Empty(t, source.ParseFailures(), "constant super fixture did not parse")
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeStaticEngine(t)))
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, source.File("child.gd"), "super", 3), "constant super")
 }
@@ -436,9 +405,7 @@ func TestScopesRestrictNonConstantNamespacesInConstantExpressions(t *testing.T) 
 		"player.gd":   "class_name Player\nstatic var static_field: int\nstatic func static_method():\n\tpass\nconst TOP_STATIC_FIELD = static_field\nconst TOP_STATIC_METHOD = static_method\nconst TOP_AUTOLOAD = AutoLoad\nconst TOP_SINGLE = Single\nconst TOP_PRELOAD = preload(\"res://thing.gd\")\nconst TOP_LOAD = load(\"res://thing.gd\")\nconst TOP_UTILITY = utility()\nenum { BAD = static_field }\nfunc run():\n\tconst LOCAL_STATIC_FIELD = static_field\n\tconst LOCAL_STATIC_METHOD = static_method\n\tconst LOCAL_AUTOLOAD = AutoLoad\n\tconst LOCAL_SINGLE = Single\n\tconst LOCAL_UTILITY = utility()\n",
 	})
 	source.autoloads["AutoLoad"] = "autoload.gd"
-	if got := source.ParseFailures(); len(got) != 0 {
-		t.Fatalf("constant namespace fixture did not parse: %v", got)
-	}
+	require.Empty(t, source.ParseFailures(), "constant namespace fixture did not parse")
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeNamespaceEngine(t)))
 	file := source.File("player.gd")
 	for _, testCase := range []struct {
@@ -495,12 +462,10 @@ func TestScopesFailClosedForSharedAndTypedNilASTNodes(t *testing.T) {
 	interfaces := BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t))
 	scopes := BuildScopes(interfaces)
 	scopeRequireUnknown(t, scopes, shared, "shared AST node")
-	if _, ok := scopes.ScopeAt(nilCall); ok {
-		t.Error("typed-nil call expression was indexed")
-	}
-	if _, ok := scopes.ScopeAt(nilVariable); ok {
-		t.Error("typed-nil declaration was indexed")
-	}
+	_, ok := scopes.ScopeAt(nilCall)
+	assert.False(t, ok)
+	_, ok = scopes.ScopeAt(nilVariable)
+	assert.False(t, ok)
 	// The published interface snapshot remains immutable. Exercise the direct
 	// scope-builder boundary with a detached malformed class record instead of
 	// mutating the snapshot that InterfaceSet has already validated.
@@ -508,9 +473,8 @@ func TestScopesFailClosedForSharedAndTypedNilASTNodes(t *testing.T) {
 	malformedClass.Declarations = append(append([]Declaration(nil), malformedClass.Declarations...), Declaration{Node: nilVariable})
 	malformedScopes := &ScopeIndex{interfaces: interfaces, scopes: map[ast.Node]*Scope{}}
 	malformedScopes.buildClass(&malformedClass)
-	if _, ok := malformedScopes.ScopeAt(nilVariable); ok {
-		t.Error("direct scope builder indexed typed-nil declaration")
-	}
+	_, ok = malformedScopes.ScopeAt(nilVariable)
+	assert.False(t, ok)
 }
 
 func TestScopesFailClosedForSharedDeclarationNodes(t *testing.T) {
@@ -530,12 +494,10 @@ func TestScopesFailClosedForSharedDeclarationNodes(t *testing.T) {
 	scopeRequireUnknown(t, scopes, firstUse, "first shared declaration")
 	scopeRequireUnknown(t, scopes, secondUse, "second shared declaration")
 	sharedScope, ok := scopes.ScopeAt(shared)
-	if !ok {
-		t.Fatal("shared declaration was not indexed")
-	}
-	if result := sharedScope.Lookup("value"); result.State() != LookupUnknown || result.Reason() != "AST node is shared between lexical positions" {
-		t.Fatalf("shared declaration lookup = %s (%q), want shared-node unknown", result.State(), result.Reason())
-	}
+	require.True(t, ok, "shared declaration was not indexed")
+	result := sharedScope.Lookup("value")
+	require.Equal(t, LookupUnknown, result.State())
+	require.Equal(t, "AST node is shared between lexical positions", result.Reason())
 }
 
 func TestScopesFailClosedForSharedAndCyclicExpressionGraphs(t *testing.T) {
@@ -610,13 +572,10 @@ func TestScopesInheritSharedPatternBlocksIntoNestedFrames(t *testing.T) {
 	} {
 		identifier := scopeIdentifierAt(t, file, testCase.name, testCase.line)
 		scope, ok := scopes.ScopeAt(identifier)
-		if !ok {
-			t.Fatalf("%s at line %d was not indexed", testCase.name, testCase.line)
-		}
+		require.True(t, ok)
 		result := scope.Lookup(testCase.name)
-		if result.State() != LookupUnknown || result.Reason() != sharedASTNodeReason {
-			t.Fatalf("%s at line %d = %s (%q), want shared-node unknown", testCase.name, testCase.line, result.State(), result.Reason())
-		}
+		require.Equal(t, LookupUnknown, result.State())
+		require.Equal(t, sharedASTNodeReason, result.Reason())
 	}
 }
 
@@ -632,9 +591,8 @@ func TestScopesComposeLocalMemberProjectAndEngineNamespaces(t *testing.T) {
 
 	scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "member", 6), BindingLocal)
 	unresolved := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "unresolved", 7), BindingMember)
-	if unresolved.Type().Kind() != KindUnknown || unresolved.Type().Reason() == "" {
-		t.Fatalf("unknown member became %v %q (%q)", unresolved.Type().Kind(), unresolved.Type().Name(), unresolved.Type().Reason())
-	}
+	require.Equal(t, KindUnknown, unresolved.Type().Kind())
+	require.NotEmpty(t, unresolved.Type().Reason())
 	for _, testCase := range []struct {
 		name    string
 		line    int
@@ -650,8 +608,8 @@ func TestScopesComposeLocalMemberProjectAndEngineNamespaces(t *testing.T) {
 		{name: "load", line: 14, kind: BindingLanguageSpecial},
 	} {
 		binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, testCase.name, testCase.line), testCase.kind)
-		if testCase.classID != "" && binding.ClassID() != testCase.classID {
-			t.Errorf("%s binding class = %q, want %q", testCase.name, binding.ClassID(), testCase.classID)
+		if testCase.classID != "" {
+			assert.Equal(t, testCase.classID, binding.ClassID())
 		}
 	}
 	for _, testCase := range []struct {
@@ -665,9 +623,8 @@ func TestScopesComposeLocalMemberProjectAndEngineNamespaces(t *testing.T) {
 		{name: "Native", line: 10, kind: BindingEngineType, meta: true},
 	} {
 		binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, testCase.name, testCase.line), testCase.kind)
-		if binding.Type().Kind() != KindClass || binding.Type().Meta() != testCase.meta {
-			t.Errorf("%s binding type = %v %q (meta %t), want class meta %t", testCase.name, binding.Type().Kind(), binding.Type().Name(), binding.Type().Meta(), testCase.meta)
-		}
+		assert.Equal(t, KindClass, binding.Type().Kind())
+		assert.Equal(t, testCase.meta, binding.Type().Meta())
 	}
 }
 
@@ -680,34 +637,24 @@ func TestScopesResolveSameNamedEngineSingletonAsInstance(t *testing.T) {
 
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "Input", 2), "non-constant singleton")
 	binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "Input", 4), BindingEngineSingleton)
-	if binding.Type().Kind() != KindClass || binding.Type().Name() != "Input" || binding.Type().Meta() {
-		t.Fatalf("Input singleton type = %v %q (meta %t), want Input instance", binding.Type().Kind(), binding.Type().Name(), binding.Type().Meta())
-	}
+	require.Equal(t, KindClass, binding.Type().Kind())
+	require.Equal(t, "Input", binding.Type().Name())
+	require.False(t, binding.Type().Meta())
 }
 
 func TestScopesKeepSameNamedSingletonTypeCollisionsUnknown(t *testing.T) {
 	builder := NewEngineBuilder()
-	if err := builder.AddBuiltin("BuiltinOnly"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddBuiltin("BuiltinOnly"))
 	for _, class := range []struct{ name, parent string }{
 		{name: "Object"},
 		{name: "Foo", parent: "Object"},
 	} {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
-	if err := builder.AddSingleton("BuiltinOnly", "Object"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddSingleton("Foo", "Object"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddSingleton("BuiltinOnly", "Object"))
+	require.NoError(t, builder.AddSingleton("Foo", "Object"))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	source := sources(t, map[string]string{
 		"player.gd": "class_name Player\nfunc run():\n\tBuiltinOnly\n\tFoo\n",
 	})
@@ -721,28 +668,18 @@ func TestScopesKeepSameNamedSingletonTypeCollisionsUnknown(t *testing.T) {
 func TestScopesKeepSameNamedSingletonUtilityCollisionUnknown(t *testing.T) {
 	builder := NewEngineBuilder()
 	for _, builtin := range []string{"int"} {
-		if err := builder.AddBuiltin(builtin); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(builtin))
 	}
 	for _, class := range []struct{ name, parent string }{
 		{name: "Object"},
 		{name: "Input", parent: "Object"},
 	} {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
-	if err := builder.AddSingleton("Input", "Input"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddUtility("Input", "int", nil, false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddSingleton("Input", "Input"))
+	require.NoError(t, builder.AddUtility("Input", "int", nil, false))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	source := sources(t, map[string]string{
 		"player.gd": "class_name Player\nfunc run():\n\tInput\n",
 	})
@@ -756,9 +693,7 @@ func TestScopesKeepBuiltinTypeObjectsFoundButUnknown(t *testing.T) {
 	source := sources(t, map[string]string{
 		"player.gd": "class_name Player\nfunc run():\n\tint\n\tString\n\tCallable\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("builtin type fixture did not parse: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "builtin type fixture did not parse")
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeNamespaceEngine(t)))
 	file := source.File("player.gd")
 	for _, testCase := range []struct {
@@ -770,37 +705,24 @@ func TestScopesKeepBuiltinTypeObjectsFoundButUnknown(t *testing.T) {
 		{name: "Callable", line: 5},
 	} {
 		binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, testCase.name, testCase.line), BindingEngineType)
-		if binding.Type().Kind() != KindUnknown || binding.Type().Reason() == "" {
-			t.Errorf("%s type-object binding = %v %q (%q), want reasoned unknown", testCase.name, binding.Type().Kind(), binding.Type().Name(), binding.Type().Reason())
-		}
+		assert.Equal(t, KindUnknown, binding.Type().Kind())
+		assert.NotEmpty(t, binding.Type().Reason())
 	}
 }
 
 func TestScopesKeepBuiltinConstructorCapabilityPrivateAndSnapshotBound(t *testing.T) {
 	builder := NewEngineBuilder()
 	for _, name := range []string{"Vector2", "Dormant", "Collision", "int"} {
-		if err := builder.AddBuiltin(name); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(name))
 	}
-	if err := builder.AddClass("Object", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddClass("RefCounted", "Object"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddClass("Object", ""))
+	require.NoError(t, builder.AddClass("RefCounted", "Object"))
 	for _, name := range []string{"Vector2", "Collision"} {
-		if err := builder.AddBuiltinConstructor(name); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltinConstructor(name))
 	}
-	if err := builder.AddUtility("Collision", "int", nil, false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddUtility("Collision", "int", nil, false))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	source := sources(t, map[string]string{
 		"player.gd": "class_name Player\nfunc run():\n\tVector2\n\tDormant\n\tCollision\n",
 	})
@@ -808,33 +730,32 @@ func TestScopesKeepBuiltinConstructorCapabilityPrivateAndSnapshotBound(t *testin
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), engine))
 
 	binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "Vector2", 3), BindingEngineType)
-	if binding.Type().Kind() != KindUnknown || binding.Type().Reason() == "" {
-		t.Fatalf("bare constructible builtin = %s (%q), want reasoned Unknown", binding.Type(), binding.Type().Reason())
-	}
+	require.Equal(t, KindUnknown, binding.Type().Kind())
+	require.NotEmpty(t, binding.Type().Reason())
 	capability, ok := binding.builtinConstructorCapability()
-	if !ok || capability.engine != engine || capability.index != scopes || capability.name != "Vector2" ||
-		!capability.result.Equal(engine.ResolveType("Vector2")) {
-		t.Fatalf("constructor capability = %#v/%t", capability, ok)
-	}
+	require.True(t, ok)
+	require.Same(t, engine, capability.engine)
+	require.Same(t, scopes, capability.index)
+	require.Equal(t, "Vector2", capability.name)
+	require.True(t, capability.result.Equal(engine.ResolveType("Vector2")))
 	clone := cloneBinding(binding)
 	clonedCapability, ok := clone.builtinConstructorCapability()
-	if !ok || clonedCapability == capability || clonedCapability.engine != capability.engine ||
-		clonedCapability.index != capability.index || !clonedCapability.result.Equal(capability.result) {
-		t.Fatalf("cloned constructor capability = %#v/%t, original %#v", clonedCapability, ok, capability)
-	}
+	require.True(t, ok)
+	require.False(t, clonedCapability == capability)
+	require.Same(t, capability.engine, clonedCapability.engine)
+	require.Same(t, capability.index, clonedCapability.index)
+	require.True(t, clonedCapability.result.Equal(capability.result))
 
 	dormant := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "Dormant", 4), BindingEngineType)
-	if capability, ok := dormant.builtinConstructorCapability(); ok || capability != nil {
-		t.Fatalf("non-constructible builtin capability = %#v/%t", capability, ok)
-	}
+	dormantCapability, ok := dormant.builtinConstructorCapability()
+	require.False(t, ok)
+	require.Nil(t, dormantCapability)
 	scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, "Collision", 5), "builtin/utility collision")
 
 	second := BuildScopes(BuildInterfaces(BuildIndex(sources(t, map[string]string{
 		"player.gd": "class_name Player\nfunc run():\n\tVector2\n",
 	})), engine))
-	if capability.index == second {
-		t.Fatal("separately parsed snapshot reused constructor capability identity")
-	}
+	require.False(t, capability.index == second, "separately parsed snapshot reused constructor capability identity")
 }
 
 func TestScopesGiveOneMemberDeclarationOneBindingIdentity(t *testing.T) {
@@ -845,9 +766,7 @@ func TestScopesGiveOneMemberDeclarationOneBindingIdentity(t *testing.T) {
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
 	direct := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, source.File("base.gd"), "LIMIT", 4), BindingMember)
 	inherited := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, source.File("child.gd"), "LIMIT", 3), BindingMember)
-	if direct.ID() != inherited.ID() {
-		t.Fatalf("same inherited member has IDs %q and %q", direct.ID(), inherited.ID())
-	}
+	require.Equal(t, inherited.ID(), direct.ID())
 }
 
 func TestScopesKeepFoundUnknownMembersAheadOfRetainedGlobals(t *testing.T) {
@@ -856,9 +775,8 @@ func TestScopesKeepFoundUnknownMembersAheadOfRetainedGlobals(t *testing.T) {
 	})
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), scopeStaticEngine(t)))
 	binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, source.File("player.gd"), "instance_field", 4), BindingMember)
-	if binding.Type().Kind() != KindUnknown || binding.Type().Reason() == "" {
-		t.Fatalf("found member type = %v %q (%q), want its reasoned unknown declaration type", binding.Type().Kind(), binding.Type().Name(), binding.Type().Reason())
-	}
+	require.Equal(t, KindUnknown, binding.Type().Kind())
+	require.NotEmpty(t, binding.Type().Reason())
 }
 
 func TestScopesRetainUserMemberDeclarationProvenance(t *testing.T) {
@@ -869,9 +787,7 @@ func TestScopesRetainUserMemberDeclarationProvenance(t *testing.T) {
 	declaration := file.Statements[1]
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
 	binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "LIMIT", 4), BindingMember)
-	if binding.Declaration() != declaration {
-		t.Fatalf("member declaration = %#v, want retained constant declaration %#v", binding.Declaration(), declaration)
-	}
+	require.Same(t, declaration, binding.Declaration())
 }
 
 func TestScopesFailClosedForIncompleteAndAmbiguousGlobalEvidence(t *testing.T) {
@@ -948,9 +864,7 @@ func TestScopesRestrictInnerClassesToEnclosingConstantsAndTypes(t *testing.T) {
 		{name: "Sibling", line: 14, kind: BindingEnclosingType},
 	} {
 		binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, testCase.name, testCase.line), testCase.kind)
-		if binding.ClassID() != "outer.gd" {
-			t.Errorf("%s enclosing binding class = %q, want outer.gd", testCase.name, binding.ClassID())
-		}
+		assert.Equal(t, "outer.gd", binding.ClassID())
 	}
 	for _, testCase := range []struct {
 		name string
@@ -963,9 +877,8 @@ func TestScopesRestrictInnerClassesToEnclosingConstantsAndTypes(t *testing.T) {
 		scopeRequireUnknown(t, scopes, scopeIdentifierAt(t, file, testCase.name, testCase.line), "inaccessible enclosing member")
 	}
 	self := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "self", 18), BindingSelf)
-	if self.Type().Kind() != KindClass || self.Type().Name() != "outer.gd#Child" {
-		t.Fatalf("inner class self type = %v %q (%q), want Child instance", self.Type().Kind(), self.Type().Name(), self.Type().Reason())
-	}
+	require.Equal(t, KindClass, self.Type().Kind())
+	require.Equal(t, "outer.gd#Child", self.Type().Name())
 }
 
 func TestScopesSearchBaseInnerClassEnclosuresBeforeOwnEnclosure(t *testing.T) {
@@ -975,9 +888,7 @@ func TestScopesSearchBaseInnerClassEnclosuresBeforeOwnEnclosure(t *testing.T) {
 	})
 	scopes := BuildScopes(BuildInterfaces(BuildIndex(source), richInterfaceTestEngine(t)))
 	binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, source.File("player.gd"), "SPEED", 5), BindingEnclosingConstant)
-	if binding.ClassID() != "other.gd" {
-		t.Fatalf("base-inner enclosure binding class = %q, want other.gd", binding.ClassID())
-	}
+	require.Equal(t, "other.gd", binding.ClassID())
 }
 
 func TestScopesDoNotFallThroughInaccessibleEnclosingMembers(t *testing.T) {
@@ -1023,21 +934,19 @@ func TestScopesEnforceStaticContextAndResolveCompatibleSuper(t *testing.T) {
 	scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "static_method", 7), BindingMember)
 	staticSuper := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "super", 8), BindingSuper)
 	staticBase, ok := staticSuper.SuperMember()
-	if !ok || !staticBase.Static() || staticBase.DeclaringClassID() != "base.gd" {
-		t.Fatalf("static super base = %#v, present %t", staticBase, ok)
-	}
+	require.True(t, ok)
+	require.True(t, staticBase.Static())
+	require.Equal(t, "base.gd", staticBase.DeclaringClassID())
 
 	scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "self", 10), BindingSelf)
 	instanceField := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "instance_field", 11), BindingMember)
-	if instanceField.ClassID() != "base.gd" {
-		t.Errorf("inherited member class = %q, want base.gd", instanceField.ClassID())
-	}
+	assert.Equal(t, "base.gd", instanceField.ClassID())
 	scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "static_field", 12), BindingMember)
 	instanceSuper := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, file, "super", 13), BindingSuper)
 	instanceBase, ok := instanceSuper.SuperMember()
-	if !ok || instanceBase.Static() || instanceBase.DeclaringClassID() != "base.gd" {
-		t.Fatalf("instance super base = %#v, present %t", instanceBase, ok)
-	}
+	require.True(t, ok)
+	require.False(t, instanceBase.Static())
+	require.Equal(t, "base.gd", instanceBase.DeclaringClassID())
 }
 
 func TestScopesResolveExplicitSuperMembersByTheirOwnName(t *testing.T) {
@@ -1056,9 +965,10 @@ func TestScopesResolveExplicitSuperMembersByTheirOwnName(t *testing.T) {
 	} {
 		binding := scopeRequireBinding(t, scopes, scopeIdentifierAt(t, source.File("child.gd"), "super", testCase.line), BindingSuper)
 		member, ok := binding.SuperMember()
-		if !ok || member.Name() != testCase.method || member.Static() != testCase.static || member.DeclaringClassID() != "base.gd" {
-			t.Fatalf("super at line %d = %#v, present %t; want %s static=%t from base.gd", testCase.line, member, ok, testCase.method, testCase.static)
-		}
+		require.True(t, ok)
+		require.Equal(t, testCase.method, member.Name())
+		require.Equal(t, testCase.static, member.Static())
+		require.Equal(t, "base.gd", member.DeclaringClassID())
 	}
 }
 
@@ -1092,17 +1002,11 @@ func TestScopesAreDeterministicImmutableConcurrentAndSnapshotBound(t *testing.T)
 	firstIndex := BuildIndex(firstSource)
 	interfaces := BuildInterfaces(firstIndex, richInterfaceTestEngine(t))
 	before, err := json.Marshal(firstSource.File("player.gd"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	firstScopes := BuildScopes(interfaces)
 	after, err := json.Marshal(firstSource.File("player.gd"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(before) != string(after) {
-		t.Fatal("building scopes mutated the parsed AST")
-	}
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after), "building scopes mutated the parsed AST")
 	secondScopes := BuildScopes(interfaces)
 	firstFile := firstSource.File("player.gd")
 	firstUse := scopeIdentifierAt(t, firstFile, "local", 5)
@@ -1112,35 +1016,29 @@ func TestScopesAreDeterministicImmutableConcurrentAndSnapshotBound(t *testing.T)
 	selfUse := scopeIdentifierAt(t, firstFile, "self", 9)
 	firstBinding := scopeRequireBinding(t, firstScopes, firstUse, BindingLocal)
 	secondBinding := scopeRequireBinding(t, secondScopes, firstUse, BindingLocal)
-	if firstBinding.ID() == secondBinding.ID() {
-		t.Fatal("separate scope builds reused a binding identity")
-	}
-	if firstBinding.Name() != secondBinding.Name() || firstBinding.Kind() != secondBinding.Kind() || firstBinding.ClassID() != secondBinding.ClassID() || firstBinding.Slot() != secondBinding.Slot() {
-		t.Fatalf("repeated scope build changed binding topology: %#v / %#v", firstBinding, secondBinding)
-	}
+	require.False(t, firstBinding.ID() == secondBinding.ID(), "separate scope builds reused a binding identity")
+	require.Equal(t, secondBinding.Name(), firstBinding.Name())
+	require.Equal(t, secondBinding.Kind(), firstBinding.Kind())
+	require.Equal(t, secondBinding.ClassID(), firstBinding.ClassID())
+	require.Equal(t, secondBinding.Slot(), firstBinding.Slot())
 
 	firstIndex.Classes["player.gd"].Declarations[0].Name = "mutated-member"
 	firstIndex.byClassName["Global"] = firstIndex.Classes["player.gd"]
-	if again := scopeRequireBinding(t, firstScopes, firstUse, BindingLocal); again.Name() != "local" {
-		t.Fatalf("caller-owned index mutation changed published local binding to %q", again.Name())
-	}
-	if again := scopeRequireBinding(t, firstScopes, memberUse, BindingMember); again.Name() != "field" || again.ClassID() != "player.gd" {
-		t.Fatalf("caller-owned index mutation changed published member binding to %#v", again)
-	}
-	if again := scopeRequireBinding(t, firstScopes, projectUse, BindingProjectClass); again.ClassID() != "global.gd" {
-		t.Fatalf("caller-owned index mutation changed published project global binding to %#v", again)
-	}
+	again := scopeRequireBinding(t, firstScopes, firstUse, BindingLocal)
+	require.Equal(t, "local", again.Name())
+	again = scopeRequireBinding(t, firstScopes, memberUse, BindingMember)
+	require.Equal(t, "field", again.Name())
+	require.Equal(t, "player.gd", again.ClassID())
+	again = scopeRequireBinding(t, firstScopes, projectUse, BindingProjectClass)
+	require.Equal(t, "global.gd", again.ClassID())
 
 	secondSource := sources(t, files)
 	secondInterfaces := BuildInterfaces(BuildIndex(secondSource), richInterfaceTestEngine(t))
 	secondSnapshot := BuildScopes(secondInterfaces)
 	secondUse := scopeIdentifierAt(t, secondSource.File("player.gd"), "local", 5)
-	if _, found := firstScopes.ScopeAt(secondUse); found {
-		t.Fatal("first scope index accepted a node from a separately parsed snapshot")
-	}
-	if firstBinding.ID() == scopeRequireBinding(t, secondSnapshot, secondUse, BindingLocal).ID() {
-		t.Fatal("separately parsed snapshot reused a binding identity")
-	}
+	_, found := firstScopes.ScopeAt(secondUse)
+	require.False(t, found, "first scope index accepted a node from a separately parsed snapshot")
+	require.False(t, firstBinding.ID() == scopeRequireBinding(t, secondSnapshot, secondUse, BindingLocal).ID(), "separately parsed snapshot reused a binding identity")
 
 	const readers = 24
 	const readsPerReader = 100
@@ -1177,7 +1075,7 @@ func TestScopesAreDeterministicImmutableConcurrentAndSnapshotBound(t *testing.T)
 	readersDone.Wait()
 	close(problems)
 	for problem := range problems {
-		t.Error(problem)
+		assert.Fail(t, problem)
 	}
 }
 
@@ -1204,51 +1102,36 @@ func scopeIdentifierAt(t *testing.T, file *ast.File, name string, line int) *ast
 		}
 		return true
 	})
-	if len(found) != 1 {
-		t.Fatalf("identifiers named %q at line %d = %d, want 1", name, line, len(found))
-	}
+	require.Len(t, found, 1)
 	return found[0]
 }
 
 func scopeRequireBinding(t *testing.T, scopes *ScopeIndex, identifier *ast.Identifier, want BindingKind) Binding {
 	t.Helper()
 	scope, ok := scopes.ScopeAt(identifier)
-	if !ok {
-		t.Fatalf("scope for %q was not indexed", identifier.Name)
-	}
+	require.True(t, ok)
 	result := scope.Lookup(identifier.Name)
-	if result.State() != LookupFound {
-		t.Fatalf("lookup %q = %s (%s), want found", identifier.Name, result.State(), result.Reason())
-	}
+	require.Equal(t, LookupFound, result.State())
 	binding, ok := result.Binding()
-	if !ok {
-		t.Fatalf("lookup %q returned no binding", identifier.Name)
-	}
-	if binding.Kind() != want {
-		t.Fatalf("binding %q kind = %s, want %s", identifier.Name, binding.Kind(), want)
-	}
+	require.True(t, ok)
+	require.Equal(t, want, binding.Kind())
 	return binding
 }
 
 func scopeRequireUnknown(t *testing.T, scopes *ScopeIndex, identifier *ast.Identifier, label string) {
 	t.Helper()
 	scope, ok := scopes.ScopeAt(identifier)
-	if !ok {
-		t.Fatalf("scope for %q was not indexed", identifier.Name)
-	}
+	require.True(t, ok)
 	result := scope.Lookup(identifier.Name)
-	if result.State() != LookupUnknown || result.Reason() == "" {
-		t.Fatalf("%s lookup %q = %s (%q), want reasoned unknown", label, identifier.Name, result.State(), result.Reason())
-	}
+	require.Equal(t, LookupUnknown, result.State())
+	require.NotEmpty(t, result.Reason())
 }
 
 func scopeNamespaceEngine(t *testing.T) *Engine {
 	t.Helper()
 	builder := NewEngineBuilder()
 	for _, builtin := range []string{"int", "String", "Callable", "Clash"} {
-		if err := builder.AddBuiltin(builtin); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(builtin))
 	}
 	for _, class := range []struct{ name, parent string }{
 		{name: "Object"},
@@ -1257,55 +1140,31 @@ func scopeNamespaceEngine(t *testing.T) *Engine {
 		{name: "Global", parent: "Object"},
 		{name: "Input", parent: "Object"},
 	} {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
-	if err := builder.AddSingleton("Single", "Native"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddSingleton("Input", "Input"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddSingleton("Clash", "Object"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddUtility("utility", "int", nil, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddUtility("Clash", "int", nil, false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddSingleton("Single", "Native"))
+	require.NoError(t, builder.AddSingleton("Input", "Input"))
+	require.NoError(t, builder.AddSingleton("Clash", "Object"))
+	require.NoError(t, builder.AddUtility("utility", "int", nil, false))
+	require.NoError(t, builder.AddUtility("Clash", "int", nil, false))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return engine
 }
 
 func scopeStaticEngine(t *testing.T) *Engine {
 	t.Helper()
 	builder := NewEngineBuilder()
-	if err := builder.AddBuiltin("int"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddBuiltin("int"))
 	for _, class := range []struct{ name, parent string }{
 		{name: "Object"},
 		{name: "RefCounted", parent: "Object"},
 	} {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
-	if err := builder.AddSingleton("instance_field", "Object"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddUtility("instance_method", "int", nil, false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddSingleton("instance_field", "Object"))
+	require.NoError(t, builder.AddUtility("instance_method", "int", nil, false))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return engine
 }

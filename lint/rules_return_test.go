@@ -1,6 +1,10 @@
 package lint
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // inconsistentReturnConfig enables the rule, which ships inert.
 func inconsistentReturnConfig() Config {
@@ -54,13 +58,8 @@ func TestInconsistentReturnStatementsStaysInertByDefault(t *testing.T) {
 
 func TestInconsistentReturnStatementsMessage(t *testing.T) {
 	found := lintSourceWithConfig(t, inconsistentReturnConfig(), "inconsistent-return-statements", "func a(x):\n\tif x:\n\t\treturn 1\n")
-	if len(found) != 1 {
-		t.Fatalf("got %d diagnostics, want 1: %v", len(found), found)
-	}
-	if want := "Not all code paths return a value"; found[0].Message != want {
-		t.Fatalf("message = %q, want %q", found[0].Message, want)
-	}
-	if found[0].Column != 1 {
-		t.Fatalf("column = %d, want 1", found[0].Column)
-	}
+	require.Len(t, found, 1)
+	want := "Not all code paths return a value"
+	require.Equal(t, want, found[0].Message)
+	require.Equal(t, 1, found[0].Column)
 }

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdkit/internal/versiongate"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // pretendVersion makes the --minimum-version gate see a fixed binary version
@@ -40,12 +42,8 @@ func TestMinimumVersionSatisfiedLeavesTheExitCodeAlone(t *testing.T) {
 
 			var stdout, stderr bytes.Buffer
 			got := run([]string{"arch", "check", "--minimum-version", "0.3.0", root}, &stdout, &stderr)
-			if got != want {
-				t.Fatalf("exit %d with the flag, %d without: %s", got, want, stderr.String())
-			}
-			if stdout.String() != plainOut.String() {
-				t.Fatalf("the flag changed the report:\n%s\n%s", plainOut.String(), stdout.String())
-			}
+			require.Equal(t, want, got)
+			require.Equal(t, plainOut.String(), stdout.String())
 		})
 	}
 }
@@ -57,16 +55,10 @@ func TestMinimumVersionBelowFloorExitsTwoAndEmitsNoReport(t *testing.T) {
 			root := gateProject(t)
 			var stdout, stderr bytes.Buffer
 			code := run([]string{"arch", "check", "--minimum-version", "0.3.0", "--format", outputFormat, root}, &stdout, &stderr)
-			if code != 2 {
-				t.Fatalf("exit %d, want 2: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-			}
-			if stdout.String() != "" {
-				t.Fatalf("a report was emitted after a failed gate: %s", stdout.String())
-			}
+			require.Equal(t, 2, code)
+			require.Empty(t, stdout.String())
 			for _, want := range []string{"--minimum-version", "0.3.0", "0.2.0"} {
-				if !strings.Contains(stderr.String(), want) {
-					t.Errorf("stderr %q does not contain %q", stderr.String(), want)
-				}
+				assert.Contains(t, stderr.String(), want)
 			}
 		})
 	}
@@ -79,12 +71,8 @@ func TestMinimumVersionMalformedExitsTwo(t *testing.T) {
 			root := gateProject(t)
 			var stdout, stderr bytes.Buffer
 			code := run([]string{"arch", "check", "--minimum-version", value, root}, &stdout, &stderr)
-			if code != 2 {
-				t.Fatalf("exit %d, want 2: stderr=%s", code, stderr.String())
-			}
-			if !strings.Contains(stderr.String(), "major.minor.patch") {
-				t.Fatalf("stderr %q does not say what a valid value looks like", stderr.String())
-			}
+			require.Equal(t, 2, code)
+			require.Contains(t, stderr.String(), "major.minor.patch")
 		})
 	}
 }
@@ -94,16 +82,12 @@ func TestMinimumVersionMalformedExitsTwo(t *testing.T) {
 func TestMinimumVersionGatesBeforeConfigResolution(t *testing.T) {
 	pretendVersion(t, "0.2.0")
 	root := gateProject(t)
-	if _, err := os.Stat(filepath.Join(root, ".gdkit")); !os.IsNotExist(err) {
-		t.Fatalf("test project unexpectedly has a .gdkit directory: %v", err)
-	}
+	_, err := os.Stat(filepath.Join(root, ".gdkit"))
+	require.ErrorIs(t, err, os.ErrNotExist)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"arch", "check", "--minimum-version", "0.3.0", root}, &stdout, &stderr); code != 2 {
-		t.Fatalf("exit %d, want 2: stderr=%s", code, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "0.3.0") {
-		t.Fatalf("stderr %q does not report the required version", stderr.String())
-	}
+	code := run([]string{"arch", "check", "--minimum-version", "0.3.0", root}, &stdout, &stderr)
+	require.Equal(t, 2, code)
+	require.Contains(t, stderr.String(), "0.3.0")
 }
 
 // A binary too old to understand the config is reported as too old, not as a
@@ -113,12 +97,9 @@ func TestMinimumVersionGatesBeforeConfigErrors(t *testing.T) {
 	root := gateProject(t)
 	writeCLIFile(t, root, ".gdkit/architecture.json", `{"version": 1, "zones": ["anything"]}`)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"arch", "check", "--minimum-version", "0.3.0", root}, &stdout, &stderr); code != 2 {
-		t.Fatalf("exit %d, want 2: stderr=%s", code, stderr.String())
-	}
-	if strings.Contains(stderr.String(), "zones") {
-		t.Fatalf("stderr %q names the unknown key instead of the version floor", stderr.String())
-	}
+	code := run([]string{"arch", "check", "--minimum-version", "0.3.0", root}, &stdout, &stderr)
+	require.Equal(t, 2, code)
+	require.NotContains(t, stderr.String(), "zones")
 }
 
 func TestMinimumVersionIsAcceptedByEveryCheckCommand(t *testing.T) {
@@ -137,27 +118,20 @@ func TestMinimumVersionIsAcceptedByEveryCheckCommand(t *testing.T) {
 			before := projectFingerprint(t, root)
 			var stdout, stderr bytes.Buffer
 			arguments := append(append([]string{}, command...), "--minimum-version", "0.3.0", root)
-			if code := run(arguments, &stdout, &stderr); code != 2 {
-				t.Fatalf("exit %d, want 2: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-			}
-			if stdout.String() != "" {
-				t.Fatalf("a report was emitted after a failed gate: %s", stdout.String())
-			}
-			if !strings.Contains(stderr.String(), "0.3.0") {
-				t.Fatalf("stderr %q does not report the required version", stderr.String())
-			}
+			code := run(arguments, &stdout, &stderr)
+			require.Equal(t, 2, code)
+			require.Empty(t, stdout.String())
+			require.Contains(t, stderr.String(), "0.3.0")
 			// A write command must not have touched the project either.
-			if after := projectFingerprint(t, root); after != before {
-				t.Fatalf("a failed gate still changed the project:\n%s\n%s", before, after)
-			}
+			after := projectFingerprint(t, root)
+			require.Equal(t, before, after)
 
 			// A satisfied floor leaves the command running as before.
 			pretendVersion(t, "0.3.0")
 			stdout.Reset()
 			stderr.Reset()
-			if code := run(arguments, &stdout, &stderr); code == 2 {
-				t.Fatalf("a satisfied floor failed the run: %s", stderr.String())
-			}
+			code = run(arguments, &stdout, &stderr)
+			require.NotEqual(t, 2, code)
 		})
 	}
 }
@@ -166,19 +140,15 @@ func TestMinimumVersionFailsClosedOnADevelopmentBuild(t *testing.T) {
 	// The test binary reports a development build, so no seam is needed here.
 	root := gateProject(t)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"arch", "check", "--minimum-version", "0.3.0", root}, &stdout, &stderr); code != 2 {
-		t.Fatalf("exit %d, want 2: stderr=%s", code, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), versiongate.AllowDevelopmentEnvironmentVariable) {
-		t.Fatalf("stderr %q does not name the bypass", stderr.String())
-	}
+	code := run([]string{"arch", "check", "--minimum-version", "0.3.0", root}, &stdout, &stderr)
+	require.Equal(t, 2, code)
+	require.Contains(t, stderr.String(), versiongate.AllowDevelopmentEnvironmentVariable)
 
 	t.Setenv(versiongate.AllowDevelopmentEnvironmentVariable, "1")
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"arch", "check", "--minimum-version", "0.3.0", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("the bypass did not let a development build through: exit %d: %s", code, stderr.String())
-	}
+	code = run([]string{"arch", "check", "--minimum-version", "0.3.0", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 }
 
 // The config field is enforced through the CLI too, with the same bypass.
@@ -186,38 +156,27 @@ func TestConfigMinimumVersionIsEnforcedThroughTheCLI(t *testing.T) {
 	root := gateProject(t)
 	writeCLIFile(t, root, ".gdkit/architecture.json", `{"version": 1, "minimum_gdkit_version": "0.3.0"}`)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"arch", "check", root}, &stdout, &stderr); code != 2 {
-		t.Fatalf("exit %d, want 2: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if stdout.String() != "" {
-		t.Fatalf("a report was emitted after a failed gate: %s", stdout.String())
-	}
-	if !strings.Contains(stderr.String(), "minimum_gdkit_version") && !strings.Contains(stderr.String(), "0.3.0") {
-		t.Fatalf("stderr %q does not explain the floor", stderr.String())
-	}
+	code := run([]string{"arch", "check", root}, &stdout, &stderr)
+	require.Equal(t, 2, code)
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "0.3.0")
 
 	t.Setenv(versiongate.AllowDevelopmentEnvironmentVariable, "1")
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"arch", "check", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("the bypass did not let a development build through: exit %d: %s", code, stderr.String())
-	}
+	code = run([]string{"arch", "check", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 }
 
 // A generated config must not pin itself to whichever binary generated it.
 func TestArchInitWritesNoMinimumVersion(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"arch", "init", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("init exit %d: %s", code, stderr.String())
-	}
+	code := run([]string{"arch", "init", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 	contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(".gdkit/architecture.json")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(contents), "minimum_gdkit_version") {
-		t.Fatalf("arch init pinned the generated config:\n%s", contents)
-	}
+	require.NoError(t, err)
+	require.NotContains(t, string(contents), "minimum_gdkit_version")
 }
 
 // projectFingerprint lists every file under root with its contents, so a test
@@ -243,8 +202,6 @@ func projectFingerprint(t *testing.T, root string) string {
 		fmt.Fprintf(&builder, "%s\x00%s\n", filepath.ToSlash(relative), contents)
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return builder.String()
 }

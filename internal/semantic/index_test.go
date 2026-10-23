@@ -3,16 +3,16 @@ package semantic
 import (
 	"go/parser"
 	"go/token"
-	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/cafecito-games/gdparser"
 	gdast "github.com/cafecito-games/gdparser/ast"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type memorySources struct {
@@ -53,24 +53,19 @@ func TestIndexDiscoversStableNestedIdentitiesAndDeclarations(t *testing.T) {
 		"holder.gd": "class_name Holder extends RefCounted\nvar field: int\nconst LIMIT = 3\nsignal changed(value)\nenum Mode { ONE }\nenum { FLAG }\nfunc run():\n\tvar local = 1\nclass A:\n\tclass B:\n\t\tclass C:\n\t\t\tvar deep: int\nclass D:\n\tclass C:\n\t\tpass\n",
 	}))
 	wantIDs := []string{"holder.gd", "holder.gd#A", "holder.gd#A#B", "holder.gd#A#B#C", "holder.gd#D", "holder.gd#D#C"}
-	if got := index.ClassIDs(); !slices.Equal(got, wantIDs) {
-		t.Fatalf("ClassIDs = %v, want %v", got, wantIDs)
-	}
+	got := index.ClassIDs()
+	require.Equal(t, wantIDs, got)
 	top := index.Classes["holder.gd"]
-	if top.Name != "Holder" || !top.HasClassName || top.ExternalBase != "RefCounted" {
-		t.Errorf("top-level class = %+v", top)
-	}
+	require.Equal(t, "Holder", top.Name)
+	require.True(t, top.HasClassName)
+	require.Equal(t, "RefCounted", top.ExternalBase)
 	gotDeclarations := make([]string, 0, len(top.Declarations))
 	for _, declaration := range top.Declarations {
 		gotDeclarations = append(gotDeclarations, declaration.Name+":"+declaration.Kind.String())
 	}
 	wantDeclarations := []string{"field:variable", "LIMIT:constant", "changed:signal", "Mode:enum", "FLAG:enum-member", "run:method", "A:class", "D:class"}
-	if !slices.Equal(gotDeclarations, wantDeclarations) {
-		t.Errorf("Declarations = %v, want %v", gotDeclarations, wantDeclarations)
-	}
-	if slices.ContainsFunc(top.Declarations, func(d Declaration) bool { return d.Name == "local" }) {
-		t.Error("a function-body declaration was indexed")
-	}
+	assert.Equal(t, wantDeclarations, gotDeclarations)
+	assert.False(t, slices.ContainsFunc(top.Declarations, func(d Declaration) bool { return d.Name == "local" }))
 }
 
 func TestIndexResolvesInnerClassesThroughEnclosingAndInheritedScopes(t *testing.T) {
@@ -78,12 +73,10 @@ func TestIndexResolvesInnerClassesThroughEnclosingAndInheritedScopes(t *testing.
 		"base.gd":    "class_name Base\nclass Inherited:\n\tpass\n",
 		"derived.gd": "extends Base\nclass Local:\n\tpass\nclass ByLocal extends Local:\n\tpass\nclass ByInherited extends Inherited:\n\tpass\n",
 	}))
-	if got := index.Classes["derived.gd#ByLocal"].ParentID; got != "derived.gd#Local" {
-		t.Errorf("local-scope parent = %q", got)
-	}
-	if got := index.Classes["derived.gd#ByInherited"].ParentID; got != "base.gd#Inherited" {
-		t.Errorf("inherited-scope parent = %q", got)
-	}
+	got := index.Classes["derived.gd#ByLocal"].ParentID
+	assert.Equal(t, "derived.gd#Local", got)
+	got = index.Classes["derived.gd#ByInherited"].ParentID
+	assert.Equal(t, "base.gd#Inherited", got)
 }
 
 func TestScopeLookupWaitsForNearerInheritedScopesToSettle(t *testing.T) {
@@ -91,9 +84,8 @@ func TestScopeLookupWaitsForNearerInheritedScopesToSettle(t *testing.T) {
 		"base.gd":    "class_name Base\n",
 		"derived.gd": "extends Base\nclass Thing:\n\tpass\nclass E extends P:\n\tclass X extends Thing:\n\t\tpass\nclass P extends Q:\n\tpass\nclass Q extends Base:\n\tclass Thing:\n\t\tpass\n",
 	}))
-	if got := index.Classes["derived.gd#E#X"].ParentID; got != "derived.gd#Q#Thing" {
-		t.Errorf("ParentID = %q, want the nearer inherited Thing", got)
-	}
+	got := index.Classes["derived.gd#E#X"].ParentID
+	assert.Equal(t, "derived.gd#Q#Thing", got)
 }
 
 func TestIndexResolvesEveryInheritanceForm(t *testing.T) {
@@ -115,13 +107,9 @@ func TestIndexResolvesEveryInheritanceForm(t *testing.T) {
 	s.autoloads["GameState"] = "base.gd"
 	index := BuildIndex(s)
 	for _, path := range []string{"name.gd", "path.gd", "relative.gd", "uid.gd", "preload.gd", "autoload.gd"} {
-		if got := index.Classes[path].ParentID; got != "base.gd" {
-			t.Errorf("%s ParentID = %q, want base.gd", path, got)
-		}
+		assert.Equal(t, "base.gd", index.Classes[path].ParentID)
 	}
-	if got := index.Classes["chain.gd"].ParentID; got != "base.gd#Inner#Deep" {
-		t.Errorf("chain ParentID = %q", got)
-	}
+	assert.Equal(t, "base.gd#Inner#Deep", index.Classes["chain.gd"].ParentID)
 }
 
 func TestIndexResolvesInnerClassPathExtends(t *testing.T) {
@@ -141,13 +129,10 @@ func TestIndexResolvesInnerClassPathExtends(t *testing.T) {
 		"relative.gd#Child": "base.gd",
 	}
 	for id, want := range wantParents {
-		if got := index.Classes[id].ParentID; got != want {
-			t.Errorf("%s ParentID = %q, want %q", id, got, want)
-		}
+		assert.Equal(t, want, index.Classes[id].ParentID)
 	}
-	if got := index.Descendants("base.gd"); !slices.Equal(got, []string{"holder.gd#Child", "relative.gd#Child"}) {
-		t.Errorf("Descendants(base.gd) = %v", got)
-	}
+	got := index.Descendants("base.gd")
+	assert.Equal(t, []string{"holder.gd#Child", "relative.gd#Child"}, got)
 }
 
 func TestIndexFailsClosedForAmbiguityAndMissingProjectReferences(t *testing.T) {
@@ -165,14 +150,14 @@ func TestIndexFailsClosedForAmbiguityAndMissingProjectReferences(t *testing.T) {
 	})
 	s.autoloads["MissingAuto"] = "gone.gd"
 	index := BuildIndex(s)
-	if got := index.DuplicateClassNames["Dup"]; !slices.Equal(got, []string{"one.gd", "two.gd"}) {
-		t.Fatalf("duplicate claimants = %v", got)
-	}
+	got := index.DuplicateClassNames["Dup"]
+	require.Equal(t, []string{"one.gd", "two.gd"}, got)
 	for _, path := range []string{"ambiguous.gd", "missing_path.gd", "missing_alias.gd", "missing_autoload.gd", "missing_inner.gd", "outer.gd#Bad"} {
 		class := index.Classes[path]
-		if !class.UnresolvedBase || class.UnresolvedCause == "" || class.ParentID != "" || class.ExternalBase != "" {
-			t.Errorf("%s did not fail closed: %+v", path, class)
-		}
+		assert.True(t, class.UnresolvedBase)
+		assert.NotEmpty(t, class.UnresolvedCause)
+		assert.Empty(t, class.ParentID)
+		assert.Empty(t, class.ExternalBase)
 	}
 	wantCauses := map[string]string{
 		"ambiguous.gd":        "Dup",
@@ -182,13 +167,9 @@ func TestIndexFailsClosedForAmbiguityAndMissingProjectReferences(t *testing.T) {
 		"missing_inner.gd":    "Unique.Nope",
 	}
 	for path, want := range wantCauses {
-		if got := index.Classes[path].UnresolvedCause; got != want {
-			t.Errorf("%s cause = %q, want %q", path, got, want)
-		}
+		assert.Equal(t, want, index.Classes[path].UnresolvedCause)
 	}
-	if got := index.Classes["engine.gd"].ExternalBase; got != "Control" {
-		t.Errorf("ExternalBase = %q, want Control", got)
-	}
+	assert.Equal(t, "Control", index.Classes["engine.gd"].ExternalBase)
 }
 
 func TestIndexRecordsFailuresCyclesChildrenAndTerminates(t *testing.T) {
@@ -200,18 +181,12 @@ func TestIndexRecordsFailuresCyclesChildrenAndTerminates(t *testing.T) {
 	s.paths = append(s.paths, "broken.gd", "nil.gd")
 	s.failures = append(s.failures, "broken.gd")
 	index := BuildIndex(s)
-	if !slices.Equal(index.ParseFailures, []string{"broken.gd", "nil.gd"}) {
-		t.Errorf("ParseFailures = %v", index.ParseFailures)
-	}
-	if !index.InCycle["a.gd"] || !index.InCycle["b.gd"] || index.InCycle["c.gd"] {
-		t.Errorf("InCycle = %v", index.InCycle)
-	}
-	if got := index.Ancestry("c.gd"); !slices.Equal(got, []string{"c.gd", "a.gd", "b.gd"}) {
-		t.Errorf("Ancestry = %v", got)
-	}
-	if got := index.Descendants("a.gd"); !slices.Equal(got, []string{"b.gd", "c.gd"}) {
-		t.Errorf("Descendants = %v", got)
-	}
+	assert.Equal(t, []string{"broken.gd", "nil.gd"}, index.ParseFailures)
+	assert.True(t, index.InCycle["a.gd"])
+	assert.True(t, index.InCycle["b.gd"])
+	assert.False(t, index.InCycle["c.gd"])
+	assert.Equal(t, []string{"c.gd", "a.gd", "b.gd"}, index.Ancestry("c.gd"))
+	assert.Equal(t, []string{"b.gd", "c.gd"}, index.Descendants("a.gd"))
 }
 
 func TestBuildIndexNormalizesCopiesAndIsDeterministic(t *testing.T) {
@@ -220,30 +195,21 @@ func TestBuildIndexNormalizesCopiesAndIsDeterministic(t *testing.T) {
 	s.failures = []string{"broken.gd", "broken.gd"}
 	s.autoloads["State"] = "z.gd"
 	first, second := BuildIndex(s), BuildIndex(s)
-	if !reflect.DeepEqual(first, second) {
-		t.Fatal("repeated builds differ")
-	}
+	require.Equal(t, first, second, "repeated builds differ")
 	s.paths[0] = "mutated.gd"
 	s.failures[0] = "mutated.gd"
 	s.autoloads["State"] = "mutated.gd"
-	if !slices.Equal(first.ClassIDs(), []string{"a.gd", "z.gd"}) || !slices.Equal(first.ParseFailures, []string{"broken.gd"}) {
-		t.Errorf("index retained caller-owned collections: IDs=%v failures=%v", first.ClassIDs(), first.ParseFailures)
-	}
-	if got := first.Autoloads()["State"]; got != "z.gd" {
-		t.Errorf("autoload mutated to %q", got)
-	}
+	assert.Equal(t, []string{"a.gd", "z.gd"}, first.ClassIDs())
+	assert.Equal(t, []string{"broken.gd"}, first.ParseFailures)
+	assert.Equal(t, "z.gd", first.Autoloads()["State"])
 	copy := first.Autoloads()
 	copy["State"] = "changed.gd"
-	if maps.Equal(copy, first.Autoloads()) {
-		t.Error("Autoloads returned mutable index state")
-	}
+	assert.NotEqual(t, first.Autoloads(), copy)
 }
 
 func TestSemanticNonTestImportsStayPortable(t *testing.T) {
 	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	allowed := map[string]bool{
 		"github.com/cafecito-games/gdparser/ast":   true,
 		"github.com/cafecito-games/gdparser/token": true,
@@ -253,13 +219,11 @@ func TestSemanticNonTestImportsStayPortable(t *testing.T) {
 			continue
 		}
 		file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(".", entry.Name()), nil, parser.ImportsOnly)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		for _, spec := range file.Imports {
 			path := strings.Trim(spec.Path.Value, `"`)
-			if strings.Contains(path, ".") && !allowed[path] {
-				t.Errorf("%s imports disallowed package %q", entry.Name(), path)
+			if strings.Contains(path, ".") {
+				assert.True(t, allowed[path])
 			}
 		}
 	}
