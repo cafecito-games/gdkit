@@ -70,8 +70,13 @@ type Context struct {
 	engine   *semantic.Engine
 	analyzer *semantic.Analyzer
 
-	names  map[*project.Script][]namedDeclaration
-	typing map[*project.Script][]typingSite
+	// snapshot is the run's loaded project, set only for a semantic run so a
+	// rule can read a file other than the one it is currently checking.
+	snapshot *project.Snapshot
+
+	names      map[*project.Script][]namedDeclaration
+	typing     map[*project.Script][]typingSite
+	references map[string]referenceFacts
 }
 
 // Engine returns the selected immutable engine schema, or nil for a run whose
@@ -358,6 +363,7 @@ func (l *Linter) Lint(snapshot *project.Snapshot) Report {
 	runContext := l.context
 	if rulesNeedSemanticAnalysis(l.enabled) {
 		runContext.analyzer = l.newSemanticAnalyzer(snapshot, runContext.Engine())
+		runContext.snapshot = snapshot
 	}
 
 	for _, path := range snapshot.Selected {

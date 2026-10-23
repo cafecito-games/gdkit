@@ -9,6 +9,17 @@ func unusedConfig() Config {
 	return config
 }
 
+// unusedDiagnostics returns only the unused-private-member diagnostics.
+func unusedDiagnostics(report Report) []Diagnostic {
+	var out []Diagnostic
+	for _, diagnostic := range report.Diagnostics {
+		if diagnostic.Rule == "unused-private-member" {
+			out = append(out, diagnostic)
+		}
+	}
+	return out
+}
+
 func TestUnusedPrivateMemberFires(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -106,5 +117,66 @@ func TestUnusedPrivateMemberMessage(t *testing.T) {
 	}
 	if found[0].Column != 6 {
 		t.Fatalf("column = %d, want 6", found[0].Column)
+	}
+}
+
+// A protected helper a base class declares for its subclasses is used, not
+// dead, when a project descendant references it.
+func TestUnusedPrivateMemberStaysSilentWhenAProjectDescendantReferencesIt(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"base.gd": "class_name Base\nextends RefCounted\n\nfunc _wire():\n\tpass\n",
+		"sub.gd":  "class_name Sub\nextends Base\n\nfunc connect():\n\t_wire()\n",
+	})
+	if found := unusedDiagnostics(report); len(found) != 0 {
+		t.Fatalf("base-class helper reported as dead: %v", found)
+	}
+}
+
+// An override of a project-defined virtual is used, not dead, because an
+// ancestor declares the name. The base's own declaration is already covered by
+// its in-file reference, so only the override would have been reported.
+func TestUnusedPrivateMemberStaysSilentWhenOverridingAProjectVirtual(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"highlight.gd": "class_name EntityWorldHighlight\nextends Node\n\nfunc _highlight_z_index() -> int:\n\treturn 0\n\nfunc _ready():\n\t_highlight_z_index()\n",
+		"follow.gd":    "class_name FollowHighlight\nextends EntityWorldHighlight\n\nfunc _highlight_z_index() -> int:\n\treturn 1\n",
+	})
+	if found := unusedDiagnostics(report); len(found) != 0 {
+		t.Fatalf("project virtual override reported as dead: %v", found)
+	}
+}
+
+// An ancestor that references a name without declaring it still makes a
+// descendant override of that name used, the template-method shape.
+func TestUnusedPrivateMemberStaysSilentWhenAnAncestorReferencesIt(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"base.gd": "class_name Base\nextends RefCounted\n\nfunc run():\n\t_do_work()\n",
+		"sub.gd":  "class_name Sub\nextends Base\n\nfunc _do_work():\n\tpass\n",
+	})
+	if found := unusedDiagnostics(report); len(found) != 0 {
+		t.Fatalf("template-method override reported as dead: %v", found)
+	}
+}
+
+// A descendant that reaches a base helper by string dispatch counts too, the
+// same generosity the single-file string test already grants.
+func TestUnusedPrivateMemberStaysSilentWhenADescendantDispatchesByString(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"base.gd": "class_name Base\nextends RefCounted\n\nfunc _wire():\n\tpass\n",
+		"sub.gd":  "class_name Sub\nextends Base\n\nfunc connect():\n\tcall(\"_wire\")\n",
+	})
+	if found := unusedDiagnostics(report); len(found) != 0 {
+		t.Fatalf("string-dispatched base helper reported as dead: %v", found)
+	}
+}
+
+// The widening must not hide dead code in a leaf class: a private member with
+// no descendants and no project ancestors is still reported.
+func TestUnusedPrivateMemberStillReportsDeadCodeInALeafClass(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"leaf.gd": "class_name Leaf\nextends RefCounted\n\nfunc _dead():\n\tpass\n",
+	})
+	found := unusedDiagnostics(report)
+	if len(found) != 1 || found[0].Line != 4 {
+		t.Fatalf("leaf dead code = %v, want one diagnostic on line 4", found)
 	}
 }

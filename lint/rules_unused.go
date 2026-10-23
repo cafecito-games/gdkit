@@ -35,10 +35,10 @@ func init() {
 // longer string or an unrelated message also counts — because a private member
 // wrongly kept is a far smaller harm than one wrongly reported.
 //
-// Two functions are never reported, because something outside the file can
-// reach them and the rule reads one file only: one whose name is an engine
-// virtual, which the engine calls with no reference in source, and one named
-// like an editor signal handler, "_on_...", which a scene connects by string.
+// Two functions are never reported, because something outside the file reaches
+// them: one whose name is an engine virtual, which the engine calls with no
+// reference in source, and one named like an editor signal handler, "_on_...",
+// which a scene connects by string.
 //
 // The virtual exemption resolves the script's base class up its native chain
 // against the engine schema rather than a hand-maintained list, so it is
@@ -51,10 +51,15 @@ func init() {
 // schema knows) and stays as it is.
 //
 // The rule ships inert, as a new rule must, so an upgrade cannot change what an
-// existing project reports on unchanged configuration. It is also explicitly
-// single-file: a reference to a private member from another script — including a
-// call("_name") written there — is invisible to it, exactly as it is to every
-// other single-file rule.
+// existing project reports on unchanged configuration. It is not, however,
+// strictly single-file: the one cross-file question it can answer statically is
+// the class hierarchy, because both halves of an extends edge are resolvable
+// from the project graph the semantic analyzer builds. A private member declared
+// on a class is used when any project descendant references its name, and a
+// private function is used when any project ancestor declares or references its
+// name — the two shapes a hierarchy produces that an in-file scan cannot see.
+// A reference from an unrelated script, including a call("_name") written there,
+// stays invisible, exactly as it is to every other rule.
 type unusedPrivateMemberRule struct{}
 
 func (unusedPrivateMemberRule) Name() string { return "unused-private-member" }
@@ -67,24 +72,38 @@ func (unusedPrivateMemberRule) PendingSince() string { return "0.8.0" }
 
 func (unusedPrivateMemberRule) RequiresEngineSchema() {}
 
+// NeedsSemanticAnalysis is true so the rule receives the whole-project class
+// graph. It is deliberately narrow: the rule still reads a single file, but it
+// can walk the extends graph the analyzer resolves rather than a general
+// cross-file reference search.
+func (unusedPrivateMemberRule) NeedsSemanticAnalysis() bool { return true }
+
 func (unusedPrivateMemberRule) Check(context *Context, script *project.Script) []Diagnostic {
 	if script.File == nil {
 		return nil
 	}
 	engine := context.Engine()
-	used := referenceNames(script)
-	strings_ := stringLiteralContents(script)
+	used := referenceNames(script.File)
+	strings_ := stringLiteralContents(script.File)
+	classID := context.projectClassID(script.Path)
 
 	var found []Diagnostic
-	report := func(kind, name string, span token.Span) {
+	report := func(ownerID, name string, span token.Span, function bool) {
 		if used[name] || appearsIn(strings_, name) {
 			return
+		}
+		if ownerID != "" && hierarchyUses(context, ownerID, name, function) {
+			return
+		}
+		kind := "constant"
+		if function {
+			kind = "function"
 		}
 		found = append(found, spanDiagnostic(script, fmt.Sprintf("unused private %s %q", kind, name), span))
 	}
 
-	var walk func(body []ast.Statement, base semantic.Type)
-	walk = func(body []ast.Statement, base semantic.Type) {
+	var walk func(body []ast.Statement, base semantic.Type, ownerID string)
+	walk = func(body []ast.Statement, base semantic.Type, ownerID string) {
 		for _, statement := range body {
 			switch statement := statement.(type) {
 			case *ast.FunctionDeclaration:
@@ -94,16 +113,20 @@ func (unusedPrivateMemberRule) Check(context *Context, script *project.Script) [
 				if isEngineCalled(engine, base, statement.Name) {
 					continue
 				}
-				report("function", statement.Name, statement.NameSpan)
+				report(ownerID, statement.Name, statement.NameSpan, true)
 			case *ast.VariableDeclaration:
 				if statement.Constant && strings.HasPrefix(statement.Name, "_") {
-					report("constant", statement.Name, statement.NameSpan)
+					report(ownerID, statement.Name, statement.NameSpan, false)
 				}
 			}
 		}
 		for _, statement := range body {
 			if class, ok := statement.(*ast.ClassDeclaration); ok {
-				walk(class.Body, nativeBaseType(engine, class.Extends))
+				innerID := ""
+				if ownerID != "" {
+					innerID = ownerID + "#" + class.Name
+				}
+				walk(class.Body, nativeBaseType(engine, class.Extends), innerID)
 			}
 		}
 	}
@@ -112,8 +135,91 @@ func (unusedPrivateMemberRule) Check(context *Context, script *project.Script) [
 	if native {
 		base = nativeBaseType(engine, name)
 	}
-	walk(script.File.Statements, base)
+	walk(script.File.Statements, base, classID)
 	return found
+}
+
+// projectClassID resolves the script's top-level project class ID from the
+// run-local analyzer, or "" when the analyzer is unavailable.
+func (c *Context) projectClassID(path string) string {
+	if c == nil || c.analyzer == nil {
+		return ""
+	}
+	id, ok := c.analyzer.ClassID(path)
+	if !ok {
+		return ""
+	}
+	return id
+}
+
+// hierarchyUses reports whether a private member named name, declared on the
+// class identified by ownerID, is used through the class hierarchy. A descendant
+// referencing the name uses any private member; an ancestor declaring or
+// referencing it uses a private function, which is how an override of a
+// project-defined virtual is reached.
+func hierarchyUses(context *Context, ownerID, name string, function bool) bool {
+	if context == nil || context.analyzer == nil {
+		return false
+	}
+	analyzer := context.analyzer
+	if function {
+		for _, ancestor := range analyzer.AncestorClassIDs(ownerID) {
+			if analyzer.DeclaresMethod(ancestor, name) {
+				return true
+			}
+			if classReferences(context, ancestor, name) {
+				return true
+			}
+		}
+	}
+	for _, descendant := range analyzer.DescendantClassIDs(ownerID) {
+		if classReferences(context, descendant, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// classReferences reports whether the script declaring class id references name,
+// either in a reference position or spelled inside a string-like literal.
+func classReferences(context *Context, classID, name string) bool {
+	if context == nil || context.analyzer == nil {
+		return false
+	}
+	path, ok := context.analyzer.ClassPath(classID)
+	if !ok {
+		return false
+	}
+	facts := context.referencesFor(path)
+	return facts.names[name] || appearsIn(facts.strings, name)
+}
+
+// referenceFacts are the names one script references: those in a reference
+// position and those spelled inside a string-like literal.
+type referenceFacts struct {
+	names   map[string]bool
+	strings []string
+}
+
+// referencesFor returns the reference facts for the script at path, cached on
+// the run-local context so the rule walks each file once per run.
+func (c *Context) referencesFor(path string) referenceFacts {
+	if c == nil || c.snapshot == nil {
+		return referenceFacts{}
+	}
+	if c.references == nil {
+		c.references = make(map[string]referenceFacts)
+	}
+	if facts, ok := c.references[path]; ok {
+		return facts
+	}
+	script := c.snapshot.Scripts[path]
+	if script == nil || script.File == nil {
+		return referenceFacts{}
+	}
+	facts := referenceFacts{names: referenceNames(script.File), strings: stringLiteralContents(script.File)}
+	c.references[path] = facts
+	return facts
 }
 
 // scriptBaseName returns the base-class spelling of the script's top-level
@@ -224,9 +330,9 @@ var objectVirtuals = map[string]bool{
 // property accessor shorthand. Declarations store their names as string fields
 // rather than Identifier nodes, so a member's own declaration contributes
 // nothing here.
-func referenceNames(script *project.Script) map[string]bool {
+func referenceNames(file *ast.File) map[string]bool {
 	used := map[string]bool{}
-	ast.Inspect(script.File, func(node ast.Node) bool {
+	ast.Inspect(file, func(node ast.Node) bool {
 		switch node := node.(type) {
 		case *ast.Identifier:
 			used[node.Name] = true
@@ -252,9 +358,9 @@ func referenceNames(script *project.Script) map[string]bool {
 // stringLiteralContents returns the raw spelling of every string-like literal in
 // the file, quotes included. A member reached by string dispatch is referenced
 // through one of these.
-func stringLiteralContents(script *project.Script) []string {
+func stringLiteralContents(file *ast.File) []string {
 	var contents []string
-	ast.Inspect(script.File, func(node ast.Node) bool {
+	ast.Inspect(file, func(node ast.Node) bool {
 		literal, ok := node.(*ast.Literal)
 		if ok && stringLikeLiteral(literal.Kind) {
 			contents = append(contents, literal.Raw)
