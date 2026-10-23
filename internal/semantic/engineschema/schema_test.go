@@ -24,7 +24,7 @@ const (
 	officialRawFixturePath = "testdata/extension_api_4_7_2_official.json.gz"
 	fixtureRawSHA256       = "106979f23c7131b0fd5997ab1b82d514e3fbbf83bf5709568f4e474deb5f05e5"
 	officialRawSHA256      = "d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986"
-	officialArtifactSHA256 = "a7737f1adb3765e1df446a915115585f8c0f9257cd08541551d8b1649d7c5f55"
+	officialArtifactSHA256 = "49363e14e1f8d5f0c82d0ebf89fcb97911d7acb0ae6f0c583e94311ac75bf6a2"
 	officialRawBytes       = 6_965_057
 	officialGodotCommit    = "ed1daf0bf"
 )
@@ -442,6 +442,9 @@ func TestRawValidationRejectsMalformedRetainedRows(t *testing.T) {
 		})},
 		{name: "method static flag", mutate: mutateNestedNamedRow("classes", "Node", "methods", "get_node", func(row map[string]any) {
 			delete(row, "is_static")
+		})},
+		{name: "method virtual flag", mutate: mutateNestedNamedRow("classes", "Node", "methods", "get_node", func(row map[string]any) {
+			delete(row, "is_virtual")
 		})},
 		{name: "method vararg flag", mutate: mutateNestedNamedRow("classes", "Object", "methods", "call", func(row map[string]any) {
 			row["is_vararg"] = nil
@@ -1032,6 +1035,39 @@ func compressArtifactForTest(t *testing.T, value artifact) []byte {
 		t.Fatal(err)
 	}
 	return compressed.Bytes()
+}
+
+// The is_virtual flag is retained per class method and must survive both the raw
+// loader and the embedded artifact, because lint's unused-private-member rule
+// resolves a script's base chain against it.
+func TestEngineRecordsVirtualMethods(t *testing.T) {
+	loaded, err := LoadEmbedded(4, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := loaded.Engine
+	for _, virtual := range []struct{ owner, name string }{
+		{"Node", "_ready"},
+		{"Node", "_process"},
+		{"CanvasItem", "_draw"},
+		{"Control", "_gui_input"},
+		{"Resource", "_setup_local_to_scene"},
+		{"BaseButton", "_toggled"},
+		{"MainLoop", "_initialize"},
+		{"Logger", "_log_error"},
+	} {
+		if !engine.VirtualMethod(virtual.owner, virtual.name) {
+			t.Errorf("%s.%s is not recorded virtual", virtual.owner, virtual.name)
+		}
+	}
+	for _, ordinary := range []struct{ owner, name string }{
+		{"Object", "call"},
+		{"Node", "get_node"},
+	} {
+		if engine.VirtualMethod(ordinary.owner, ordinary.name) {
+			t.Errorf("%s.%s is wrongly recorded virtual", ordinary.owner, ordinary.name)
+		}
+	}
 }
 
 func assertCoreEngineFacts(t *testing.T, engine *semantic.Engine) {

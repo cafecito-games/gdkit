@@ -404,6 +404,39 @@ func TestEngineRejectsEveryDuplicateIdentity(t *testing.T) {
 	}
 }
 
+func TestEngineAddVirtualValidatesAndPublishes(t *testing.T) {
+	builder := NewEngineBuilder()
+	if err := builder.AddBuiltin("int"); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddClass("Object", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddMethod("Object", "f", "int", nil, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddVirtual("Object", "missing"); err == nil || !strings.Contains(err.Error(), "unknown method") {
+		t.Fatalf("virtual on unknown method = %v", err)
+	}
+	if err := builder.AddVirtual("Object", "f"); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddVirtual("Object", "f"); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate virtual = %v", err)
+	}
+
+	engine, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !engine.VirtualMethod("Object", "f") {
+		t.Error("Object.f is not recorded virtual")
+	}
+	if engine.VirtualMethod("Object", "missing") {
+		t.Error("Object.missing is wrongly recorded virtual")
+	}
+}
+
 func TestEnginePublishesOnlyExplicitBuiltinConstructors(t *testing.T) {
 	builder := NewEngineBuilder()
 	for _, name := range []string{"Vector2", "Array", "KnownButNotConstructible", "FutureValue"} {

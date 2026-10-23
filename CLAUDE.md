@@ -366,6 +366,15 @@ matching in `no-engine-logging`, so a project logger with a method named
 `push_error` is not mistaken for the engine's function. The comments in `lint/`
 record why; do not "simplify" them without reading those.
 
+`unused-private-member` resolves a private function's virtual exemption up the
+script's `extends` chain through the engine schema (it is an `EngineSchemaRule`),
+so `_toggled` is exempt on a `Button` subclass but reported on a `RefCounted`.
+Object's core callbacks — `_init`, `_notification`, `_to_string`, and the
+property accessors — are absent from Godot's extension API dump because the
+engine dispatches them directly rather than through ClassDB's virtual-method
+table, so the rule keeps a small fixed `objectVirtuals` set for them; do not fold
+that set into the schema-driven path, which cannot see those names.
+
 ### Analysis pipeline
 
 `Analyzer.Analyze()` (`architecture/analyzer.go`) runs a fixed sequence, and

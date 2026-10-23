@@ -206,10 +206,11 @@ Basic correctness rules:
   unused private class *variable* and an unused *signal*, so the rule does not
   duplicate those. A member counts as used when its name appears anywhere else
   in the file — as a reference or spelled inside any string literal, which is
-  how `call()`, `connect()`, `get()`, and `set()` reach a member by name. An
-  engine virtual such as `_ready`, and an `_on_...` editor signal handler, are
-  never reported, because the engine or a scene reaches them from outside the
-  file.
+  how `call()`, `connect()`, `get()`, and `set()` reach a member by name. A
+  function whose name is an engine virtual — resolved up the script's `extends`
+  chain in the engine schema, so `_toggled` is exempt on a `Button` subclass but
+  reported on a `RefCounted` — and an `_on_...` editor signal handler are never
+  reported, because the engine or a scene reaches them from outside the file.
 
 Structure rules:
 
@@ -492,9 +493,11 @@ that only use `godot_version` for syntax gating do not load an engine table and
 continue to work for older versions. An explicit dump is always validated once
 at startup; otherwise the bundled table is decompressed once, lazily, only if
 an enabled semantic-aware rule requests engine facts. Today that is the enabled
-`require-typed-collection` populated-literal path; default lint, a disabled
-collection rule, and the other typing rules do not select an engine or perform
-whole-project semantic analysis.
+`require-typed-collection` populated-literal path and the enabled
+`unused-private-member` rule, which resolves a private function's virtual
+exemption up its `extends` chain; default lint, a disabled collection rule, and
+the other typing rules do not select an engine or perform whole-project semantic
+analysis.
 
 The selected schema also supplies builtin value-constructor eligibility. A
 direct call such as `Vector2(1, 2)` reduces to that selected Engine's canonical
@@ -1745,9 +1748,9 @@ The committed `4.7` artifact is generated from official Godot 4.7.2 stable
 SHA-256
 `d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986`.
 The canonical schema digest is
-`194f3994180ad043703ab3d324a93563c5886e69ffe9a3131d109c435660faa5`;
-the committed gzip is 205,753 bytes with SHA-256
-`a7737f1adb3765e1df446a915115585f8c0f9257cd08541551d8b1649d7c5f55`.
+`7f78a5c8436cc33f38e1491c8e33c6885f49b71c7cde92cd528b95be70285fc6`;
+the committed gzip is 206,658 bytes with SHA-256
+`49363e14e1f8d5f0c82d0ebf89fcb97911d7acb0ae6f0c583e94311ac75bf6a2`.
 
 Regenerate from a separately verified official dump with:
 

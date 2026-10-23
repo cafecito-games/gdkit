@@ -86,6 +86,7 @@ type rawMethod struct {
 	Arguments   []rawArgument     `json:"arguments"`
 	IsStatic    *bool             `json:"is_static"`
 	IsVararg    *bool             `json:"is_vararg"`
+	IsVirtual   *bool             `json:"is_virtual"`
 }
 
 type rawType struct {
@@ -253,7 +254,7 @@ func distillRaw(data []byte, source SourceKind, sourceCommit string) (document, 
 		constructorArguments = append(constructorArguments, arguments...)
 		result.Builtins = append(result.Builtins, builtinRecord{Name: builtin.Name, Constructible: &constructible})
 		for _, method := range builtin.Methods {
-			record, err := distillMethod(builtin.Name, method)
+			record, err := distillMethod(builtin.Name, method, false)
 			if err != nil {
 				return document{}, err
 			}
@@ -289,7 +290,7 @@ func distillRaw(data []byte, source SourceKind, sourceCommit string) (document, 
 		}
 		result.Classes = append(result.Classes, classRecord{Name: class.Name, Inherits: class.Inherits})
 		for _, method := range class.Methods {
-			record, err := distillMethod(class.Name, method)
+			record, err := distillMethod(class.Name, method, true)
 			if err != nil {
 				return document{}, err
 			}
@@ -388,12 +389,19 @@ func validateRawHeaderAndTables(raw rawDocument) error {
 	return nil
 }
 
-func distillMethod(owner string, raw rawMethod) (methodRecord, error) {
+func distillMethod(owner string, raw rawMethod, requireVirtual bool) (methodRecord, error) {
 	if err := requiredText("method name", raw.Name); err != nil {
 		return methodRecord{}, err
 	}
 	if raw.IsStatic == nil || raw.IsVararg == nil {
 		return methodRecord{}, fmt.Errorf("%w: method %s.%s is missing is_static or is_vararg", ErrRawInvalid, owner, raw.Name)
+	}
+	// A builtin value type has no virtual methods, so the producer omits
+	// is_virtual on its methods rather than writing false; a class method always
+	// carries it. Requiring the flag on classes keeps a future producer that
+	// drops it from silently making every virtual look non-virtual.
+	if requireVirtual && raw.IsVirtual == nil {
+		return methodRecord{}, fmt.Errorf("%w: method %s.%s is missing is_virtual", ErrRawInvalid, owner, raw.Name)
 	}
 	if raw.ReturnValue.Present && raw.ReturnType.Present {
 		return methodRecord{}, fmt.Errorf("%w: method %s.%s has both return_value and return_type", ErrRawInvalid, owner, raw.Name)
@@ -413,7 +421,7 @@ func distillMethod(owner string, raw rawMethod) (methodRecord, error) {
 	}
 	return methodRecord{
 		Owner: owner, Name: raw.Name, ReturnType: returnType, Arguments: arguments,
-		Static: *raw.IsStatic, Vararg: *raw.IsVararg,
+		Static: *raw.IsStatic, Vararg: *raw.IsVararg, Virtual: raw.IsVirtual != nil && *raw.IsVirtual,
 	}, nil
 }
 
@@ -775,6 +783,11 @@ func compileDocument(value document) (*semantic.Engine, error) {
 		}
 		if err := builder.AddMethod(method.Owner, method.Name, method.ReturnType, arguments, method.Static, method.Vararg); err != nil {
 			return nil, err
+		}
+		if method.Virtual {
+			if err := builder.AddVirtual(method.Owner, method.Name); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for _, property := range value.Properties {

@@ -43,7 +43,7 @@ func TestUnusedPrivateMemberStaysSilentWhenReferenced(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			assertNoRule(t, "unused-private-member", testCase.source)
+			assertRuleWithConfig(t, unusedConfig(), "unused-private-member", testCase.source)
 		})
 	}
 }
@@ -53,11 +53,15 @@ func TestUnusedPrivateMemberStaysSilentOnExemptMembers(t *testing.T) {
 		name   string
 		source string
 	}{
-		{"engine virtual _ready", "extends Node\n\nfunc _ready():\n\tpass\n"},
-		{"engine virtual _process", "extends Node\n\nfunc _process(delta):\n\tpass\n"},
-		{"engine virtual _init", "extends Node\n\nfunc _init():\n\tpass\n"},
-		{"engine virtual _to_string", "extends Node\n\nfunc _to_string():\n\treturn \"\"\n"},
-		{"engine virtual _get", "extends Node\n\nfunc _get(property):\n\treturn null\n"},
+		{"Node virtual _ready", "extends Node\n\nfunc _ready():\n\tpass\n"},
+		{"Node virtual _process", "extends Node\n\nfunc _process(delta):\n\tpass\n"},
+		{"Object core virtual _init", "extends Node\n\nfunc _init():\n\tpass\n"},
+		{"Object core virtual _to_string", "extends Node\n\nfunc _to_string():\n\treturn \"\"\n"},
+		{"Object core virtual _get", "extends Node\n\nfunc _get(property):\n\treturn null\n"},
+		{"Object core virtual on a custom base", "extends SomeCustom\n\nfunc _to_string():\n\treturn \"\"\n"},
+		{"inherited virtual _toggled on Button", "extends Button\n\nfunc _toggled(button_pressed):\n\tpass\n"},
+		{"inherited virtual _initialize on SceneTree", "extends SceneTree\n\nfunc _initialize():\n\tpass\n"},
+		{"virtual _log_error on Logger", "extends Logger\n\nfunc _log_error(message):\n\tpass\n"},
 		{"editor signal handler", "extends Node\n\nfunc _on_button_pressed():\n\tpass\n"},
 		{"public members are never candidates", "extends Node\n\nfunc helper():\n\tpass\n\nconst LIMIT = 1\n\nvar value = 1\n"},
 		{"a private variable is never a candidate", "extends Node\n\nvar _value = 1\n"},
@@ -65,7 +69,25 @@ func TestUnusedPrivateMemberStaysSilentOnExemptMembers(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			assertNoRule(t, "unused-private-member", testCase.source)
+			assertRuleWithConfig(t, unusedConfig(), "unused-private-member", testCase.source)
+		})
+	}
+}
+
+func TestUnusedPrivateMemberReportsNonVirtualNames(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		lines  []int
+	}{
+		{"_toggled on RefCounted is dead code", "extends RefCounted\n\nfunc _toggled():\n\tpass\n", []int{3}},
+		{"_ready on RefCounted is dead code", "extends RefCounted\n\nfunc _ready():\n\tpass\n", []int{3}},
+		{"_process on RefCounted is dead code", "extends RefCounted\n\nfunc _process(delta):\n\tpass\n", []int{3}},
+		{"_draw on a plain Object subclass is dead code", "extends Object\n\nfunc _draw():\n\tpass\n", []int{3}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			assertRuleWithConfig(t, unusedConfig(), "unused-private-member", testCase.source, testCase.lines...)
 		})
 	}
 }
