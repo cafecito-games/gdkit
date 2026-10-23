@@ -10,6 +10,25 @@ import (
 	"github.com/cafecito-games/gdkit/project"
 )
 
+// nameDescriptions maps each name rule to the one-line description shown by
+// `gdkit lint rules`.
+var nameDescriptions = map[string]string{
+	"function-name":                  `Checks a function's name against the configured pattern`,
+	"class-name":                     `Checks a class_name declaration against the configured pattern`,
+	"sub-class-name":                 `Checks an inner class name against the configured pattern`,
+	"signal-name":                    `Checks a signal name against the configured pattern`,
+	"class-variable-name":            `Checks a class-scope variable name against the configured pattern`,
+	"class-load-variable-name":       `Checks a class-scope load()/preload() variable name against the configured pattern`,
+	"function-variable-name":         `Checks a function-scope variable name against the configured pattern`,
+	"function-preload-variable-name": `Checks a function-scope preload() variable name against the configured pattern`,
+	"function-argument-name":         `Checks a function argument name against the configured pattern`,
+	"loop-variable-name":             `Checks a loop variable name against the configured pattern`,
+	"enum-name":                      `Checks an enum name against the configured pattern`,
+	"enum-element-name":              `Checks an enum element name against the configured pattern`,
+	"constant-name":                  `Checks a constant name against the configured pattern`,
+	"load-constant-name":             `Checks a load()/preload() constant name against the configured pattern`,
+}
+
 // nameMessages maps each name rule to the text gdlint reports for it.
 var nameMessages = map[string]string{
 	"function-name":                  `Function name "%s" is not valid`,
@@ -38,6 +57,8 @@ func init() {
 type nameRule struct{ rule string }
 
 func (r nameRule) Name() string { return r.rule }
+
+func (r nameRule) Describe() string { return nameDescriptions[r.rule] }
 
 func (r nameRule) Check(context *Context, script *project.Script) []Diagnostic {
 	pattern := context.Pattern(r.rule)

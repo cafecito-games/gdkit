@@ -28,6 +28,7 @@ go run ./internal/semantic/engineschema/cmd/generate \
 go run ./cmd/gdkit arch check /path/to/godot-project
 go run ./cmd/gdkit arch check --format json --show-edges .
 go run ./cmd/gdkit lint check /path/to/godot-project
+go run ./cmd/gdkit lint rules
 go run ./cmd/gdkit format check /path/to/godot-project
 go run ./cmd/gdkit format check --diff /path/to/godot-project
 go run ./cmd/gdkit format write /path/to/godot-project

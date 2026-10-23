@@ -22,6 +22,10 @@ type classDefinitionsOrderRule struct{}
 
 func (classDefinitionsOrderRule) Name() string { return "class-definitions-order" }
 
+func (classDefinitionsOrderRule) Describe() string {
+	return "Reports class members that appear out of the configured order"
+}
+
 // An inner class's own "extends Base" clause is a member of that class, in the
 // "extends" slot, exactly as gdlint's tree has it.
 func (classDefinitionsOrderRule) Check(context *Context, script *project.Script) []Diagnostic {

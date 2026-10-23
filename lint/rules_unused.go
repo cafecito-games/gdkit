@@ -48,6 +48,10 @@ type unusedPrivateMemberRule struct{}
 
 func (unusedPrivateMemberRule) Name() string { return "unused-private-member" }
 
+func (unusedPrivateMemberRule) Describe() string {
+	return "Reports a private member that is never referenced in its file"
+}
+
 func (unusedPrivateMemberRule) PendingSince() string { return "0.8.0" }
 
 func (unusedPrivateMemberRule) Check(_ *Context, script *project.Script) []Diagnostic {

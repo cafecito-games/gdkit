@@ -25,6 +25,7 @@ Usage:
   gdkit arch init    [flags] [project-root]
   gdkit lint check   [flags] [project-root]
   gdkit lint init    [flags] [project-root]
+  gdkit lint rules   [flags]
   gdkit format check [flags] [project-root]
   gdkit format write [flags] [project-root]
   gdkit format init  [flags] [project-root]
@@ -40,6 +41,7 @@ Commands:
   arch init      write starter .gdkit configuration files
   lint check     report style and correctness problems in GDScript
   lint init      write the default .gdkit/lint.json configuration
+  lint rules     list every lint rule and what it reports
   format check   report GDScript files that are not formatted
   format write   rewrite GDScript files in the configured style
   format init    write the default .gdkit/format.json configuration
@@ -112,6 +114,8 @@ func runLint(args []string, stdout, stderr io.Writer) int {
 		return runLintCheck(args[1:], stdout, stderr)
 	case "init":
 		return runLintInit(args[1:], stdout, stderr)
+	case "rules":
+		return runLintRules(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usageText)
 		return 0
@@ -442,6 +446,46 @@ func runLintInit(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	fmt.Fprintln(stdout, "wrote", lint.DefaultConfigPath)
+	return 0
+}
+
+func runLintRules(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("lint rules", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	format := flags.String("format", "text", "output format: text or json")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	outputFormat, ok := checkOutputFormat(*format, stderr)
+	if !ok {
+		return exitUsage
+	}
+	if flags.NArg() != 0 {
+		return reportUsage(stderr, outputFormat, failure.UsageArguments, "lint rules does not accept positional arguments")
+	}
+	infos := lint.RuleInfos()
+	switch outputFormat {
+	case formatJSON:
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(infos); err != nil {
+			return reportFailure(stderr, outputFormat, failure.OutputWrite, fmt.Errorf("write rules: %w", err))
+		}
+	case formatText:
+		width := 0
+		for _, info := range infos {
+			if len(info.Name) > width {
+				width = len(info.Name)
+			}
+		}
+		for _, info := range infos {
+			marker := ""
+			if info.Pending {
+				marker = " [ships inert]"
+			}
+			fmt.Fprintf(stdout, "%-*s  %s%s\n", width, info.Name, info.Description, marker)
+		}
+	}
 	return 0
 }
 

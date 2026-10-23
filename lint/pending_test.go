@@ -141,6 +141,20 @@ func TestPendingRulesAreExactlyTheInertOnes(t *testing.T) {
 	}
 }
 
+// TestEveryRuleDescribesItself pins that `gdkit lint rules` has a description
+// for every nameable rule. A rule added without one would list with an empty
+// description, which is worse than no listing at all.
+func TestEveryRuleDescribesItself(t *testing.T) {
+	if len(RuleInfos()) != len(RuleNames()) {
+		t.Errorf("RuleInfos() lists %d rules, RuleNames() %d", len(RuleInfos()), len(RuleNames()))
+	}
+	for _, info := range RuleInfos() {
+		if info.Description == "" {
+			t.Errorf("RuleInfos() lists %q with no description", info.Name)
+		}
+	}
+}
+
 // A pending rule is skipped before it is ever asked to check a file, so opting
 // out costs nothing at runtime.
 func TestPendingRuleIsNotInvokedWhenInert(t *testing.T) {
@@ -161,6 +175,7 @@ type watchfulPendingRule struct {
 }
 
 func (r watchfulPendingRule) Name() string         { return "max-line-length" }
+func (r watchfulPendingRule) Describe() string     { return "test" }
 func (r watchfulPendingRule) PendingSince() string { return "0.3.0" }
 func (r watchfulPendingRule) Check(*Context, *project.Script) []Diagnostic {
 	*r.called = true

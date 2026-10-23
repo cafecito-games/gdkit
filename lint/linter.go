@@ -20,6 +20,9 @@ type Rule interface {
 	// Name is the rule's public identifier. It appears in output, in config,
 	// and in inline ignore comments, so it must never change.
 	Name() string
+	// Describe is a one-line description of what the rule reports, shown by
+	// `gdkit lint rules`.
+	Describe() string
 	Check(*Context, *project.Script) []Diagnostic
 }
 
@@ -147,6 +150,47 @@ func RuleNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// driverRuleDescriptions describes the two rules the driver reports rather
+// than a registered rule: a file that does not parse, and a suppression
+// comment naming a rule that does not exist.
+var driverRuleDescriptions = map[string]string{
+	"source-parse":   "reports a file that does not parse; no rule can run on it",
+	"unknown-ignore": "reports a suppression comment that names a rule that does not exist",
+}
+
+// RuleInfo is one nameable rule and what it does, for `gdkit lint rules`.
+type RuleInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Pending     bool   `json:"pending"`
+}
+
+// RuleInfos lists every nameable rule — the registered rules plus the driver's
+// source-parse and unknown-ignore — sorted by name, each with its description
+// and whether it ships inert.
+func RuleInfos() []RuleInfo {
+	names := make([]string, 0, len(registry)+len(driverRuleDescriptions))
+	for name := range registry {
+		names = append(names, name)
+	}
+	for name := range driverRuleDescriptions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	infos := make([]RuleInfo, 0, len(names))
+	for _, name := range names {
+		info := RuleInfo{Name: name}
+		if description, ok := driverRuleDescriptions[name]; ok {
+			info.Description = description
+		} else {
+			info.Description = registry[name].Describe()
+		}
+		info.Pending = IsPendingRule(name)
+		infos = append(infos, info)
+	}
+	return infos
 }
 
 // IsPendingRule reports whether a registered rule ships inert. The driver's own

@@ -41,6 +41,10 @@ type trailingWhitespaceRule struct{}
 
 func (trailingWhitespaceRule) Name() string { return "trailing-whitespace" }
 
+func (trailingWhitespaceRule) Describe() string {
+	return "Reports a line ending in whitespace"
+}
+
 func (trailingWhitespaceRule) Check(context *Context, script *project.Script) []Diagnostic {
 	var found []Diagnostic
 	for number := 1; number <= script.LineCount(); number++ {
@@ -63,6 +67,10 @@ func (trailingWhitespaceRule) Check(context *Context, script *project.Script) []
 type maxFileLinesRule struct{}
 
 func (maxFileLinesRule) Name() string { return "max-file-lines" }
+
+func (maxFileLinesRule) Describe() string {
+	return "Reports a file longer than the configured limit"
+}
 
 func (maxFileLinesRule) Check(context *Context, script *project.Script) []Diagnostic {
 	limit := context.Config.MaxFileLines
@@ -178,6 +186,10 @@ type maxLineLengthRule struct{}
 
 func (maxLineLengthRule) Name() string { return "max-line-length" }
 
+func (maxLineLengthRule) Describe() string {
+	return "Reports a line longer than the configured limit"
+}
+
 func (maxLineLengthRule) Check(context *Context, script *project.Script) []Diagnostic {
 	limit := context.Config.MaxLineLength
 	if limit <= 0 {
@@ -217,6 +229,10 @@ var mixedIndentation = regexp.MustCompile(`^(\t+ +| +\t+)`)
 type mixedTabsAndSpacesRule struct{}
 
 func (mixedTabsAndSpacesRule) Name() string { return "mixed-tabs-and-spaces" }
+
+func (mixedTabsAndSpacesRule) Describe() string {
+	return "Reports a line whose indentation mixes tabs and spaces"
+}
 
 func (mixedTabsAndSpacesRule) Check(context *Context, script *project.Script) []Diagnostic {
 	var found []Diagnostic

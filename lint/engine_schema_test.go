@@ -22,6 +22,7 @@ type engineAwareTestRule struct {
 }
 
 func (r *engineAwareTestRule) Name() string          { return "max-line-length" }
+func (r *engineAwareTestRule) Describe() string      { return "test" }
 func (r *engineAwareTestRule) RequiresEngineSchema() {}
 func (r *engineAwareTestRule) Check(context *Context, _ *project.Script) []Diagnostic {
 	r.seen = context.Engine()
@@ -30,7 +31,8 @@ func (r *engineAwareTestRule) Check(context *Context, _ *project.Script) []Diagn
 
 type ordinaryTestRule struct{}
 
-func (ordinaryTestRule) Name() string { return "max-line-length" }
+func (ordinaryTestRule) Name() string     { return "max-line-length" }
+func (ordinaryTestRule) Describe() string { return "test" }
 func (ordinaryTestRule) Check(*Context, *project.Script) []Diagnostic {
 	return nil
 }
@@ -38,6 +40,7 @@ func (ordinaryTestRule) Check(*Context, *project.Script) []Diagnostic {
 type pendingEngineAwareTestRule struct{}
 
 func (pendingEngineAwareTestRule) Name() string                                 { return "no-engine-logging" }
+func (pendingEngineAwareTestRule) Describe() string                             { return "test" }
 func (pendingEngineAwareTestRule) PendingSince() string                         { return "test" }
 func (pendingEngineAwareTestRule) RequiresEngineSchema()                        {}
 func (pendingEngineAwareTestRule) Check(*Context, *project.Script) []Diagnostic { return nil }
