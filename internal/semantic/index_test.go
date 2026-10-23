@@ -135,6 +135,18 @@ func TestIndexResolvesInnerClassPathExtends(t *testing.T) {
 	assert.Equal(t, []string{"holder.gd#Child", "relative.gd#Child"}, got)
 }
 
+// An inner class can spell its base as an extends statement inside its body, not
+// only on the declaration line. The body form must resolve to the same engine
+// or project base.
+func TestIndexResolvesInnerClassBodyExtends(t *testing.T) {
+	index := BuildIndex(sources(t, map[string]string{
+		"base.gd":   "class_name Base\nextends RefCounted\n",
+		"holder.gd": "extends Node\nclass Canvas:\n\textends Control\n\tpass\nclass Child:\n\textends Base\n\tpass\n",
+	}))
+	require.Equal(t, "Control", index.Classes["holder.gd#Canvas"].ExternalBase)
+	require.Equal(t, "base.gd", index.Classes["holder.gd#Child"].ParentID)
+}
+
 func TestIndexFailsClosedForAmbiguityAndMissingProjectReferences(t *testing.T) {
 	s := sources(t, map[string]string{
 		"one.gd":              "class_name Dup\n",

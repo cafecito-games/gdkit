@@ -185,3 +185,118 @@ func TestUnusedPrivateMemberStillReportsDeadCodeInALeafClass(t *testing.T) {
 	require.Len(t, found, 1)
 	require.Equal(t, 4, found[0].Line)
 }
+
+// A live engine callback stays exempt when its native base is reached through a
+// project class, not only when the script spells the native base directly.
+func TestUnusedPrivateMemberResolvesNativeBaseThroughProjectClass(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"base.gd":     "class_name ProbeBase\nextends Node2D\n",
+		"indirect.gd": "class_name ProbeIndirect\nextends ProbeBase\n\nfunc _draw() -> void:\n\tpass\n",
+	})
+	found := unusedDiagnostics(report)
+	require.Empty(t, found, "engine callback reached through a project class reported as dead")
+}
+
+// An inner class whose native base is written as a body extends statement is
+// still a CanvasItem subclass, so its _draw is an engine callback.
+func TestUnusedPrivateMemberResolvesInnerClassBodyExtends(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"inner.gd": "extends Node\n\nclass Canvas:\n\textends Control\n\n\tfunc _draw() -> void:\n\t\tpass\n",
+	})
+	found := unusedDiagnostics(report)
+	require.Empty(t, found, "engine callback in a body-extends inner class reported as dead")
+}
+
+// The inline extends spelling of an inner class keeps its engine callback exempt
+// too.
+func TestUnusedPrivateMemberResolvesInnerClassInlineExtends(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"inner.gd": "extends Node\n\nclass Canvas extends Control:\n\tfunc _draw() -> void:\n\t\tpass\n",
+	})
+	found := unusedDiagnostics(report)
+	require.Empty(t, found, "engine callback in an inline-extends inner class reported as dead")
+}
+
+// Resolving through a project class must not exempt a name its native ancestor
+// does not declare: a _draw whose native chain ends at RefCounted stays dead.
+func TestUnusedPrivateMemberStillReportsNonVirtualThroughProjectClass(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"base.gd": "class_name ProbeBase\nextends RefCounted\n",
+		"leaf.gd": "extends ProbeBase\n\nfunc _draw() -> void:\n\tpass\n",
+	})
+	found := unusedDiagnostics(report)
+	require.Len(t, found, 1)
+	require.Equal(t, 3, found[0].Line)
+}
+
+// A private helper called directly from an unrelated script, with a receiver
+// that resolves to the declaring class, is used, not dead.
+func TestUnusedPrivateMemberStaysSilentWhenAnUnrelatedScriptCallsIt(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"subject.gd": "class_name ProbeSubject\nextends RefCounted\n\nfunc _compute() -> int:\n\treturn 7\n",
+		"caller.gd":  "extends RefCounted\n\nfunc run() -> int:\n\treturn ProbeSubject.new()._compute()\n",
+	})
+	found := unusedDiagnostics(report)
+	require.Empty(t, found, "directly referenced helper reported as dead")
+}
+
+// The inherited lookup still resolves to the declaring base class, so a helper
+// reached through a subclass receiver keeps the base's declaration alive.
+func TestUnusedPrivateMemberStaysSilentWhenCalledThroughInheritedReceiver(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"base.gd":   "class_name ProbeBase\nextends RefCounted\n\nfunc _compute() -> int:\n\treturn 7\n",
+		"sub.gd":    "class_name ProbeSub\nextends ProbeBase\n",
+		"caller.gd": "extends RefCounted\n\nfunc run() -> int:\n\treturn ProbeSub.new()._compute()\n",
+	})
+	found := unusedDiagnostics(report)
+	require.Empty(t, found, "helper reached through an inherited receiver reported as dead")
+}
+
+// A receiver the analyzer cannot type — here an untyped parameter — stays out of
+// scope, exactly as the rule's provable-reference contract requires.
+func TestUnusedPrivateMemberStillReportsWhenReceiverIsVariant(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"subject.gd": "class_name ProbeSubject\nextends RefCounted\n\nfunc _compute() -> int:\n\treturn 7\n",
+		"caller.gd":  "extends RefCounted\n\nfunc run(target) -> int:\n\treturn target._compute()\n",
+	})
+	found := unusedDiagnostics(report)
+	require.Len(t, found, 1)
+	require.Equal(t, 4, found[0].Line)
+}
+
+// A failed reduction inside a call argument must not attribute the outer member
+// access to the wrong declaring class, and must still attribute it to the
+// explicitly constructed receiver. Here ProbeSubject.mode has an unresolvable
+// type, so ProbeSubject.new().mode yields Unknown; the outer _compute access is
+// ProbeWorker._compute, not ProbeSubject._compute. ProbeSubject's dead _compute
+// stays reported while ProbeWorker's referenced _compute stays silent.
+func TestUnusedPrivateMemberDoesNotAttributeNestedMemberToWrongClass(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"subject.gd": "class_name ProbeSubject\nextends RefCounted\nvar mode: Node.ProcessMode = Node.PROCESS_MODE_INHERIT\n\nfunc _compute() -> int:\n\treturn 7\n",
+		"worker.gd":  "class_name ProbeWorker\nextends RefCounted\nfunc _init(mode: Node.ProcessMode) -> void:\n\tpass\n\nfunc _compute() -> int:\n\treturn 8\n",
+		"caller.gd":  "extends RefCounted\n\nfunc run() -> int:\n\treturn ProbeWorker.new(ProbeSubject.new().mode)._compute()\n",
+	})
+	found := unusedDiagnostics(report)
+	var subjectLines, workerLines []int
+	for _, diagnostic := range found {
+		switch diagnostic.Path {
+		case "subject.gd":
+			subjectLines = append(subjectLines, diagnostic.Line)
+		case "worker.gd":
+			workerLines = append(workerLines, diagnostic.Line)
+		}
+	}
+	require.Equal(t, []int{5}, subjectLines, "ProbeSubject._compute must stay dead")
+	require.Empty(t, workerLines, "ProbeWorker._compute is referenced and must stay silent")
+}
+
+// An unrelated source parse failure must not blank the native ancestry of a
+// valid selected script: its live engine callback stays exempt.
+func TestUnusedPrivateMemberIgnoresUnrelatedParseFailure(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"canvas.gd": "extends Node2D\n\nfunc _draw() -> void:\n\tpass\n",
+		"broken.gd": "func (\n",
+	})
+	found := unusedDiagnostics(report)
+	require.Empty(t, found, "engine callback reported as dead because an unrelated file failed to parse")
+}

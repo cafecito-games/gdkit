@@ -44,22 +44,27 @@ func init() {
 // against the engine schema rather than a hand-maintained list, so it is
 // complete for the bundled engine version and stops exempting a name on a class
 // that does not declare it — "_toggled" on a RefCounted is dead code, but on a
-// Button subclass it is a real override. Object's core callbacks — _init,
-// _notification, _to_string, and the property accessors — are absent from
-// Godot's extension API dump, so they stay a small fixed set. The "_on_"
+// Button subclass it is a real override. The chain is reached through the
+// semantic analyzer's whole-project graph, so a base written as a project class
+// (extends ProbeBase) still resolves to its native ancestor, and an inner class
+// resolves through either of its two extends spellings. Object's core callbacks
+// — _init, _notification, _to_string, and the property accessors — are absent
+// from Godot's extension API dump, so they stay a small fixed set. The "_on_"
 // exemption is a different mechanism (a scene connects by string, which no
 // schema knows) and stays as it is.
 //
 // The rule ships inert, as a new rule must, so an upgrade cannot change what an
 // existing project reports on unchanged configuration. It is not, however,
-// strictly single-file: the one cross-file question it can answer statically is
-// the class hierarchy, because both halves of an extends edge are resolvable
-// from the project graph the semantic analyzer builds. A private member declared
-// on a class is used when any project descendant references its name, and a
-// private function is used when any project ancestor declares or references its
-// name — the two shapes a hierarchy produces that an in-file scan cannot see.
-// A reference from an unrelated script, including a call("_name") written there,
-// stays invisible, exactly as it is to every other rule.
+// strictly single-file. Two cross-file questions are answered from the project
+// graph the semantic analyzer builds. A private member declared on a class is
+// used when any project descendant references its name, and a private function
+// is used when any project ancestor declares or references its name — the two
+// shapes a hierarchy produces that an in-file scan cannot see. A private member
+// is also used when any script reaches it through a member access whose receiver
+// resolves to the declaring class, so a helper called from an unrelated test
+// script by ProbeSubject.new()._compute() is not dead. A reference that stays
+// invisible is one no resolver can prove: a call("_name") written in an
+// unrelated script, or a receiver left a Variant.
 type unusedPrivateMemberRule struct{}
 
 func (unusedPrivateMemberRule) Name() string { return "unused-private-member" }
@@ -73,9 +78,10 @@ func (unusedPrivateMemberRule) PendingSince() string { return "0.8.0" }
 func (unusedPrivateMemberRule) RequiresEngineSchema() {}
 
 // NeedsSemanticAnalysis is true so the rule receives the whole-project class
-// graph. It is deliberately narrow: the rule still reads a single file, but it
-// can walk the extends graph the analyzer resolves rather than a general
-// cross-file reference search.
+// graph and can resolve both an extends edge and a member access's receiver to
+// a declaring project class. It is deliberately narrow: the rule still reads a
+// single file for its in-file scan, and the analyzer is consulted only for the
+// few cross-file questions that need the resolved graph.
 func (unusedPrivateMemberRule) NeedsSemanticAnalysis() bool { return true }
 
 func (unusedPrivateMemberRule) Check(context *Context, script *project.Script) []Diagnostic {
@@ -86,6 +92,7 @@ func (unusedPrivateMemberRule) Check(context *Context, script *project.Script) [
 	used := referenceNames(script.File)
 	strings_ := stringLiteralContents(script.File)
 	classID := context.projectClassID(script.Path)
+	memberReferences := context.directMemberReferences()
 
 	var found []Diagnostic
 	report := func(ownerID, name string, span token.Span, function bool) {
@@ -93,6 +100,9 @@ func (unusedPrivateMemberRule) Check(context *Context, script *project.Script) [
 			return
 		}
 		if ownerID != "" && hierarchyUses(context, ownerID, name, function) {
+			return
+		}
+		if ownerID != "" && memberReferences[ownerID][name] {
 			return
 		}
 		kind := "constant"
@@ -126,16 +136,11 @@ func (unusedPrivateMemberRule) Check(context *Context, script *project.Script) [
 				if ownerID != "" {
 					innerID = ownerID + "#" + class.Name
 				}
-				walk(class.Body, nativeBaseType(engine, class.Extends), innerID)
+				walk(class.Body, classBaseType(context, innerID), innerID)
 			}
 		}
 	}
-	name, native := scriptBaseName(script)
-	base := semantic.Type{}
-	if native {
-		base = nativeBaseType(engine, name)
-	}
-	walk(script.File.Statements, base, classID)
+	walk(script.File.Statements, classBaseType(context, classID), classID)
 	return found
 }
 
@@ -222,53 +227,52 @@ func (c *Context) referencesFor(path string) referenceFacts {
 	return facts
 }
 
-// scriptBaseName returns the base-class spelling of the script's top-level
-// class. A script with no extends clause returns "RefCounted", the implicit
-// base. The Boolean is false when the base is written in a form that names a
-// script class rather than a native engine class — a path literal or a member
-// access — which the rule cannot resolve to a native chain.
-func scriptBaseName(script *project.Script) (string, bool) {
-	if script.File == nil {
-		return "", false
+// directMemberReferences returns the whole-project map from a project class ID
+// to the set of member names referenced through a statically resolved receiver
+// of that class. It is computed once per run and cached on the context, so the
+// rule walks the project a second time only for this one cross-file question.
+func (c *Context) directMemberReferences() map[string]map[string]bool {
+	if c == nil || c.snapshot == nil || c.analyzer == nil {
+		return nil
 	}
-	for _, statement := range script.File.Statements {
-		directive, ok := statement.(*ast.Directive)
-		if !ok {
-			continue
-		}
-		var expression ast.Expression
-		switch directive.Name {
-		case "extends":
-			expression = directive.Value
-		case "class_name":
-			expression = directive.Extends
-		default:
-			continue
-		}
-		if expression == nil {
-			continue
-		}
-		identifier, ok := expression.(*ast.Identifier)
-		if !ok {
-			return "", false
-		}
-		return identifier.Name, true
+	if c.memberReferences != nil {
+		return c.memberReferences
 	}
-	return "RefCounted", true
+	result := map[string]map[string]bool{}
+	for _, path := range c.snapshot.Paths {
+		script := c.snapshot.Scripts[path]
+		if script == nil || script.File == nil {
+			continue
+		}
+		ast.Inspect(script.File, func(node ast.Node) bool {
+			member, ok := node.(*ast.MemberExpression)
+			if !ok {
+				return true
+			}
+			classID := c.analyzer.MemberDeclaringClass(member)
+			if classID == "" {
+				return true
+			}
+			if result[classID] == nil {
+				result[classID] = map[string]bool{}
+			}
+			result[classID][member.Property] = true
+			return true
+		})
+	}
+	c.memberReferences = result
+	return result
 }
 
-// nativeBaseType resolves a base-class spelling to its native class type. An
-// empty spelling means a class with no extends clause, which inherits RefCounted.
-// A spelling that names no native class resolves to the zero Type (Unknown), so
-// the caller reports only what it can prove.
-func nativeBaseType(engine *semantic.Engine, name string) semantic.Type {
-	if engine == nil {
+// classBaseType resolves the native engine base of the class identified by
+// classID, so the engine-virtual check walks the full native ancestry rather
+// than only the directly spelled base. A class that cannot be resolved yields
+// the zero Type, which exempts nothing.
+func classBaseType(context *Context, classID string) semantic.Type {
+	if context == nil || context.analyzer == nil || classID == "" {
 		return semantic.Type{}
 	}
-	if name == "" {
-		name = "RefCounted"
-	}
-	return engine.Class(name)
+	return context.analyzer.NativeBase(classID)
 }
 
 // isEngineCalled reports whether a private function named name is reached by the

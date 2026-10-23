@@ -250,7 +250,15 @@ func (i *Index) buildInnerClasses(source SourceSet, enclosingID, filePath string
 		}
 		id := enclosingID + "#" + declaration.Name
 		class := buildClass(source, id, filePath, true, declaration.Body)
-		class.Name, class.Extends = declaration.Name, strings.TrimSpace(declaration.Extends)
+		class.Name = declaration.Name
+		// A class spells its base either on the declaration line
+		// (class X extends Y:) or as an extends statement in its body. buildClass
+		// captured only the body form; the inline spelling wins when both appear
+		// and must not be discarded when the body has none.
+		if inline := strings.TrimSpace(declaration.Extends); inline != "" {
+			class.Extends = inline
+			class.extendsExpr = nil
+		}
 		class.Line, class.Column = declaration.NameSpan.Start.Line, declaration.NameSpan.Start.Column
 		i.Classes[id] = class
 		i.buildInnerClasses(source, id, filePath, declaration.Body)
