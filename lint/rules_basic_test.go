@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // gd converts leading groups of four spaces into tabs, so fixtures can be
@@ -22,13 +24,9 @@ func gd(source string) string {
 func assertMessages(t *testing.T, rule, source string, messages ...string) {
 	t.Helper()
 	found := lintSource(t, rule, source)
-	if len(found) != len(messages) {
-		t.Fatalf("%s fired %d times, want %d: %+v", rule, len(found), len(messages), found)
-	}
+	require.Len(t, found, len(messages), "%s fired the wrong number of times", rule)
 	for index, diagnostic := range found {
-		if diagnostic.Message != messages[index] {
-			t.Fatalf("message = %q, want %q", diagnostic.Message, messages[index])
-		}
+		require.Equal(t, messages[index], diagnostic.Message)
 	}
 }
 
@@ -321,9 +319,8 @@ func TestDuplicatedLoadKeepsNoStateAcrossFiles(t *testing.T) {
 			got = append(got, fmt.Sprintf("%s:%d", diagnostic.Path, diagnostic.Line))
 		}
 	}
-	if len(got) != 1 || got[0] != "b.gd:2" {
-		t.Fatalf("duplicated-load fired at %v, want only b.gd:2", got)
-	}
+	require.Len(t, got, 1)
+	require.Equal(t, "b.gd:2", got[0])
 }
 
 func TestUnusedArgumentFires(t *testing.T) {
@@ -473,9 +470,8 @@ func TestUnusedArgumentKeepsNoStateAcrossFiles(t *testing.T) {
 			got = append(got, fmt.Sprintf("%s:%d", diagnostic.Path, diagnostic.Line))
 		}
 	}
-	if len(got) != 1 || got[0] != "b.gd:1" {
-		t.Fatalf("unused-argument fired at %v, want only b.gd:1", got)
-	}
+	require.Len(t, got, 1)
+	require.Equal(t, "b.gd:1", got[0])
 }
 
 func TestComparisonWithItselfFires(t *testing.T) {

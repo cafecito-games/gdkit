@@ -5,6 +5,7 @@ import (
 
 	"github.com/cafecito-games/gdparser"
 	gdformat "github.com/cafecito-games/gdparser/format"
+	"github.com/stretchr/testify/require"
 )
 
 func TestChangedTokenCatchesAChangedDroppedOrAddedToken(t *testing.T) {
@@ -36,9 +37,9 @@ func TestChangedTokenCatchesAChangedDroppedOrAddedToken(t *testing.T) {
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
 			line, column, changed := changedToken([]byte(testCase.source), []byte(testCase.formatted), gdformat.GodotStyle())
-			if !changed || line != testCase.line || column != testCase.column {
-				t.Fatalf("changedToken = %d:%d %v, want %d:%d true", line, column, changed, testCase.line, testCase.column)
-			}
+			require.True(t, changed)
+			require.Equal(t, testCase.line, line)
+			require.Equal(t, testCase.column, column)
 		})
 	}
 }
@@ -60,15 +61,12 @@ func TestChangedTokenAcceptsOnlyTheRespellingsTheOptionsAskFor(t *testing.T) {
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
 			source, formatted := []byte(testCase.source), []byte(testCase.formatted)
-			if _, _, changed := changedToken(source, formatted, gdformat.GodotStyle()); changed {
-				t.Fatal("the default style rejected a respelling it asks for")
-			}
-			if _, _, changed := changedToken(source, formatted, preserve); !changed {
-				t.Fatal("a respelling the options do not ask for was accepted")
-			}
-			if _, _, changed := changedToken(source, source, preserve); changed {
-				t.Fatal("preserved source was rejected")
-			}
+			_, _, changed := changedToken(source, formatted, gdformat.GodotStyle())
+			require.False(t, changed, "the default style rejected a respelling it asks for")
+			_, _, changed = changedToken(source, formatted, preserve)
+			require.True(t, changed, "a respelling the options do not ask for was accepted")
+			_, _, changed = changedToken(source, source, preserve)
+			require.False(t, changed, "preserved source was rejected")
 		})
 	}
 }
@@ -133,16 +131,13 @@ func TestChangedTokenAcceptsRealFormatterOutput(t *testing.T) {
 		for name, source := range tokenFixtures {
 			t.Run(optionsName+"/"+name, func(t *testing.T) {
 				file, err := gdparser.ParseFile("a.gd", []byte(source))
-				if err != nil {
-					t.Fatalf("fixture does not parse: %v", err)
-				}
+				require.NoError(t, err, "fixture does not parse")
 				formatted := gdformat.FileWithOptions(file, options)
 				if _, err := gdparser.ParseFile("a.gd", []byte(formatted)); err != nil {
 					t.Skipf("the formatter's output does not parse, which verifyTree refuses: %v", err)
 				}
-				if line, column, changed := changedToken([]byte(source), []byte(formatted), options); changed {
-					t.Fatalf("changedToken refused real output at %d:%d\nsource:\n%s\nformatted:\n%s", line, column, source, formatted)
-				}
+				_, _, changed := changedToken([]byte(source), []byte(formatted), options)
+				require.False(t, changed)
 			})
 		}
 	}
@@ -159,9 +154,8 @@ func TestFormatKeepsAnInferredParameterDefault(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := formatSource(t, DefaultConfig(), testCase.source); got != testCase.want {
-				t.Fatalf("formatted = %q, want %q", got, testCase.want)
-			}
+			got := formatSource(t, DefaultConfig(), testCase.source)
+			require.Equal(t, testCase.want, got)
 		})
 	}
 }

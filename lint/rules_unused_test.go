@@ -1,6 +1,10 @@
 package lint
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // unusedConfig enables the rule, which ships inert.
 func unusedConfig() Config {
@@ -109,15 +113,10 @@ func TestUnusedPrivateMemberStaysInertByDefault(t *testing.T) {
 
 func TestUnusedPrivateMemberMessage(t *testing.T) {
 	found := lintSourceWithConfig(t, unusedConfig(), "unused-private-member", "extends Node\n\nfunc _helper():\n\tpass\n")
-	if len(found) != 1 {
-		t.Fatalf("got %d diagnostics, want 1: %v", len(found), found)
-	}
-	if want := `unused private function "_helper"`; found[0].Message != want {
-		t.Fatalf("message = %q, want %q", found[0].Message, want)
-	}
-	if found[0].Column != 6 {
-		t.Fatalf("column = %d, want 6", found[0].Column)
-	}
+	require.Len(t, found, 1)
+	want := `unused private function "_helper"`
+	require.Equal(t, want, found[0].Message)
+	require.Equal(t, 6, found[0].Column)
 }
 
 // A protected helper a base class declares for its subclasses is used, not
@@ -127,9 +126,8 @@ func TestUnusedPrivateMemberStaysSilentWhenAProjectDescendantReferencesIt(t *tes
 		"base.gd": "class_name Base\nextends RefCounted\n\nfunc _wire():\n\tpass\n",
 		"sub.gd":  "class_name Sub\nextends Base\n\nfunc connect():\n\t_wire()\n",
 	})
-	if found := unusedDiagnostics(report); len(found) != 0 {
-		t.Fatalf("base-class helper reported as dead: %v", found)
-	}
+	found := unusedDiagnostics(report)
+	require.Empty(t, found, "base-class helper reported as dead")
 }
 
 // An override of a project-defined virtual is used, not dead, because an
@@ -140,9 +138,8 @@ func TestUnusedPrivateMemberStaysSilentWhenOverridingAProjectVirtual(t *testing.
 		"highlight.gd": "class_name EntityWorldHighlight\nextends Node\n\nfunc _highlight_z_index() -> int:\n\treturn 0\n\nfunc _ready():\n\t_highlight_z_index()\n",
 		"follow.gd":    "class_name FollowHighlight\nextends EntityWorldHighlight\n\nfunc _highlight_z_index() -> int:\n\treturn 1\n",
 	})
-	if found := unusedDiagnostics(report); len(found) != 0 {
-		t.Fatalf("project virtual override reported as dead: %v", found)
-	}
+	found := unusedDiagnostics(report)
+	require.Empty(t, found, "project virtual override reported as dead")
 }
 
 // An ancestor that references a name without declaring it still makes a
@@ -152,9 +149,8 @@ func TestUnusedPrivateMemberStaysSilentWhenAnAncestorReferencesIt(t *testing.T) 
 		"base.gd": "class_name Base\nextends RefCounted\n\nfunc run():\n\t_do_work()\n",
 		"sub.gd":  "class_name Sub\nextends Base\n\nfunc _do_work():\n\tpass\n",
 	})
-	if found := unusedDiagnostics(report); len(found) != 0 {
-		t.Fatalf("template-method override reported as dead: %v", found)
-	}
+	found := unusedDiagnostics(report)
+	require.Empty(t, found, "template-method override reported as dead")
 }
 
 // A descendant that reaches a base helper by string dispatch counts too, the
@@ -164,9 +160,8 @@ func TestUnusedPrivateMemberStaysSilentWhenADescendantDispatchesByString(t *test
 		"base.gd": "class_name Base\nextends RefCounted\n\nfunc _wire():\n\tpass\n",
 		"sub.gd":  "class_name Sub\nextends Base\n\nfunc connect():\n\tcall(\"_wire\")\n",
 	})
-	if found := unusedDiagnostics(report); len(found) != 0 {
-		t.Fatalf("string-dispatched base helper reported as dead: %v", found)
-	}
+	found := unusedDiagnostics(report)
+	require.Empty(t, found, "string-dispatched base helper reported as dead")
 }
 
 // An inner class that extends the base by script path is a descendant too, so
@@ -176,9 +171,8 @@ func TestUnusedPrivateMemberStaysSilentWhenAnInnerClassDescendantReferencesIt(t 
 		"base.gd":   "extends RefCounted\n\nfunc _wire():\n\tpass\n",
 		"holder.gd": "extends RefCounted\n\nclass Child extends \"res://base.gd\":\n\tfunc run():\n\t\t_wire()\n",
 	})
-	if found := unusedDiagnostics(report); len(found) != 0 {
-		t.Fatalf("inner-class descendant's helper use reported as dead: %v", found)
-	}
+	found := unusedDiagnostics(report)
+	require.Empty(t, found, "inner-class descendant's helper use reported as dead")
 }
 
 // The widening must not hide dead code in a leaf class: a private member with
@@ -188,7 +182,6 @@ func TestUnusedPrivateMemberStillReportsDeadCodeInALeafClass(t *testing.T) {
 		"leaf.gd": "class_name Leaf\nextends RefCounted\n\nfunc _dead():\n\tpass\n",
 	})
 	found := unusedDiagnostics(report)
-	if len(found) != 1 || found[0].Line != 4 {
-		t.Fatalf("leaf dead code = %v, want one diagnostic on line 4", found)
-	}
+	require.Len(t, found, 1)
+	require.Equal(t, 4, found[0].Line)
 }

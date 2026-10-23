@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/stretchr/testify/require"
 )
 
 // parsedScript loads one a.gd script through project.Load so it carries a
@@ -15,22 +16,18 @@ import (
 func parsedScript(tb testing.TB, source string) *project.Script {
 	tb.Helper()
 	root := tb.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "a.gd"), []byte(source), 0o644); err != nil {
-		tb.Fatal(err)
-	}
+	err := os.WriteFile(filepath.Join(root, "a.gd"), []byte(source), 0o644)
+	require.NoError(tb, err)
 	snapshot, err := project.Load(project.Config{
 		Root:            root,
 		SourceRoots:     []string{"."},
 		Exclude:         []string{".git/**", ".godot/**", ".gdkit/**", "addons/**"},
 		HonorIgnoreFile: true,
 	})
-	if err != nil {
-		tb.Fatal(err)
-	}
+	require.NoError(tb, err)
 	script := snapshot.Scripts["a.gd"]
-	if script == nil || script.File == nil {
-		tb.Fatal("fixture did not parse")
-	}
+	require.NotNil(tb, script, "fixture did not parse")
+	require.NotNil(tb, script.File, "fixture did not parse")
 	return script
 }
 
@@ -48,15 +45,11 @@ var bad_var = 1
 `))
 	context := &Context{}
 	first := context.declarationsFor(script)
-	if len(first) == 0 {
-		t.Fatal("expected name declarations")
-	}
+	require.NotEmpty(t, first, "expected name declarations")
 	second := context.declarationsFor(script)
 	// A cached collection returns the same backing array; a re-collection
 	// allocates a fresh slice.
-	if &first[0] != &second[0] {
-		t.Fatal("declarationsFor must cache the collected slice per script")
-	}
+	require.Same(t, &first[0], &second[0], "declarationsFor must cache the collected slice per script")
 }
 
 func TestTypingSitesForCachesPerScript(t *testing.T) {
@@ -68,13 +61,9 @@ func do_thing(bad_arg):
 `))
 	context := &Context{}
 	first := context.typingSitesFor(script)
-	if len(first) == 0 {
-		t.Fatal("expected typing sites")
-	}
+	require.NotEmpty(t, first, "expected typing sites")
 	second := context.typingSitesFor(script)
-	if &first[0] != &second[0] {
-		t.Fatal("typingSitesFor must cache the collected slice per script")
-	}
+	require.Same(t, &first[0], &second[0], "typingSitesFor must cache the collected slice per script")
 }
 
 // benchmarkScript returns a script with enough declarations that a full walk is

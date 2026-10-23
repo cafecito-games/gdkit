@@ -5,11 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/cafecito-games/gdkit/internal/semantic"
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // typingConfig enables every typing rule and nothing else. The rules ship
@@ -34,17 +35,11 @@ func typingConfig() Config {
 func collectionFindingsWithoutSemanticSetup(t *testing.T, config Config, source string) []Diagnostic {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "a.gd"), []byte(source), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.gd"), []byte(source), 0o644))
 	snapshot, err := project.Load(project.Config{Root: root, SourceRoots: config.SourceRoots, Exclude: config.Exclude})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	compiled, err := config.validate()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return (typingRule{rule: ruleRequireTypedCollection}).Check(&Context{Config: config, compiled: compiled}, snapshot.Scripts["a.gd"])
 }
 
@@ -53,15 +48,10 @@ func TestRequireReturnTypeReportsAnUnannotatedFunction(t *testing.T) {
 func move():
 	pass
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want one diagnostic", found)
-	}
-	if found[0].Line != 2 || found[0].Column != 6 {
-		t.Errorf("reported at %d:%d, want 2:6 (the function's name)", found[0].Line, found[0].Column)
-	}
-	if found[0].Message != `Function "move" has no return type` {
-		t.Errorf("message = %q", found[0].Message)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 2, found[0].Line)
+	assert.Equal(t, 6, found[0].Column)
+	assert.Equal(t, `Function "move" has no return type`, found[0].Message)
 }
 
 // The satisfied cases are asserted as explicitly as the violating one: a rule
@@ -74,9 +64,8 @@ func TestRequireReturnTypeAcceptsAnAnnotatedFunction(t *testing.T) {
 	}
 	for name, source := range sources {
 		t.Run(name, func(t *testing.T) {
-			if found := lintSourceWithConfig(t, typingConfig(), "require-return-type", source); len(found) != 0 {
-				t.Fatalf("got %v, want none", found)
-			}
+			found := lintSourceWithConfig(t, typingConfig(), "require-return-type", source)
+			require.Empty(t, found)
 		})
 	}
 }
@@ -89,9 +78,7 @@ func build() -> void:
 	var double := func(value: int): return value * 2
 	double.call(1)
 `)
-	if len(found) != 0 {
-		t.Fatalf("got %v, want none", found)
-	}
+	require.Empty(t, found)
 }
 
 func TestRequireArgumentTypeReportsAnUntypedParameter(t *testing.T) {
@@ -99,15 +86,10 @@ func TestRequireArgumentTypeReportsAnUntypedParameter(t *testing.T) {
 func apply(data, amount: int) -> void:
 	print(data, amount)
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want one diagnostic", found)
-	}
-	if found[0].Line != 2 || found[0].Column != 12 {
-		t.Errorf("reported at %d:%d, want 2:12 (the parameter's name)", found[0].Line, found[0].Column)
-	}
-	if found[0].Message != `Argument "data" of function "apply" has no type` {
-		t.Errorf("message = %q", found[0].Message)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 2, found[0].Line)
+	assert.Equal(t, 12, found[0].Column)
+	assert.Equal(t, `Argument "data" of function "apply" has no type`, found[0].Message)
 }
 
 func TestRequireArgumentTypeAcceptsTypedAndInferredAndVariadic(t *testing.T) {
@@ -119,9 +101,8 @@ func TestRequireArgumentTypeAcceptsTypedAndInferredAndVariadic(t *testing.T) {
 	}
 	for name, source := range sources {
 		t.Run(name, func(t *testing.T) {
-			if found := lintSourceWithConfig(t, typingConfig(), "require-argument-type", source); len(found) != 0 {
-				t.Fatalf("got %v, want none", found)
-			}
+			found := lintSourceWithConfig(t, typingConfig(), "require-argument-type", source)
+			require.Empty(t, found)
 		})
 	}
 }
@@ -145,21 +126,15 @@ func TestRequireArgumentTypeChecksALambdaParameter(t *testing.T) {
 	for name, test := range cases {
 		t.Run(name, func(t *testing.T) {
 			found := lintSourceWithConfig(t, typingConfig(), "require-argument-type", test.source)
-			if len(found) != 1 {
-				t.Fatalf("got %v, want one diagnostic", found)
-			}
-			if found[0].Message != test.message {
-				t.Errorf("message = %q, want %q", found[0].Message, test.message)
-			}
+			require.Len(t, found, 1)
+			assert.Equal(t, test.message, found[0].Message)
 		})
 	}
 }
 
 func TestTypingRulesAreInertByDefault(t *testing.T) {
 	report := lintProject(t, DefaultConfig(), map[string]string{"a.gd": "func move():\n\tpass\n"})
-	for _, diagnostic := range report.Diagnostics {
-		t.Errorf("an inert typing rule fired: %v", diagnostic)
-	}
+	assert.Empty(t, report.Diagnostics, "an inert typing rule fired")
 }
 
 func TestRequireReturnTypeHonorsAnExemptPattern(t *testing.T) {
@@ -172,12 +147,8 @@ func _ready():
 func move():
 	pass
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want only the unexempted function", found)
-	}
-	if found[0].Line != 5 {
-		t.Errorf("reported line %d, want 5", found[0].Line)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 5, found[0].Line)
 }
 
 func TestRequireVariableTypeHonorsAnExemptPattern(t *testing.T) {
@@ -192,12 +163,8 @@ func tally() -> void:
 	var count = 1
 	print(count)
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want only the variable in the unexempted function", found)
-	}
-	if found[0].Line != 7 {
-		t.Errorf("reported line %d, want 7", found[0].Line)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 7, found[0].Line)
 }
 
 // A bare collection can be written in three places inside one function — a
@@ -226,9 +193,7 @@ func tally() -> Array:
 	}
 	slices.Sort(lines)
 	// The return type, the local, and the loop annotation, all in "tally".
-	if !slices.Equal(lines, []int{8, 9, 10}) {
-		t.Fatalf("reported lines %v, want [8 9 10] (only the unexempted function)", lines)
-	}
+	require.Equal(t, []int{8, 9, 10}, lines)
 }
 
 func TestRequireArgumentTypeReachesLambdasOutsideFunctionBodies(t *testing.T) {
@@ -244,9 +209,8 @@ func TestRequireArgumentTypeReachesLambdasOutsideFunctionBodies(t *testing.T) {
 	for name, source := range sources {
 		t.Run(name, func(t *testing.T) {
 			found := lintSourceWithConfig(t, typingConfig(), "require-argument-type", source)
-			if len(found) != 1 || found[0].Message != `Argument "event" of lambda has no type` {
-				t.Fatalf("got %v, want one lambda diagnostic", found)
-			}
+			require.Len(t, found, 1)
+			require.Equal(t, `Argument "event" of lambda has no type`, found[0].Message)
 		})
 	}
 }
@@ -263,9 +227,8 @@ func TestRequireArgumentTypeNamesTheEnclosingDeclarationForExemption(t *testing.
 		t.Run(name, func(t *testing.T) {
 			config := typingConfig()
 			config.RequireArgumentType = []string{test.exempt}
-			if found := lintSourceWithConfig(t, config, "require-argument-type", test.source); len(found) != 0 {
-				t.Fatalf("got %v, want none after exempting %q", found, test.exempt)
-			}
+			found := lintSourceWithConfig(t, config, "require-argument-type", test.source)
+			require.Empty(t, found)
 		})
 	}
 }
@@ -276,9 +239,7 @@ func build() -> void:
 	var outer := func(first): return func(second): return second
 	outer.call(1)
 `)
-	if len(found) != 2 {
-		t.Fatalf("got %v, want one diagnostic per lambda parameter", found)
-	}
+	require.Len(t, found, 2)
 }
 
 func TestRequireVariableTypeReportsAtBothScopes(t *testing.T) {
@@ -292,15 +253,10 @@ func move() -> void:
 	var inferred := 1.0
 	print(health, typed, LIMIT, speed, inferred)
 `)
-	if len(found) != 2 {
-		t.Fatalf("got %v, want the two untyped variables", found)
-	}
-	if found[0].Line != 2 || found[1].Line != 7 {
-		t.Errorf("reported lines %d and %d, want 2 and 7", found[0].Line, found[1].Line)
-	}
-	if found[0].Message != `Variable "health" has no type` {
-		t.Errorf("message = %q", found[0].Message)
-	}
+	require.Len(t, found, 2)
+	assert.Equal(t, 2, found[0].Line)
+	assert.Equal(t, 7, found[1].Line)
+	assert.Equal(t, `Variable "health" has no type`, found[0].Message)
 }
 
 // An @export is still a Variant; the editor infers the exported type from the
@@ -310,12 +266,8 @@ func TestRequireVariableTypeReportsAnUntypedExport(t *testing.T) {
 @export var speed = 1.0
 @export var typed: float = 1.0
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want one diagnostic", found)
-	}
-	if found[0].Line != 2 {
-		t.Errorf("reported line %d, want 2", found[0].Line)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 2, found[0].Line)
 }
 
 // GDScript types a const from its value, so it is already statically typed.
@@ -327,9 +279,7 @@ func move() -> void:
 	const LOCAL = 2
 	print(LIMIT, LOCAL)
 `)
-	if len(found) != 0 {
-		t.Fatalf("got %v, want none", found)
-	}
+	require.Empty(t, found)
 }
 
 func TestRequireTypedCollectionReportsABareAnnotation(t *testing.T) {
@@ -337,15 +287,10 @@ func TestRequireTypedCollectionReportsABareAnnotation(t *testing.T) {
 var items: Array = []
 var typed: Array[int] = []
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want one diagnostic", found)
-	}
-	if found[0].Line != 2 || found[0].Column != 12 {
-		t.Errorf("reported at %d:%d, want 2:12 (the annotation)", found[0].Line, found[0].Column)
-	}
-	if found[0].Message != "Array has no element type; write Array[T]" {
-		t.Errorf("message = %q", found[0].Message)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 2, found[0].Line)
+	assert.Equal(t, 12, found[0].Column)
+	assert.Equal(t, "Array has no element type; write Array[T]", found[0].Message)
 }
 
 // An empty literal with no written type infers the same untyped collection a
@@ -370,17 +315,11 @@ func collect() -> void:
 		{line: 3, column: 14, message: "Dictionary has no element type; write Dictionary[K, V]"},
 		{line: 7, column: 14, message: "Dictionary has no element type; write Dictionary[K, V]"},
 	}
-	if len(found) != len(want) {
-		t.Fatalf("got %v, want %d diagnostics", found, len(want))
-	}
+	require.Len(t, found, len(want))
 	for index, expected := range want {
-		if found[index].Line != expected.line || found[index].Column != expected.column {
-			t.Errorf("diagnostic %d reported at %d:%d, want %d:%d (the literal)",
-				index, found[index].Line, found[index].Column, expected.line, expected.column)
-		}
-		if found[index].Message != expected.message {
-			t.Errorf("diagnostic %d message = %q, want %q", index, found[index].Message, expected.message)
-		}
+		assert.Equal(t, expected.line, found[index].Line)
+		assert.Equal(t, expected.column, found[index].Column)
+		assert.Equal(t, expected.message, found[index].Message)
 	}
 }
 
@@ -391,17 +330,11 @@ func TestRequireTypedCollectionReportsAnAnnotatedEmptyLiteralOnce(t *testing.T) 
 var items: Array = []
 var lookup: Dictionary = {}
 `)
-	if len(found) != 2 {
-		t.Fatalf("got %v, want one diagnostic per declaration", found)
-	}
-	if found[0].Line != 2 || found[0].Column != 12 {
-		t.Errorf("reported at %d:%d, want 2:12 (the annotation, not the literal)",
-			found[0].Line, found[0].Column)
-	}
-	if found[1].Line != 3 || found[1].Column != 13 {
-		t.Errorf("reported at %d:%d, want 3:13 (the annotation, not the literal)",
-			found[1].Line, found[1].Column)
-	}
+	require.Len(t, found, 2)
+	assert.Equal(t, 2, found[0].Line)
+	assert.Equal(t, 12, found[0].Column)
+	assert.Equal(t, 3, found[1].Line)
+	assert.Equal(t, 13, found[1].Column)
 }
 
 // Direct populated literals have one source expression the rule can ask the
@@ -415,9 +348,8 @@ func TestRequireTypedCollectionLeavesNonLiteralInitializersQuiet(t *testing.T) {
 	}
 	for name, source := range sources {
 		t.Run(name, func(t *testing.T) {
-			if found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", source); len(found) != 0 {
-				t.Fatalf("got %v, want none", found)
-			}
+			found := lintSourceWithConfig(t, typingConfig(), "require-typed-collection", source)
+			require.Empty(t, found)
 		})
 	}
 }
@@ -438,16 +370,12 @@ var matrix := [[1], [2]]
 		{line: 4, message: "Array has no element type; write Array[T]"},
 		{line: 5, message: "Array has no element type; write Array[T]"},
 	}
-	if len(found) != len(want) {
-		t.Fatalf("got %v, want %d diagnostics", found, len(want))
-	}
+	require.Len(t, found, len(want))
 	for index, expected := range want {
-		if found[index].Line != expected.line || found[index].Message != expected.message {
-			t.Errorf("diagnostic %d = %+v, want line %d message %q", index, found[index], expected.line, expected.message)
-		}
-		if strings.Contains(found[index].Message, "Variant") || strings.Contains(found[index].Message, "unknown:") {
-			t.Errorf("diagnostic %d leaked an inferred fallback: %q", index, found[index].Message)
-		}
+		assert.Equal(t, expected.line, found[index].Line)
+		assert.Equal(t, expected.message, found[index].Message)
+		assert.NotContains(t, found[index].Message, "Variant")
+		assert.NotContains(t, found[index].Message, "unknown:")
 	}
 }
 
@@ -466,13 +394,10 @@ func build() -> void:
 		{line: 4, message: "Dictionary has no element type; write Dictionary[K, V]"},
 		{line: 5, message: "Array has no element type; write Array[T]"},
 	}
-	if len(found) != len(want) {
-		t.Fatalf("got %v, want %d diagnostics", found, len(want))
-	}
+	require.Len(t, found, len(want))
 	for index, expected := range want {
-		if found[index].Line != expected.line || found[index].Message != expected.message {
-			t.Errorf("diagnostic %d = %+v, want line %d message %q", index, found[index], expected.line, expected.message)
-		}
+		assert.Equal(t, expected.line, found[index].Line)
+		assert.Equal(t, expected.message, found[index].Message)
 	}
 }
 
@@ -498,13 +423,10 @@ const BUILTIN_VALUE := { "origin": Vector2i(0, 0) }
 		{line: 4, message: "Dictionary has no element type; write Dictionary[K, V]"},
 		{line: 9, message: "Dictionary has no element type; write Dictionary[K, V]"},
 	}
-	if len(found) != len(want) {
-		t.Fatalf("got %v, want %d diagnostics", found, len(want))
-	}
+	require.Len(t, found, len(want))
 	for index, expected := range want {
-		if found[index].Line != expected.line || found[index].Message != expected.message {
-			t.Errorf("diagnostic %d = %+v, want line %d message %q", index, found[index], expected.line, expected.message)
-		}
+		assert.Equal(t, expected.line, found[index].Line)
+		assert.Equal(t, expected.message, found[index].Message)
 	}
 }
 
@@ -513,13 +435,9 @@ func TestRequireTypedCollectionDoesNotDuplicateWrittenPopulatedAnnotations(t *te
 var items: Array = [1, 2, 3]
 var lookup: Dictionary = {"a": 1}
 `)
-	if len(found) != 2 {
-		t.Fatalf("got %v, want one written-annotation diagnostic per declaration", found)
-	}
+	require.Len(t, found, 2)
 	for index, wantColumn := range []int{12, 13} {
-		if found[index].Column != wantColumn {
-			t.Errorf("diagnostic %d column = %d, want annotation column %d", index, found[index].Column, wantColumn)
-		}
+		assert.Equal(t, wantColumn, found[index].Column)
 	}
 }
 
@@ -574,12 +492,10 @@ func TestCollectionTypeMessageFailsClosedAndNeverLeaksUnsafeNames(t *testing.T) 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			message, reported := collectionTypeMessage(engine, test.typeValue)
-			if reported != test.reported || message != test.message {
-				t.Fatalf("collectionTypeMessage() = %q, %t; want %q, %t", message, reported, test.message, test.reported)
-			}
-			if strings.Contains(message, "LocalInventory") || strings.Contains(message, "InventoryKind") {
-				t.Fatalf("unsafe internal spelling leaked into %q", message)
-			}
+			require.Equal(t, test.reported, reported)
+			require.Equal(t, test.message, message)
+			assert.NotContains(t, message, "LocalInventory")
+			assert.NotContains(t, message, "InventoryKind")
 		})
 	}
 }
@@ -616,9 +532,8 @@ func TestSourceWritableTypeAcceptsOnlySelectedVocabulary(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			spelling, status := sourceWritableType(engine, test.typeValue)
-			if spelling != test.spelling || status != test.status {
-				t.Fatalf("sourceWritableType() = %q, %v; want %q, %v", spelling, status, test.spelling, test.status)
-			}
+			require.Equal(t, test.spelling, spelling)
+			require.Equal(t, test.status, status)
 		})
 	}
 }
@@ -629,9 +544,8 @@ func TestCollectionTypeMessageDoesNotSuggestNestedDictionary(t *testing.T) {
 	dictionary := semantic.Dictionary(&key, &value)
 	collection := semantic.Array(&dictionary)
 	message, reported := collectionTypeMessage(engine, collection)
-	if !reported || message != "Array has no element type; write Array[T]" {
-		t.Fatalf("collectionTypeMessage() = %q, %t; want generic Array fallback", message, reported)
-	}
+	require.True(t, reported)
+	require.Equal(t, "Array has no element type; write Array[T]", message)
 }
 
 func selectedCollectionEngine(t *testing.T) *semantic.Engine {
@@ -639,14 +553,10 @@ func selectedCollectionEngine(t *testing.T) *semantic.Engine {
 	config := DefaultConfig()
 	config.Enable = []string{ruleRequireTypedCollection}
 	linter, err := newLinter(config, []Rule{typingRule{rule: ruleRequireTypedCollection}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if engine := linter.context.Engine(); engine != nil {
-		return engine
-	}
-	t.Fatal("enabled require-typed-collection selected no engine")
-	return nil
+	require.NoError(t, err)
+	engine := linter.context.Engine()
+	require.NotNil(t, engine)
+	return engine
 }
 
 func typePointer(value semantic.Type) *semantic.Type { return &value }
@@ -666,21 +576,13 @@ var variants := [null, null]
 		{line: 3, column: 15, message: "Dictionary has no element type; write Dictionary[K, V]"},
 		{line: 4, column: 17, message: "Array has no element type; write Array[T]"},
 	}
-	if len(found) != len(want) {
-		t.Fatalf("got %v, want %d diagnostics", found, len(want))
-	}
+	require.Len(t, found, len(want))
 	for index, expected := range want {
-		if found[index].Line != expected.line || found[index].Column != expected.column {
-			t.Errorf("diagnostic %d reported at %d:%d, want %d:%d", index,
-				found[index].Line, found[index].Column, expected.line, expected.column)
-		}
-		if found[index].EndLine != expected.line || found[index].EndColumn <= expected.column {
-			t.Errorf("diagnostic %d span = %d:%d-%d:%d, want the literal span on line %d", index,
-				found[index].Line, found[index].Column, found[index].EndLine, found[index].EndColumn, expected.line)
-		}
-		if found[index].Message != expected.message {
-			t.Errorf("diagnostic %d message = %q, want %q", index, found[index].Message, expected.message)
-		}
+		assert.Equal(t, expected.line, found[index].Line)
+		assert.Equal(t, expected.column, found[index].Column)
+		assert.Equal(t, expected.line, found[index].EndLine)
+		assert.False(t, found[index].EndColumn <= expected.column)
+		assert.Equal(t, expected.message, found[index].Message)
 	}
 }
 
@@ -702,13 +604,10 @@ func build(flag: bool) -> void:
 		{line: 4, message: "Dictionary has no element type; write Dictionary[String, Variant]"},
 		{line: 7, message: "Array has no element type; write Array[T]"},
 	}
-	if len(found) != len(want) {
-		t.Fatalf("got %v, want %d diagnostics", found, len(want))
-	}
+	require.Len(t, found, len(want))
 	for index, expected := range want {
-		if found[index].Line != expected.line || found[index].Message != expected.message {
-			t.Errorf("diagnostic %d = %+v, want line %d message %q", index, found[index], expected.line, expected.message)
-		}
+		assert.Equal(t, expected.line, found[index].Line)
+		assert.Equal(t, expected.message, found[index].Message)
 	}
 }
 
@@ -752,13 +651,9 @@ func build() -> void:
 		"Array has no element type; write Array[float]",
 		"Dictionary has no element type; write Dictionary[String, float]",
 	}
-	if len(found) != len(want) {
-		t.Fatalf("got %v, want two diagnostics", found)
-	}
+	require.Len(t, found, len(want))
 	for index, message := range want {
-		if found[index].Message != message {
-			t.Errorf("diagnostic %d message = %q, want %q", index, found[index].Message, message)
-		}
+		assert.Equal(t, message, found[index].Message)
 	}
 }
 
@@ -781,13 +676,9 @@ var cache := {}
 		config := typingConfig()
 		config.GodotVersion = test.version
 		found := collectionFindingsWithoutSemanticSetup(t, config, source)
-		if len(found) != len(test.want) {
-			t.Fatalf("godot_version %q: got %v, want %d diagnostics", test.version, found, len(test.want))
-		}
+		require.Len(t, found, len(test.want), "godot_version %q", test.version)
 		for index, line := range test.want {
-			if found[index].Line != line {
-				t.Errorf("godot_version %q: diagnostic %d on line %d, want %d", test.version, index, found[index].Line, line)
-			}
+			assert.Equal(t, line, found[index].Line, "godot_version %q", test.version)
 		}
 	}
 }
@@ -801,12 +692,9 @@ func TestRequireTypedCollectionReportsAConstantsEmptyLiteral(t *testing.T) {
 const WRITTEN: Array = []
 const INFERRED := []
 `)
-	if len(found) != 2 {
-		t.Fatalf("got %v, want both constants", found)
-	}
-	if found[0].Line != 2 || found[1].Line != 3 {
-		t.Errorf("reported lines %d and %d, want 2 and 3", found[0].Line, found[1].Line)
-	}
+	require.Len(t, found, 2)
+	assert.Equal(t, 2, found[0].Line)
+	assert.Equal(t, 3, found[1].Line)
 }
 
 // A declaration with neither a type nor ":=" is missing both a type and an
@@ -818,9 +706,8 @@ func TestRequireTypedCollectionAndVariableTypeBothReportABareAssignment(t *testi
 	for _, rule := range []string{"require-variable-type", "require-typed-collection"} {
 		reported[rule] = len(lintSourceWithConfig(t, config, rule, "var items = []\n"))
 	}
-	if reported["require-variable-type"] != 1 || reported["require-typed-collection"] != 1 {
-		t.Fatalf("got %v, want one diagnostic from each rule", reported)
-	}
+	require.Equal(t, 1, reported["require-variable-type"])
+	require.Equal(t, 1, reported["require-typed-collection"])
 }
 
 // This is the only rule in gdkit whose applicability varies per finding:
@@ -842,13 +729,9 @@ var lookup: Dictionary = {}
 		config := typingConfig()
 		config.GodotVersion = test.version
 		found := collectionFindingsWithoutSemanticSetup(t, config, source)
-		if len(found) != len(test.want) {
-			t.Fatalf("godot_version %q: got %v, want %d diagnostics", test.version, found, len(test.want))
-		}
+		require.Len(t, found, len(test.want), "godot_version %q", test.version)
 		for index, line := range test.want {
-			if found[index].Line != line {
-				t.Errorf("godot_version %q: diagnostic %d on line %d, want %d", test.version, index, found[index].Line, line)
-			}
+			assert.Equal(t, line, found[index].Line, "godot_version %q", test.version)
 		}
 	}
 }
@@ -858,9 +741,7 @@ func TestRequireTypedCollectionChecksSignaturesToo(t *testing.T) {
 func pick(from: Array) -> Array:
 	return from
 `)
-	if len(found) != 2 {
-		t.Fatalf("got %v, want the parameter and the return type", found)
-	}
+	require.Len(t, found, 2)
 }
 
 // A variadic parameter needs no annotation, but it may carry one, and a bare
@@ -870,9 +751,7 @@ func TestRequireTypedCollectionChecksAVariadicAnnotation(t *testing.T) {
 func gather(...rest: Array) -> void:
 	print(rest)
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want the variadic annotation", found)
-	}
+	require.Len(t, found, 1)
 }
 
 func TestRequireSignalArgumentTypeReportsAnUntypedPayload(t *testing.T) {
@@ -880,15 +759,10 @@ func TestRequireSignalArgumentTypeReportsAnUntypedPayload(t *testing.T) {
 signal damaged(amount)
 signal healed(amount: int)
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want one diagnostic", found)
-	}
-	if found[0].Line != 2 || found[0].Column != 16 {
-		t.Errorf("reported at %d:%d, want 2:16 (the parameter's name)", found[0].Line, found[0].Column)
-	}
-	if found[0].Message != `Argument "amount" of signal "damaged" has no type` {
-		t.Errorf("message = %q", found[0].Message)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 2, found[0].Line)
+	assert.Equal(t, 16, found[0].Column)
+	assert.Equal(t, `Argument "amount" of signal "damaged" has no type`, found[0].Message)
 }
 
 // A signal has no enclosing function, so its exempt list matches its own name.
@@ -899,12 +773,8 @@ func TestRequireSignalArgumentTypeExemptsBySignalName(t *testing.T) {
 signal damaged(amount)
 signal healed(amount)
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want only the unexempted signal", found)
-	}
-	if found[0].Line != 3 {
-		t.Errorf("reported line %d, want 3", found[0].Line)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 3, found[0].Line)
 }
 
 // A bare collection in a signal's payload is named for the signal too, because
@@ -916,12 +786,8 @@ func TestRequireTypedCollectionNamesTheSignalForAPayload(t *testing.T) {
 signal damaged(amounts: Array)
 signal healed(amounts: Array)
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want only the unexempted signal", found)
-	}
-	if found[0].Line != 3 {
-		t.Errorf("reported line %d, want 3", found[0].Line)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 3, found[0].Line)
 }
 
 func TestRequireTypedLoopVariableReportsAnUntypedHeader(t *testing.T) {
@@ -934,15 +800,10 @@ func tally(items: Array[int]) -> int:
 		total += typed
 	return total
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want one diagnostic", found)
-	}
-	if found[0].Line != 4 || found[0].Column != 6 {
-		t.Errorf("reported at %d:%d, want 4:6 (the loop variable)", found[0].Line, found[0].Column)
-	}
-	if found[0].Message != `Loop variable "value" has no type` {
-		t.Errorf("message = %q", found[0].Message)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 4, found[0].Line)
+	assert.Equal(t, 6, found[0].Column)
+	assert.Equal(t, `Loop variable "value" has no type`, found[0].Message)
 }
 
 // A typed loop variable does not exist before Godot 4.2, so on an older engine
@@ -960,9 +821,7 @@ func tally(items: Array[int]) -> int:
 		config.Enable = []string{ruleRequireTypedLoopVariable}
 		config.GodotVersion = version
 		found := lintSourceWithConfig(t, config, "require-typed-loop-variable", source)
-		if len(found) != want {
-			t.Errorf("godot_version %q: got %v, want %d diagnostics", version, found, want)
-		}
+		assert.Len(t, found, want, "godot_version %q", version)
 	}
 }
 
@@ -974,12 +833,8 @@ func tally(rows: Array[Array]) -> void:
 	for row: Array in rows:
 		print(row)
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want the loop annotation", found)
-	}
-	if found[0].Line != 3 {
-		t.Errorf("reported line %d, want 3", found[0].Line)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 3, found[0].Line)
 }
 
 // A signal parameter's default is code like any other, and gdparser parses one,
@@ -988,9 +843,8 @@ func TestRequireArgumentTypeReachesALambdaInASignalDefault(t *testing.T) {
 	found := lintSourceWithConfig(t, typingConfig(), "require-argument-type", `
 signal damaged(handler: Callable = func(event): return event)
 `)
-	if len(found) != 1 || found[0].Message != `Argument "event" of lambda has no type` {
-		t.Fatalf("got %v, want one lambda diagnostic", found)
-	}
+	require.Len(t, found, 1)
+	require.Equal(t, `Argument "event" of lambda has no type`, found[0].Message)
 }
 
 // A loop inside a function is named for that function, which is what makes
@@ -1007,12 +861,8 @@ func tally() -> void:
 	for value in [1]:
 		print(value)
 `)
-	if len(found) != 1 {
-		t.Fatalf("got %v, want only the loop in the unexempted function", found)
-	}
-	if found[0].Line != 7 {
-		t.Errorf("reported line %d, want 7", found[0].Line)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, 7, found[0].Line)
 }
 
 // A loop inside a class-scope initializer has no enclosing function, so no
@@ -1026,18 +876,15 @@ var setup = func():
 `
 	config := typingConfig()
 	config.RequireTypedLoopVariable = []string{"*"}
-	if found := lintSourceWithConfig(t, config, "require-typed-loop-variable", source); len(found) != 1 {
-		t.Fatalf("got %v, want the loop no pattern can name", found)
-	}
+	found := lintSourceWithConfig(t, config, "require-typed-loop-variable", source)
+	require.Len(t, found, 1)
 	suppressed := lintSourceWithConfig(t, typingConfig(), "require-typed-loop-variable", `
 var setup = func():
 	# gdkit:ignore = require-typed-loop-variable
 	for value in [1]:
 		print(value)
 `)
-	if len(suppressed) != 0 {
-		t.Fatalf("got %v, want none after an ignore comment", suppressed)
-	}
+	require.Empty(t, suppressed)
 }
 
 // The version gate's job is to make a rule report nothing, which is exactly
@@ -1122,10 +969,8 @@ func tally(start) -> int:
 		for _, diagnostic := range report.Diagnostics {
 			got = append(got, fmt.Sprintf("%s:%d", diagnostic.Rule, diagnostic.Line))
 		}
-		if !slices.Equal(got, test.want) {
-			t.Errorf("godot_version %q: unexpected %v, missing %v (got %v, want %v)",
-				test.version, absentFrom(got, test.want), absentFrom(test.want, got), got, test.want)
-		}
+		assert.Equal(t, test.want, got, "godot_version %q: unexpected %v, missing %v",
+			test.version, absentFrom(got, test.want), absentFrom(test.want, got))
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // syntheticProject builds count unformatted scripts, each large enough that
@@ -28,14 +30,11 @@ func BenchmarkFormat(b *testing.B) {
 	config := DefaultConfig()
 	snapshot := loadProjectInto(b, b.TempDir(), config, syntheticProject(100))
 	formatter, err := New(config)
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, err)
 	b.ReportAllocs()
 	for b.Loop() {
 		report := formatter.Format(snapshot)
-		if report.HasDiagnostics() || len(report.Changed()) != len(snapshot.Paths) {
-			b.Fatalf("unexpected report: %d changed, %d diagnostics", len(report.Changed()), len(report.Diagnostics))
-		}
+		require.False(b, report.HasDiagnostics())
+		require.Len(b, report.Changed(), len(snapshot.Paths))
 	}
 }

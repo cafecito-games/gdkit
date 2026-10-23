@@ -15,6 +15,7 @@ import (
 	"github.com/cafecito-games/gdkit/internal/semantic"
 	"github.com/cafecito-games/gdkit/internal/semantic/engineschema"
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/stretchr/testify/require"
 )
 
 type engineAwareTestRule struct {
@@ -49,9 +50,7 @@ func TestExtensionAPIPathValidation(t *testing.T) {
 	valid := "tools/godot/extension_api.json"
 	config := DefaultConfig()
 	config.ExtensionAPI = &valid
-	if err := config.Validate(); err != nil {
-		t.Fatalf("valid extension_api: %v", err)
-	}
+	require.NoError(t, config.Validate())
 
 	for _, value := range []string{
 		"",
@@ -70,9 +69,9 @@ func TestExtensionAPIPathValidation(t *testing.T) {
 		t.Run(strings.ReplaceAll(value, "/", "_"), func(t *testing.T) {
 			config := DefaultConfig()
 			config.ExtensionAPI = &value
-			if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "extension_api") {
-				t.Fatalf("Validate() = %v", err)
-			}
+			err := config.Validate()
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "extension_api")
 		})
 	}
 }
@@ -81,32 +80,23 @@ func TestExtensionAPIRejectsSymlinkDotDotAmbiguityAsInvalidConfig(t *testing.T) 
 	root := t.TempDir()
 	outside := t.TempDir()
 	outsideTarget := filepath.Join(outside, "target")
-	if err := os.Mkdir(outsideTarget, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outsideTarget, filepath.Join(root, "link")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Mkdir(outsideTarget, 0o700))
+	require.NoError(t, os.Symlink(outsideTarget, filepath.Join(root, "link")))
 	// Without canonical path validation, filepath.Join/EvalSymlinks inspect this
 	// in-root file while os.Root resolves link before .. and refuses the escape.
 	writeEngineOverride(t, root, "extension_api.json", readEngineFixture(t))
 	writeEngineOverride(t, outside, "extension_api.json", readEngineFixture(t))
-	if err := os.MkdirAll(filepath.Join(root, ".gdkit"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".gdkit"), 0o700))
 	configPath := filepath.Join(root, filepath.FromSlash(DefaultConfigPath))
-	if err := os.WriteFile(configPath, []byte(`{"extension_api":"link/../extension_api.json"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(configPath, []byte(`{"extension_api":"link/../extension_api.json"}`), 0o600))
 
 	config, err := LoadConfig(root, "")
 	if err == nil {
 		_, err = newLinterForProject(root, config, nil)
 	}
 	labelled, ok := failure.Of(err)
-	if !ok || labelled.Kind != failure.ConfigInvalid {
-		t.Fatalf("ambiguous extension_api failure = %#v, want %q", err, failure.ConfigInvalid)
-	}
+	require.True(t, ok)
+	require.Equal(t, failure.ConfigInvalid, labelled.Kind)
 }
 
 func TestLoadConfigRejectsNullExtensionAPIInsteadOfTreatingItAsAbsent(t *testing.T) {
@@ -125,17 +115,12 @@ func TestLoadConfigRejectsNullExtensionAPIInsteadOfTreatingItAsAbsent(t *testing
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
-			if err := os.MkdirAll(filepath.Join(root, ".gdkit"), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.MkdirAll(filepath.Join(root, ".gdkit"), 0o755))
 			name := filepath.Join(root, filepath.FromSlash(DefaultConfigPath))
-			if err := os.WriteFile(name, []byte(test.contents), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(name, []byte(test.contents), 0o600))
 			config, err := LoadConfig(root, "")
-			if err == nil || config.ExtensionAPI != nil {
-				t.Fatalf("LoadConfig() = %+v, %v", config, err)
-			}
+			require.Error(t, err)
+			require.Nil(t, config.ExtensionAPI)
 			assertFailure(t, err, failure.ConfigParse, name)
 		})
 	}
@@ -143,17 +128,12 @@ func TestLoadConfigRejectsNullExtensionAPIInsteadOfTreatingItAsAbsent(t *testing
 
 func TestLoadConfigRejectsCaseVariantExtensionAPIKey(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".gdkit"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".gdkit"), 0o755))
 	name := filepath.Join(root, filepath.FromSlash(DefaultConfigPath))
-	if err := os.WriteFile(name, []byte(`{"Extension_API":"tools/extension_api.json"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(name, []byte(`{"Extension_API":"tools/extension_api.json"}`), 0o600))
 	config, err := LoadConfig(root, "")
-	if err == nil || config.ExtensionAPI != nil {
-		t.Fatalf("LoadConfig() = %+v, %v", config, err)
-	}
+	require.Error(t, err)
+	require.Nil(t, config.ExtensionAPI)
 	assertFailure(t, err, failure.ConfigParse, name)
 }
 
@@ -163,13 +143,9 @@ func TestNonSemanticRunsDoNotLoadOrGateOnEngineSchema(t *testing.T) {
 			config := DefaultConfig()
 			config.GodotVersion = version
 			linter, err := newLinter(config, []Rule{ordinaryTestRule{}})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			report := linter.Lint(emptySnapshot())
-			if report.EngineSchema != nil {
-				t.Fatalf("engine schema loaded for ordinary %s run: %+v", version, report.EngineSchema)
-			}
+			require.Nil(t, report.EngineSchema)
 		})
 	}
 }
@@ -179,27 +155,23 @@ func TestDisabledSemanticRuleDoesNotRequestEngineSchema(t *testing.T) {
 	config.GodotVersion = "4.6"
 	config.Disable = []string{"max-line-length"}
 	linter, err := newLinter(config, []Rule{&engineAwareTestRule{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report := linter.Lint(emptySnapshot()); report.EngineSchema != nil {
-		t.Fatalf("disabled rule loaded schema: %+v", report.EngineSchema)
-	}
+	require.NoError(t, err)
+	report := linter.Lint(emptySnapshot())
+	require.Nil(t, report.EngineSchema)
 }
 
 func TestPendingSemanticRuleRequestsSchemaOnlyAfterOptIn(t *testing.T) {
 	config := DefaultConfig()
 	config.GodotVersion = "4.6"
-	if linter, err := newLinter(config, []Rule{pendingEngineAwareTestRule{}}); err != nil {
-		t.Fatal(err)
-	} else if report := linter.Lint(emptySnapshot()); report.EngineSchema != nil {
-		t.Fatalf("inert pending rule loaded schema: %+v", report.EngineSchema)
-	}
+	linter, err := newLinter(config, []Rule{pendingEngineAwareTestRule{}})
+	require.NoError(t, err)
+	report := linter.Lint(emptySnapshot())
+	require.Nil(t, report.EngineSchema)
 
 	config.Enable = []string{"no-engine-logging"}
-	if linter, err := newLinter(config, []Rule{pendingEngineAwareTestRule{}}); err == nil || linter != nil {
-		t.Fatalf("enabled pending rule = %+v, %v", linter, err)
-	}
+	linter, err = newLinter(config, []Rule{pendingEngineAwareTestRule{}})
+	require.Error(t, err)
+	require.Nil(t, linter)
 }
 
 func TestSemanticRuleSelectsExactEmbeddedMinorAndPublishesProvenance(t *testing.T) {
@@ -209,17 +181,13 @@ func TestSemanticRuleSelectsExactEmbeddedMinorAndPublishesProvenance(t *testing.
 			config.GodotVersion = version
 			rule := &engineAwareTestRule{}
 			linter, err := newLinter(config, []Rule{rule})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			report := linter.Lint(snapshotWithOneScript())
-			if rule.seen == nil || rule.seen.Class("Animation").Kind() != semantic.KindClass {
-				t.Fatal("semantic rule did not receive the embedded engine")
-			}
-			if report.EngineSchema == nil || report.EngineSchema.Source != engineschema.SourceEmbedded ||
-				report.EngineSchema.Version != (engineschema.Version{Major: 4, Minor: 7, Patch: 2}) {
-				t.Fatalf("engine_schema = %+v", report.EngineSchema)
-			}
+			require.NotNil(t, rule.seen)
+			require.Equal(t, semantic.KindClass, rule.seen.Class("Animation").Kind())
+			require.NotNil(t, report.EngineSchema)
+			require.Equal(t, engineschema.SourceEmbedded, report.EngineSchema.Source)
+			require.Equal(t, engineschema.Version{Major: 4, Minor: 7, Patch: 2}, report.EngineSchema.Version)
 		})
 	}
 }
@@ -230,14 +198,13 @@ func TestSemanticRuleRejectsEveryUnbundledMinorWithoutFallback(t *testing.T) {
 			config := DefaultConfig()
 			config.GodotVersion = version
 			linter, err := newLinter(config, []Rule{&engineAwareTestRule{}})
-			if err == nil || linter != nil {
-				t.Fatalf("newLinter() = %+v, %v", linter, err)
-			}
+			require.Error(t, err)
+			require.Nil(t, linter)
 			labelled, ok := failure.Of(err)
-			if !ok || labelled.Kind != failure.ConfigInvalid || !strings.Contains(err.Error(), version) ||
-				!strings.Contains(err.Error(), "extension_api") {
-				t.Fatalf("error = %#v", err)
-			}
+			require.True(t, ok)
+			require.Equal(t, failure.ConfigInvalid, labelled.Kind)
+			require.Contains(t, err.Error(), version)
+			require.Contains(t, err.Error(), "extension_api")
 		})
 	}
 }
@@ -247,9 +214,8 @@ func TestEnabledCollectionRuleRejectsAnUnsupportedMinorBeforeLinting(t *testing.
 	config.GodotVersion = "4.6"
 	config.Enable = []string{ruleRequireTypedCollection}
 	linter, err := newLinter(config, []Rule{typingRule{rule: ruleRequireTypedCollection}})
-	if err == nil || linter != nil {
-		t.Fatalf("newLinter() = %+v, %v", linter, err)
-	}
+	require.Error(t, err)
+	require.Nil(t, linter)
 	assertFailure(t, err, failure.ConfigInvalid, "")
 }
 
@@ -259,9 +225,8 @@ func TestEnabledCollectionRuleFailsClosedWithoutASelectedEngine(t *testing.T) {
 	linter, err := buildLinterWithSchemaLoader("", false, config,
 		[]Rule{typingRule{rule: ruleRequireTypedCollection}},
 		func(int, int) (*engineschema.Loaded, error) { return &engineschema.Loaded{}, nil })
-	if err == nil || linter != nil {
-		t.Fatalf("buildLinterWithSchemaLoader() = %+v, %v", linter, err)
-	}
+	require.Error(t, err)
+	require.Nil(t, linter)
 	assertFailure(t, err, failure.AnalysisFailed, "")
 }
 
@@ -269,42 +234,31 @@ func TestEnabledCollectionRuleUsesTheWholesaleOverrideAndPublishesProvenance(t *
 	root := t.TempDir()
 	path := "tools/godot/extension_api.json"
 	writeEngineOverride(t, root, path, readOfficialEngineFixture(t))
-	if err := os.WriteFile(filepath.Join(root, "a.gd"), []byte("var items := [1]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.gd"), []byte("var items := [1]\n"), 0o644))
 	config := DefaultConfig()
 	config.Enable = []string{ruleRequireTypedCollection}
 	config.ExtensionAPI = &path
 	linter, err := newLinterForProject(root, config, []Rule{typingRule{rule: ruleRequireTypedCollection}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	snapshot, err := project.Load(lintLoadConfig(root, config, linter))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	report := linter.Lint(snapshot)
-	if report.EngineSchema == nil || report.EngineSchema.Source != engineschema.SourceOverride {
-		t.Fatalf("engine_schema = %+v", report.EngineSchema)
-	}
-	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Message != "Array has no element type; write Array[T]" {
-		t.Fatalf("diagnostics = %+v", report.Diagnostics)
-	}
+	require.NotNil(t, report.EngineSchema)
+	require.Equal(t, engineschema.SourceOverride, report.EngineSchema.Source)
+	require.Len(t, report.Diagnostics, 1)
+	require.Equal(t, "Array has no element type; write Array[T]", report.Diagnostics[0].Message)
 }
 
 func TestEmbeddedSchemaCorruptionIsAnAnalysisFailure(t *testing.T) {
 	config := DefaultConfig()
 	compiled, err := config.validate()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	loaded, err := prepareEngineSchemaWithLoader("", false, config, compiled, []Rule{&engineAwareTestRule{}},
 		func(int, int) (*engineschema.Loaded, error) {
 			return nil, errors.New("embedded artifact digest mismatch")
 		})
-	if err == nil || loaded != nil {
-		t.Fatalf("prepareEngineSchemaWithLoader() = %+v, %v", loaded, err)
-	}
+	require.Error(t, err)
+	require.Nil(t, loaded)
 	assertFailure(t, err, failure.AnalysisFailed, "")
 }
 
@@ -324,16 +278,12 @@ func TestExplicitExtensionAPIIsAWholesaleNumericMatchingOverride(t *testing.T) {
 			config.ExtensionAPI = &path
 			rule := &engineAwareTestRule{}
 			linter, err := newLinterForProject(root, config, []Rule{rule})
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			report := linter.Lint(snapshotWithOneScript())
-			if report.EngineSchema == nil || report.EngineSchema.Source != engineschema.SourceOverride {
-				t.Fatalf("engine_schema = %+v", report.EngineSchema)
-			}
-			if got := rule.seen.Class("Animation"); got.Kind() != semantic.KindUnknown {
-				t.Fatalf("override merged embedded Animation: kind %v name %q", got.Kind(), got.Name())
-			}
+			require.NotNil(t, report.EngineSchema)
+			require.Equal(t, engineschema.SourceOverride, report.EngineSchema.Source)
+			got := rule.seen.Class("Animation")
+			require.Equal(t, semantic.KindUnknown, got.Kind())
 		})
 	}
 
@@ -342,12 +292,10 @@ func TestExplicitExtensionAPIIsAWholesaleNumericMatchingOverride(t *testing.T) {
 	config := DefaultConfig()
 	config.ExtensionAPI = &path
 	linter, err := newLinterForProject(root, config, []Rule{ordinaryTestRule{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := linter.Lint(emptySnapshot()).EngineSchema; got == nil || got.Source != engineschema.SourceOverride {
-		t.Fatalf("explicit override provenance = %+v", got)
-	}
+	require.NoError(t, err)
+	got := linter.Lint(emptySnapshot()).EngineSchema
+	require.NotNil(t, got)
+	require.Equal(t, engineschema.SourceOverride, got.Source)
 }
 
 // The decompressed fixture is the complete byte-for-byte output of the
@@ -362,13 +310,10 @@ func TestNewForProjectAcceptsOfficialProducerDump(t *testing.T) {
 	config.GodotVersion = "4.7.2"
 	config.ExtensionAPI = &path
 	linter, err := newLinterForProject(root, config, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	provenance := linter.Lint(emptySnapshot()).EngineSchema
-	if provenance == nil || provenance.RawSHA256 != "d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986" {
-		t.Fatalf("engine_schema = %+v", provenance)
-	}
+	require.NotNil(t, provenance)
+	require.Equal(t, "d0e4c08c03b165156dabe6bfb6a906baf0069189f62035341230a246c86d6986", provenance.RawSHA256)
 }
 
 func TestExplicitExtensionAPIAcceptsForkBrandingButNotNumericMismatch(t *testing.T) {
@@ -386,12 +331,10 @@ func TestExplicitExtensionAPIAcceptsForkBrandingButNotNumericMismatch(t *testing
 		config.GodotVersion = version
 		config.ExtensionAPI = &path
 		linter, err := newLinterForProject(root, config, nil)
-		if err != nil {
-			t.Fatalf("matching %s: %v", version, err)
-		}
-		if got := linter.Lint(emptySnapshot()).EngineSchema; got == nil || got.Build != "cafecito_custom" {
-			t.Fatalf("matching %s provenance = %+v", version, got)
-		}
+		require.NoError(t, err, "matching %s", version)
+		got := linter.Lint(emptySnapshot()).EngineSchema
+		require.NotNil(t, got)
+		require.Equal(t, "cafecito_custom", got.Build)
 	}
 
 	for _, version := range []string{"4.6", "4.7.1", "4.8", "5.0"} {
@@ -400,9 +343,8 @@ func TestExplicitExtensionAPIAcceptsForkBrandingButNotNumericMismatch(t *testing
 			config.GodotVersion = version
 			config.ExtensionAPI = &path
 			linter, err := newLinterForProject(root, config, nil)
-			if err == nil || linter != nil {
-				t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
-			}
+			require.Error(t, err)
+			require.Nil(t, linter)
 			assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, filepath.FromSlash(path)))
 		})
 	}
@@ -428,9 +370,8 @@ func TestExtensionAPIFailuresKeepStableKindsAndPaths(t *testing.T) {
 			config := DefaultConfig()
 			config.ExtensionAPI = &test.path
 			linter, err := newLinterForProject(root, config, nil)
-			if err == nil || linter != nil {
-				t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
-			}
+			require.Error(t, err)
+			require.Nil(t, linter)
 			assertFailure(t, err, test.kind, filepath.Join(root, filepath.FromSlash(test.path)))
 		})
 	}
@@ -439,19 +380,14 @@ func TestExtensionAPIFailuresKeepStableKindsAndPaths(t *testing.T) {
 func TestExtensionAPIRejectsResolvedSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "extension_api.json")
-	if err := os.WriteFile(outside, readEngineFixture(t), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(outside, readEngineFixture(t), 0o600))
 	path := "extension_api.json"
-	if err := os.Symlink(outside, filepath.Join(root, path)); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, path)))
 	config := DefaultConfig()
 	config.ExtensionAPI = &path
 	linter, err := newLinterForProject(root, config, nil)
-	if err == nil || linter != nil {
-		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
-	}
+	require.Error(t, err)
+	require.Nil(t, linter)
 	assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, path))
 }
 
@@ -460,32 +396,26 @@ func TestExtensionAPIAcceptsAbsoluteSymlinkToFileWithinRoot(t *testing.T) {
 	target := "tools/extension_api.json"
 	writeEngineOverride(t, root, target, readEngineFixture(t))
 	path := "extension_api.json"
-	if err := os.Symlink(filepath.Join(root, filepath.FromSlash(target)), filepath.Join(root, path)); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Symlink(filepath.Join(root, filepath.FromSlash(target)), filepath.Join(root, path)))
 	config := DefaultConfig()
 	config.ExtensionAPI = &path
 	linter, err := newLinterForProject(root, config, nil)
-	if err != nil || linter == nil {
-		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
-	}
-	if provenance := linter.Lint(emptySnapshot()).EngineSchema; provenance == nil || provenance.Source != engineschema.SourceOverride {
-		t.Fatalf("engine_schema = %+v", provenance)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, linter)
+	provenance := linter.Lint(emptySnapshot()).EngineSchema
+	require.NotNil(t, provenance)
+	require.Equal(t, engineschema.SourceOverride, provenance.Source)
 }
 
 func TestExtensionAPIRejectsNonRegularInput(t *testing.T) {
 	root := t.TempDir()
 	path := "extension_api.json"
-	if err := os.Mkdir(filepath.Join(root, path), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Mkdir(filepath.Join(root, path), 0o700))
 	config := DefaultConfig()
 	config.ExtensionAPI = &path
 	linter, err := newLinterForProject(root, config, nil)
-	if err == nil || linter != nil {
-		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
-	}
+	require.Error(t, err)
+	require.Nil(t, linter)
 	assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, path))
 }
 
@@ -493,102 +423,68 @@ func TestExtensionAPIRejectsOversizedInputAsInvalid(t *testing.T) {
 	root := t.TempDir()
 	path := "extension_api.json"
 	file, err := os.Create(filepath.Join(root, path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Truncate(engineschema.MaxRawJSONBytes + 1); err != nil {
-		_ = file.Close()
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, file.Truncate(engineschema.MaxRawJSONBytes+1))
+	require.NoError(t, file.Close())
 	config := DefaultConfig()
 	config.ExtensionAPI = &path
 	linter, err := newLinterForProject(root, config, nil)
-	if err == nil || linter != nil {
-		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
-	}
+	require.Error(t, err)
+	require.Nil(t, linter)
 	assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, path))
 }
 
 func TestEngineSchemaReportJSONIsOptional(t *testing.T) {
 	without, err := json.Marshal(Report{Diagnostics: []Diagnostic{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(without), "engine_schema") {
-		t.Fatalf("nil engine schema was not omitted: %s", without)
-	}
+	require.NoError(t, err)
+	require.NotContains(t, string(without), "engine_schema")
 	with, err := json.Marshal(Report{Diagnostics: []Diagnostic{}, EngineSchema: &engineschema.Provenance{Source: engineschema.SourceEmbedded}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(with), `"engine_schema":{"source":"embedded"`) {
-		t.Fatalf("engine schema missing from JSON: %s", with)
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(with), `"engine_schema":{"source":"embedded"`)
 }
 
 func assertFailure(t *testing.T, err error, kind, path string) {
 	t.Helper()
 	labelled, ok := failure.Of(err)
-	if !ok || labelled.Kind != kind || labelled.Path != path {
-		t.Fatalf("failure = %#v, want kind %q path %q", err, kind, path)
-	}
+	require.True(t, ok)
+	require.Equal(t, kind, labelled.Kind)
+	require.Equal(t, path, labelled.Path)
 }
 
 func readEngineFixture(t *testing.T) []byte {
 	t.Helper()
 	data, err := os.ReadFile("../internal/semantic/engineschema/testdata/extension_api_4_7_2_sample.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return data
 }
 
 func readOfficialEngineFixture(t *testing.T) []byte {
 	t.Helper()
 	compressed, err := os.ReadFile("../internal/semantic/engineschema/testdata/extension_api_4_7_2_official.json.gz")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	reader, err := gzip.NewReader(bytes.NewReader(compressed))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	raw, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reader.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
 	return raw
 }
 
 func mutateEngineHeader(t *testing.T, mutate func(map[string]any)) []byte {
 	t.Helper()
 	var document map[string]any
-	if err := json.Unmarshal(readEngineFixture(t), &document); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, json.Unmarshal(readEngineFixture(t), &document))
 	mutate(document["header"].(map[string]any))
 	data, err := json.Marshal(document)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return data
 }
 
 func writeEngineOverride(t *testing.T, root, name string, data []byte) {
 	t.Helper()
 	fullName := filepath.Join(root, filepath.FromSlash(name))
-	if err := os.MkdirAll(filepath.Dir(fullName), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fullName, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(fullName), 0o755))
+	require.NoError(t, os.WriteFile(fullName, data, 0o600))
 }
 
 // A hand-built snapshot must satisfy the loader invariant: Selected names the

@@ -1,6 +1,11 @@
 package lint
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestClassDefinitionsOrderCorrectFileIsClean(t *testing.T) {
 	assertNoRule(t, "class-definitions-order", `@tool
@@ -27,9 +32,8 @@ func TestClassDefinitionsOrderSignalAfterVar(t *testing.T) {
 	source := "extends Node\nvar x = 1\nsignal a\n"
 	assertRule(t, "class-definitions-order", source, 3)
 	found := lintSource(t, "class-definitions-order", source)
-	if found[0].Message != "Definition out of order in global scope" || found[0].Column != 1 {
-		t.Fatalf("got %d:%d %q", found[0].Line, found[0].Column, found[0].Message)
-	}
+	require.Equal(t, "Definition out of order in global scope", found[0].Message)
+	require.Equal(t, 1, found[0].Column)
 }
 
 func TestClassDefinitionsOrderOnreadyBeforePlainVar(t *testing.T) {
@@ -47,9 +51,7 @@ func TestClassDefinitionsOrderExportAndStaticVars(t *testing.T) {
 	found := lintSource(t, "class-definitions-order", source)
 	wantColumns := []int{9, 1, 9, 9}
 	for index, diagnostic := range found {
-		if diagnostic.Column != wantColumns[index] {
-			t.Errorf("line %d column %d, want %d", diagnostic.Line, diagnostic.Column, wantColumns[index])
-		}
+		assert.Equal(t, wantColumns[index], diagnostic.Column)
 	}
 }
 
@@ -72,19 +74,16 @@ func TestClassDefinitionsOrderInnerClassesAreCheckedSeparately(t *testing.T) {
 		"Definition out of order in global scope",
 	}
 	for index, diagnostic := range found {
-		if diagnostic.Message != wantMessages[index] {
-			t.Errorf("line %d message %q, want %q", diagnostic.Line, diagnostic.Message, wantMessages[index])
-		}
+		assert.Equal(t, wantMessages[index], diagnostic.Message)
 	}
 }
 
 func TestClassDefinitionsOrderInnerExtendsClauseIsAMember(t *testing.T) {
 	order := []string{"others", "signals", "pubvars"}
 	found := lintSourceWithConfig(t, withOrder(order), "class-definitions-order", "class A extends Node:\n\tvar q\n")
-	if len(found) != 1 || found[0].Column != 9 ||
-		found[0].Message != "Definition order not specified for 'others' or 'extends', please fix/re-generate your gdlintrc file" {
-		t.Fatalf("got %+v", found)
-	}
+	require.Len(t, found, 1)
+	require.Equal(t, 9, found[0].Column)
+	require.Equal(t, "Definition order not specified for 'others' or 'extends', please fix/re-generate your gdlintrc file", found[0].Message)
 }
 
 func TestClassDefinitionsOrderReportsEveryOutOfOrderStatement(t *testing.T) {
@@ -125,9 +124,7 @@ var h
 	found := lintSource(t, "class-definitions-order", source)
 	wantColumns := []int{9, 21, 1, 1, 44, 9, 1}
 	for index, diagnostic := range found {
-		if diagnostic.Column != wantColumns[index] {
-			t.Errorf("line %d column %d, want %d", diagnostic.Line, diagnostic.Column, wantColumns[index])
-		}
+		assert.Equal(t, wantColumns[index], diagnostic.Column)
 	}
 }
 
@@ -170,9 +167,10 @@ func TestClassDefinitionsOrderExportPrefixAndOnreadyPrecedence(t *testing.T) {
 func TestClassDefinitionsOrderSemicolonSeparatedMembers(t *testing.T) {
 	source := "extends Node\nfunc f():\n\tpass\nvar a = 1; var b = 2\nsignal s\n"
 	found := lintSource(t, "class-definitions-order", source)
-	if len(found) != 3 || found[0].Column != 1 || found[1].Column != 12 || found[2].Line != 5 {
-		t.Fatalf("got %+v", found)
-	}
+	require.Len(t, found, 3)
+	require.Equal(t, 1, found[0].Column)
+	require.Equal(t, 12, found[1].Column)
+	require.Equal(t, 5, found[2].Line)
 }
 
 func withOrder(order []string) Config {
@@ -202,9 +200,7 @@ func TestClassDefinitionsOrderSlotMissingFromOrder(t *testing.T) {
 		"Definition out of order in global scope",
 	}
 	for index, diagnostic := range found {
-		if diagnostic.Message != want[index] {
-			t.Errorf("line %d message %q, want %q", diagnostic.Line, diagnostic.Message, want[index])
-		}
+		assert.Equal(t, want[index], diagnostic.Message)
 	}
 }
 

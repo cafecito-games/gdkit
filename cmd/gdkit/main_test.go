@@ -6,50 +6,42 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cafecito-games/gdkit/lint"
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRunInitAndCleanCheck(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"arch", "init", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("init exit %d: %s", code, stderr.String())
-	}
+	code := run([]string{"arch", "init", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 	for _, name := range []string{".gdkit/architecture.json", ".gdkit/allowlist.json"} {
-		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(name))); err != nil {
-			t.Errorf("starter %s: %v", name, err)
-		}
+		_, err := os.Stat(filepath.Join(root, filepath.FromSlash(name)))
+		assert.NoError(t, err, name)
 	}
 	writeCLIFile(t, root, "features/combat/domain/health.gd", "class_name Health\n")
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"arch", "check", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("check exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "architecture check passed") {
-		t.Fatalf("unexpected output: %s", stdout.String())
-	}
+	code = run([]string{"arch", "check", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	require.Contains(t, stdout.String(), "architecture check passed")
 }
 
 func TestRunCheckViolationExit(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "features/combat/domain/health.gd", "class_name Health extends Node\n")
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"arch", "check", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("check exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "[engine.reference]") {
-		t.Fatalf("unexpected output: %s", stdout.String())
-	}
+	code := run([]string{"arch", "check", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
+	require.Contains(t, stdout.String(), "[engine.reference]")
 }
 
 // A config a user cannot trust is worse than no config, so a typo'd key or a
@@ -79,155 +71,114 @@ func TestRunArchCheckExitsTwoOnConfigErrors(t *testing.T) {
 			writeCLIFile(t, root, ".gdkit/architecture.json", testCase.config)
 			writeCLIFile(t, root, "aaa/thing.gd", "class_name AThing\n")
 			var stdout, stderr bytes.Buffer
-			if code := run([]string{"arch", "check", root}, &stdout, &stderr); code != 2 {
-				t.Fatalf("check exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-			}
-			if !strings.Contains(stderr.String(), testCase.want) {
-				t.Fatalf("stderr %q does not mention %q", stderr.String(), testCase.want)
-			}
+			code := run([]string{"arch", "check", root}, &stdout, &stderr)
+			require.Equal(t, 2, code)
+			require.Contains(t, stderr.String(), testCase.want)
 		})
 	}
 }
 
 func TestRunVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"version", "--format", "json"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("version exit %d: %s", code, stderr.String())
-	}
+	code := run([]string{"version", "--format", "json"}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 	for _, field := range []string{`"version"`, `"dirty"`, `"go_version"`} {
-		if !strings.Contains(stdout.String(), field) {
-			t.Errorf("version JSON does not contain %s: %s", field, stdout.String())
-		}
+		assert.Contains(t, stdout.String(), field)
 	}
 
 	stdout.Reset()
-	if code := run([]string{"--version"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("--version exit %d: %s", code, stderr.String())
-	}
-	if !strings.HasPrefix(stdout.String(), "gdkit version ") {
-		t.Fatalf("unexpected version output: %s", stdout.String())
-	}
+	code = run([]string{"--version"}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	require.True(t, strings.HasPrefix(stdout.String(), "gdkit version "))
 }
 
 func writeCLIFile(t *testing.T, root, name, contents string) {
 	t.Helper()
 	absolute := filepath.Join(root, filepath.FromSlash(name))
-	if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
+	require.NoError(t, os.WriteFile(absolute, []byte(contents), 0o644))
 }
 
 func TestRunLintCleanAndFindings(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc do_thing() -> void:\n\tpass\n")
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("clean exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "lint check passed") {
-		t.Fatalf("unexpected output: %s", stdout.String())
-	}
+	code := run([]string{"lint", "check", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	require.Contains(t, stdout.String(), "lint check passed")
 
 	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("findings exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code = run([]string{"lint", "check", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
 	want := `player.gd:4: Error: Function name "doThing" is not valid (function-name)`
-	if !strings.Contains(stdout.String(), want) || !strings.Contains(stdout.String(), "lint check failed (1 diagnostics)") {
-		t.Fatalf("unexpected output: %s", stdout.String())
-	}
+	require.Contains(t, stdout.String(), want)
+	require.Contains(t, stdout.String(), "lint check failed (1 diagnostics)")
 }
 
 func TestRunBareLintRunsCheck(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")
 	previous, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(root))
 	t.Cleanup(func() { _ = os.Chdir(previous) })
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint"}, &stdout, &stderr); code != 1 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "(function-name)") {
-		t.Fatalf("unexpected output: %s", stdout.String())
-	}
+	code := run([]string{"lint"}, &stdout, &stderr)
+	require.Equal(t, 1, code)
+	require.Contains(t, stdout.String(), "(function-name)")
 }
 
 func TestRunLintJSON(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", "extends Node\n")
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", "--format", "json", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "\"diagnostics\": []") {
-		t.Fatalf("clean JSON should hold an empty array: %s", stdout.String())
-	}
+	code := run([]string{"lint", "check", "--format", "json", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	require.Contains(t, stdout.String(), "\"diagnostics\": []")
 
 	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")
 	stdout.Reset()
-	if code := run([]string{"lint", "check", "--format", "json", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "  \"diagnostics\": [\n") || !strings.Contains(stdout.String(), `"rule": "function-name"`) {
-		t.Fatalf("unexpected JSON: %s", stdout.String())
-	}
+	code = run([]string{"lint", "check", "--format", "json", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
+	require.Contains(t, stdout.String(), "  \"diagnostics\": [\n")
+	require.Contains(t, stdout.String(), `"rule": "function-name"`)
 }
 
 func TestRunLintRules(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "rules"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("rules exit %d: %s", code, stderr.String())
-	}
+	code := run([]string{"lint", "rules"}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 	output := stdout.String()
-	if !strings.Contains(output, "function-name") || !strings.Contains(output, "Checks a function's name") {
-		t.Fatalf("unexpected output: %s", output)
-	}
-	if !strings.Contains(output, "unused-private-member") || !strings.Contains(output, "[ships inert]") {
-		t.Fatalf("pending marker missing: %s", output)
-	}
+	require.Contains(t, output, "function-name")
+	require.Contains(t, output, "Checks a function's name")
+	require.Contains(t, output, "unused-private-member")
+	require.Contains(t, output, "[ships inert]")
 
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"lint", "rules", "--format", "json"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("rules json exit %d: %s", code, stderr.String())
-	}
+	code = run([]string{"lint", "rules", "--format", "json"}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 	var infos []lint.RuleInfo
-	if err := json.Unmarshal(stdout.Bytes(), &infos); err != nil {
-		t.Fatalf("decode rules: %v (%s)", err, stdout.String())
-	}
-	if len(infos) == 0 {
-		t.Fatal("no rules listed")
-	}
+	err := json.Unmarshal(stdout.Bytes(), &infos)
+	require.NoError(t, err, "decode rules")
+	require.NotEmpty(t, infos)
 	found := false
 	for _, info := range infos {
 		if info.Name != "function-name" {
 			continue
 		}
 		found = true
-		if info.Description == "" || info.Pending {
-			t.Errorf("function-name = %+v, want a description and not pending", info)
-		}
+		assert.NotEmpty(t, info.Description)
+		assert.False(t, info.Pending)
 	}
-	if !found {
-		t.Fatal("function-name missing from JSON")
-	}
+	require.True(t, found)
 
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"lint", "rules", "extra"}, &stdout, &stderr); code != 2 {
-		t.Fatalf("rules with a positional arg exit %d, want 2", code)
-	}
+	code = run([]string{"lint", "rules", "extra"}, &stdout, &stderr)
+	require.Equal(t, 2, code)
 }
 
 func TestRunLintUsageErrors(t *testing.T) {
@@ -244,28 +195,23 @@ func TestRunLintUsageErrors(t *testing.T) {
 	}
 	for name, args := range cases {
 		var stdout, stderr bytes.Buffer
-		if code := run(args, &stdout, &stderr); code != 2 {
-			t.Errorf("%s: exit %d, want 2 (stdout=%s stderr=%s)", name, code, stdout.String(), stderr.String())
-		}
+		code := run(args, &stdout, &stderr)
+		assert.Equal(t, 2, code, name)
 	}
 
 	writeCLIFile(t, root, ".gdkit/lint.json", "{not json")
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 2 {
-		t.Errorf("bad config: exit %d, want 2", code)
-	}
+	code := run([]string{"lint", "check", root}, &stdout, &stderr)
+	assert.Equal(t, 2, code)
 }
 
 func TestRunLintDisable(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", "--disable", "function-name", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if strings.Contains(stdout.String(), "function-name") {
-		t.Fatalf("rule was not disabled: %s", stdout.String())
-	}
+	code := run([]string{"lint", "check", "--disable", "function-name", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	require.NotContains(t, stdout.String(), "function-name")
 }
 
 // --enable mirrors --disable. It names rules that ship inert, so enabling one
@@ -274,29 +220,21 @@ func TestRunLintEnableAcceptsARunningRule(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", "--enable", "function-name", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("exit %d, want 1: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "function-name") {
-		t.Fatalf("enabling a running rule silenced it: %s", stdout.String())
-	}
+	code := run([]string{"lint", "check", "--enable", "function-name", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
+	require.Contains(t, stdout.String(), "function-name")
 }
 
 func TestRunLintEnabledCollectionInfersAPopulatedLiteral(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", "var items := [1, 2, 3]\n\nfunc run() -> void:\n\tvar local_items := [1, 2, 3]\n")
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", "--enable", "require-typed-collection", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("exit %d, want 1: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %s", stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "Array has no element type; write Array[T]") ||
-		!strings.Contains(stdout.String(), "Array has no element type; write Array[int]") ||
-		!strings.Contains(stdout.String(), "(require-typed-collection)") {
-		t.Fatalf("unexpected output: %s", stdout.String())
-	}
+	code := run([]string{"lint", "check", "--enable", "require-typed-collection", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
+	require.Empty(t, stderr.String())
+	require.Contains(t, stdout.String(), "Array has no element type; write Array[T]")
+	require.Contains(t, stdout.String(), "Array has no element type; write Array[int]")
+	require.Contains(t, stdout.String(), "(require-typed-collection)")
 }
 
 func TestRunLintWarningSeverityDoesNotFail(t *testing.T) {
@@ -304,77 +242,49 @@ func TestRunLintWarningSeverityDoesNotFail(t *testing.T) {
 	writeCLIFile(t, root, "player.gd", "extends Node\n\n\nfunc doThing() -> void:\n\tpass\n")
 	writeCLIFile(t, root, ".gdkit/lint.json", `{"severity": {"function-name": "warning"}}`)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if !strings.Contains(stdout.String(), `player.gd:4: Warning: Function name "doThing" is not valid (function-name)`) {
-		t.Fatalf("warning missing from output: %s", stdout.String())
-	}
+	code := run([]string{"lint", "check", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	require.Contains(t, stdout.String(), `player.gd:4: Warning: Function name "doThing" is not valid (function-name)`)
 }
 
 func TestRunLintInit(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "init", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("init exit %d: %s", code, stderr.String())
-	}
+	code := run([]string{"lint", "init", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 	name := filepath.Join(root, ".gdkit", "lint.json")
 	data, err := os.ReadFile(name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "\"function-name\"") {
-		t.Fatalf("unexpected config: %s", data)
-	}
-	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("check with written config exit %d: %s", code, stderr.String())
-	}
+	require.NoError(t, err)
+	require.Contains(t, string(data), "\"function-name\"")
+	code = run([]string{"lint", "check", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 
-	if err := os.WriteFile(name, []byte("custom"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(name, []byte("custom"), 0o644))
 	stderr.Reset()
-	if code := run([]string{"lint", "init", root}, &stdout, &stderr); code != 2 {
-		t.Fatalf("clobber exit %d, want 2", code)
-	}
-	if got, _ := os.ReadFile(name); string(got) != "custom" {
-		t.Fatalf("existing config was overwritten: %s", got)
-	}
-	if code := run([]string{"lint", "init", "--force", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("force exit %d: %s", code, stderr.String())
-	}
-	if got, _ := os.ReadFile(name); string(got) == "custom" {
-		t.Fatal("--force did not replace the config")
-	}
+	code = run([]string{"lint", "init", root}, &stdout, &stderr)
+	require.Equal(t, 2, code)
+	got, _ := os.ReadFile(name)
+	require.Equal(t, "custom", string(got))
+	code = run([]string{"lint", "init", "--force", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	got, _ = os.ReadFile(name)
+	require.NotEqual(t, "custom", string(got))
 }
 
 func TestLintCheckWarningsPassButAreReported(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".gdkit"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".gdkit"), 0o755))
 	config := `{"version": 1, "severity": {"function-name": "warning"}}`
-	if err := os.WriteFile(filepath.Join(root, ".gdkit", "lint.json"), []byte(config), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "a.gd"), []byte("func doThing():\n\tpass\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gdkit", "lint.json"), []byte(config), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.gd"), []byte("func doThing():\n\tpass\n"), 0o644))
 
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("a warning must not fail the run, got exit %d: %s", code, stderr.String())
-	}
+	code := run([]string{"lint", "check", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 	output := stdout.String()
-	if !strings.Contains(output, "Warning:") {
-		t.Errorf("the warning should still be reported: %q", output)
-	}
-	if strings.Contains(output, "failed") {
-		t.Errorf("the summary must not say the run failed: %q", output)
-	}
-	if !strings.Contains(output, "1 warning)") {
-		t.Errorf("the summary should count one warning, singular: %q", output)
-	}
+	assert.Contains(t, output, "Warning:")
+	assert.NotContains(t, output, "failed")
+	assert.Contains(t, output, "1 warning)")
 }
 
 // TestLintProjectConfigFollowsSemanticCapability pins the two load shapes lint
@@ -387,37 +297,25 @@ func TestLintProjectConfigFollowsSemanticCapability(t *testing.T) {
 	config.Exclude = []string{"generated/**"}
 
 	filtered := lintProjectConfig("root", config, false)
-	if filtered.Selection != nil {
-		t.Fatalf("nonsemantic Selection = %+v, want nil", filtered.Selection)
-	}
-	if !slices.Equal(filtered.SourceRoots, config.SourceRoots) ||
-		!slices.Equal(filtered.Exclude, config.Exclude) || !filtered.HonorIgnoreFile {
-		t.Fatalf("nonsemantic config = %+v, want the lint filters on discovery", filtered)
-	}
+	require.Nil(t, filtered.Selection)
+	require.Equal(t, config.SourceRoots, filtered.SourceRoots)
+	require.Equal(t, config.Exclude, filtered.Exclude)
+	require.True(t, filtered.HonorIgnoreFile)
 
 	broad := lintProjectConfig("root", config, true)
-	if broad.SourceRoots != nil || broad.Exclude != nil {
-		t.Fatalf("semantic discovery = %+v, want an unfiltered universe", broad)
-	}
-	if broad.Selection == nil {
-		t.Fatal("semantic config carried no Selection")
-	}
-	if !slices.Equal(broad.Selection.SourceRoots, config.SourceRoots) ||
-		!slices.Equal(broad.Selection.Exclude, config.Exclude) || !broad.Selection.HonorIgnoreFile {
-		t.Fatalf("semantic Selection = %+v, want all three lint filters", broad.Selection)
-	}
-	if broad.Root != filtered.Root || broad.Identities != filtered.Identities {
-		t.Fatalf("the two shapes disagree beyond the filters: %+v vs %+v", broad, filtered)
-	}
+	require.Nil(t, broad.SourceRoots)
+	require.Nil(t, broad.Exclude)
+	require.NotNil(t, broad.Selection)
+	require.Equal(t, config.SourceRoots, broad.Selection.SourceRoots)
+	require.Equal(t, config.Exclude, broad.Selection.Exclude)
+	require.True(t, broad.Selection.HonorIgnoreFile)
+	require.Equal(t, filtered.Root, broad.Root)
+	require.Equal(t, filtered.Identities, broad.Identities)
 	// A semantic run is the one read-only caller that needs a mounted addon in
 	// its dependency universe. A nonsemantic run reads no excluded file at all
 	// and must not start entering mounts to discover one.
-	if !broad.FollowDirectorySymlinks {
-		t.Error("a semantic run must follow a directory mount into its universe")
-	}
-	if filtered.FollowDirectorySymlinks {
-		t.Error("a nonsemantic run must not follow a directory mount")
-	}
+	assert.True(t, broad.FollowDirectorySymlinks)
+	assert.False(t, filtered.FollowDirectorySymlinks)
 }
 
 // TestLintLoadsTheProjectExactlyOnce pins that the capability question costs no
@@ -444,15 +342,10 @@ func TestLintLoadsTheProjectExactlyOnce(t *testing.T) {
 
 			var stdout, stderr bytes.Buffer
 			args := append(append([]string{"lint", "check"}, test.args...), root)
-			if code := run(args, &stdout, &stderr); code != 0 {
-				t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-			}
-			if len(configs) != 1 {
-				t.Fatalf("project loads = %d, want 1", len(configs))
-			}
-			if (configs[0].Selection != nil) != test.wantSelection {
-				t.Fatalf("Selection present = %t, want %t", configs[0].Selection != nil, test.wantSelection)
-			}
+			code := run(args, &stdout, &stderr)
+			require.Equal(t, 0, code)
+			require.Len(t, configs, 1)
+			require.Equal(t, test.wantSelection, configs[0].Selection != nil)
 		})
 	}
 }
@@ -469,17 +362,13 @@ func TestLintSemanticRunResolvesExcludedDependency(t *testing.T) {
 	writeCLIFile(t, root, "a.gd", "func run() -> void:\n\tvar calls := [Proto.new().label(1)]\n")
 
 	report := runLintJSON(t, root, 1, "--enable", "require-typed-collection")
-	if report.EngineSchema == nil {
-		t.Fatal("semantic run published no engine provenance")
-	}
+	require.NotNil(t, report.EngineSchema)
 	var messages []string
 	for _, diagnostic := range report.Diagnostics {
 		messages = append(messages, diagnostic.Path+": "+diagnostic.Message)
 	}
 	want := []string{"a.gd: Array has no element type; write Array[String]"}
-	if !slices.Equal(messages, want) {
-		t.Fatalf("diagnostics = %v, want %v", messages, want)
-	}
+	require.Equal(t, want, messages)
 }
 
 // TestLintSemanticRunReportsNothingForExcludedDependencies covers the other
@@ -497,22 +386,17 @@ func TestLintSemanticRunReportsNothingForExcludedDependencies(t *testing.T) {
 	writeCLIFile(t, root, "a.gd", "var a := 1\n")
 
 	report := runLintJSON(t, root, 0, "--enable", "require-typed-collection")
-	if len(report.Diagnostics) != 0 {
-		t.Fatalf("diagnostics = %+v, want none for excluded or ignored dependencies", report.Diagnostics)
-	}
+	require.Empty(t, report.Diagnostics)
 	// The same project linted without the filters must be noisy, or the test
 	// above would pass on a project that had nothing to report.
 	bare := t.TempDir()
 	for _, name := range []string{"generated/noisy.gd", "generated/broken.gd", "hidden.gd", "a.gd"} {
 		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		writeCLIFile(t, bare, name, string(data))
 	}
-	if noisy := runLintJSON(t, bare, 1, "--enable", "require-typed-collection"); len(noisy.Diagnostics) == 0 {
-		t.Fatal("the fixture reports nothing even unfiltered, so the exclusion proves nothing")
-	}
+	noisy := runLintJSON(t, bare, 1, "--enable", "require-typed-collection")
+	require.NotEmpty(t, noisy.Diagnostics)
 }
 
 // runLintJSON runs lint check --format json and decodes the report, asserting
@@ -521,13 +405,11 @@ func runLintJSON(t *testing.T, root string, wantCode int, extra ...string) lint.
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	args := append(append([]string{"lint", "check", "--format", "json"}, extra...), root)
-	if code := run(args, &stdout, &stderr); code != wantCode {
-		t.Fatalf("exit %d, want %d: stdout=%s stderr=%s", code, wantCode, stdout.String(), stderr.String())
-	}
+	code := run(args, &stdout, &stderr)
+	require.Equal(t, wantCode, code)
 	var report lint.Report
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatalf("decode report: %v (%s)", err, stdout.String())
-	}
+	err := json.Unmarshal(stdout.Bytes(), &report)
+	require.NoError(t, err, "decode report")
 	return report
 }
 
@@ -546,40 +428,29 @@ func TestLintSemanticRunFailsOnAnUnreadableExcludedDependency(t *testing.T) {
 	writeCLIFile(t, root, "generated/proto.gd", "class_name Proto\n")
 	writeCLIFile(t, root, "a.gd", "var a := 1\n")
 	sealed := filepath.Join(root, "generated")
-	if err := os.Chmod(sealed, 0o000); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Chmod(sealed, 0o000))
 	t.Cleanup(func() { _ = os.Chmod(sealed, 0o755) })
 
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root},
-		&stdout, &stderr); code != 2 {
-		t.Fatalf("semantic exit %d, want 2: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if stdout.Len() != 0 {
-		t.Fatalf("stdout = %q, want empty so a consumer can tell no report from an empty one", stdout.String())
-	}
+	code := run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root},
+		&stdout, &stderr)
+	require.Equal(t, 2, code)
+	require.Empty(t, stdout.String())
 	var envelope struct {
 		Error struct {
 			Kind    string `json:"kind"`
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(stderr.Bytes(), &envelope); err != nil {
-		t.Fatalf("stderr is not a JSON envelope: %v (%s)", err, stderr.String())
-	}
-	if envelope.Error.Kind != "project.load" {
-		t.Fatalf("failure kind = %q, want project.load (%s)", envelope.Error.Kind, stderr.String())
-	}
-	if !strings.Contains(envelope.Error.Message, "generated") {
-		t.Fatalf("failure message = %q, want the unreadable dependency named", envelope.Error.Message)
-	}
+	err := json.Unmarshal(stderr.Bytes(), &envelope)
+	require.NoError(t, err, "stderr is not a JSON envelope")
+	require.Equal(t, "project.load", envelope.Error.Kind)
+	require.Contains(t, envelope.Error.Message, "generated")
 
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("nonsemantic exit %d, want 0: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code = run([]string{"lint", "check", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 }
 
 // mountCLIAddon reproduces the layout Uzir shares a Godot addon with: an
@@ -591,9 +462,7 @@ func mountCLIAddon(t *testing.T, root, logicalMount string, files map[string]str
 		writeCLIFile(t, external, name, contents)
 	}
 	absolute := filepath.Join(root, filepath.FromSlash(logicalMount))
-	if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
 	if err := os.Symlink(external, absolute); err != nil {
 		t.Skipf("this platform cannot create a directory symlink: %v", err)
 	}
@@ -623,45 +492,32 @@ func TestRunLintResolvesAClassMountedThroughADirectorySymlink(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("exit %d, want 1: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	require.Equal(t, 1, code)
 	var report lint.Report
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatalf("decode report: %v (%s)", err, stdout.String())
-	}
-	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Path != "features/pack_view.gd" ||
-		report.Diagnostics[0].Rule != "require-typed-collection" {
-		t.Fatalf("diagnostics = %+v, want the selected consumer reported once", report.Diagnostics)
-	}
+	err := json.Unmarshal(stdout.Bytes(), &report)
+	require.NoError(t, err, "decode report")
+	require.Len(t, report.Diagnostics, 1)
+	require.Equal(t, "features/pack_view.gd", report.Diagnostics[0].Path)
+	require.Equal(t, "require-typed-collection", report.Diagnostics[0].Rule)
 	// The mount is a read-only dependency, so nothing inside it may be
 	// reported on however broadly the universe was walked.
 	for _, diagnostic := range report.Diagnostics {
-		if strings.HasPrefix(diagnostic.Path, "addons/") {
-			t.Errorf("an unselected mounted dependency was reported: %+v", diagnostic)
-		}
+		assert.False(t, strings.HasPrefix(diagnostic.Path, "addons/"))
 	}
 
 	// Removing the mount leaves the same selected script with an unresolvable
 	// constructor. The literal is still an untyped collection, so the rule
 	// reports the generic wording instead of staying silent or guessing an
 	// exact spelling the analyzer cannot reach.
-	if err := os.Remove(filepath.Join(root, "addons", "worldmap_runtime")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Remove(filepath.Join(root, "addons", "worldmap_runtime")))
 	stdout.Reset()
 	stderr.Reset()
 	code = run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("exit %d, want 1 once the mounted class is unresolvable: stdout=%s stderr=%s",
-			code, stdout.String(), stderr.String())
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatalf("decode report: %v (%s)", err, stdout.String())
-	}
-	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Message != "Array has no element type; write Array[T]" {
-		t.Fatalf("diagnostics = %+v, want the generic Array[T] wording for an unresolvable element", report.Diagnostics)
-	}
+	require.Equal(t, 1, code)
+	err = json.Unmarshal(stdout.Bytes(), &report)
+	require.NoError(t, err, "decode report")
+	require.Len(t, report.Diagnostics, 1)
+	require.Equal(t, "Array has no element type; write Array[T]", report.Diagnostics[0].Message)
 }
 
 // TestRunLintFailsClosedOnAnUnresolvableMount pins the row the pinned Uzir
@@ -680,9 +536,7 @@ func TestRunLintResolvesAClassMountedThroughADirectorySymlink(t *testing.T) {
 func TestRunLintFailsClosedOnAnUnresolvableMount(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "features/pack_view.gd", "func run() -> void:\n\tvar packs := []\n\tprint(packs)\n")
-	if err := os.MkdirAll(filepath.Join(root, "addons"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "addons"), 0o755))
 	if err := os.Symlink("../../common/godot-addons/worldmap_runtime",
 		filepath.Join(root, "addons", "worldmap_runtime")); err != nil {
 		t.Skipf("this platform cannot create a symlink: %v", err)
@@ -691,36 +545,27 @@ func TestRunLintFailsClosedOnAnUnresolvableMount(t *testing.T) {
 	// A nonsemantic run keeps its filters on discovery, never enters the mount,
 	// and is unaffected.
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("nonsemantic exit %d, want 0: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code := run([]string{"lint", "check", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 
 	body := runFailure(t, "lint", "check", "--format", "json", "--enable", "require-typed-collection", root)
-	if body.Kind != "project.load" {
-		t.Fatalf("failure kind = %q, want project.load (%+v)", body.Kind, body)
-	}
-	if !strings.Contains(body.Message, "addons/worldmap_runtime") {
-		t.Fatalf("failure message = %q, want it to name the logical mount", body.Message)
-	}
+	require.Equal(t, "project.load", body.Kind)
+	require.Contains(t, body.Message, "addons/worldmap_runtime")
 
 	// A cyclic mount under the same exclusion fails the same way, so neither
 	// kind of unprovable link can be reached through a project's filters.
-	if err := os.Remove(filepath.Join(root, "addons", "worldmap_runtime")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Remove(filepath.Join(root, "addons", "worldmap_runtime")))
 	if err := os.Symlink(root, filepath.Join(root, "addons", "worldmap_runtime")); err != nil {
 		t.Skipf("this platform cannot create a symlink: %v", err)
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("nonsemantic exit %d, want 0: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code = run([]string{"lint", "check", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 	cyclic := runFailure(t, "lint", "check", "--format", "json", "--enable", "require-typed-collection", root)
-	if cyclic.Kind != "project.load" || !strings.Contains(cyclic.Message, "addons/worldmap_runtime") ||
-		!strings.Contains(cyclic.Message, "closes a directory cycle") {
-		t.Fatalf("cyclic failure = %+v, want a project.load cycle error naming the mount", cyclic)
-	}
+	require.Equal(t, "project.load", cyclic.Kind)
+	require.Contains(t, cyclic.Message, "addons/worldmap_runtime")
+	require.Contains(t, cyclic.Message, "closes a directory cycle")
 }
 
 // TestWriteCommandsLeaveAMountedExternalTreeUnchanged is the writer bound. No
@@ -753,12 +598,9 @@ func TestWriteCommandsLeaveAMountedExternalTreeUnchanged(t *testing.T) {
 	} {
 		var stdout, stderr bytes.Buffer
 		run(command, &stdout, &stderr)
-		if strings.Contains(stdout.String(), "features/shared_runtime") {
-			t.Errorf("%v reported a path inside the mount: %s", command, stdout.String())
-		}
-		if after := snapshotTree(t, external); !maps.Equal(before, after) {
-			t.Fatalf("%v changed the external tree:\nbefore %v\nafter  %v", command, before, after)
-		}
+		assert.NotContains(t, stdout.String(), "features/shared_runtime", strings.Join(command, " "))
+		after := snapshotTree(t, external)
+		require.Equal(t, before, after, strings.Join(command, " "))
 	}
 }
 
@@ -768,7 +610,7 @@ func TestWriteCommandsLeaveAMountedExternalTreeUnchanged(t *testing.T) {
 func snapshotTree(t *testing.T, root string) map[string]string {
 	t.Helper()
 	tree := map[string]string{}
-	if err := filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -791,9 +633,8 @@ func snapshotTree(t *testing.T, root string) map[string]string {
 		tree[filepath.ToSlash(relative)] = fmt.Sprintf("%s mode=%v size=%d mtime=%s",
 			digest, info.Mode(), info.Size(), info.ModTime().UTC().Format(time.RFC3339Nano))
 		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
+	require.NoError(t, err)
 	return tree
 }
 
@@ -814,28 +655,21 @@ func TestRunLintDoesNotReportInsideANestedMount(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("nonsemantic exit %d, want 0: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code := run([]string{"lint", "check", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 
 	stdout.Reset()
 	stderr.Reset()
-	code := run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("semantic exit %d, want 1: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code = run([]string{"lint", "check", "--format", "json", "--enable", "require-typed-collection", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
 	var report lint.Report
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatalf("decode report: %v (%s)", err, stdout.String())
-	}
+	err := json.Unmarshal(stdout.Bytes(), &report)
+	require.NoError(t, err, "decode report")
 	// The mounted class resolved, which is what the universe walk is for.
-	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Path != "features/pack_view.gd" ||
-		report.Diagnostics[0].Rule != "require-typed-collection" {
-		t.Fatalf("diagnostics = %+v, want only the selected consumer's finding", report.Diagnostics)
-	}
+	require.Len(t, report.Diagnostics, 1)
+	require.Equal(t, "features/pack_view.gd", report.Diagnostics[0].Path)
+	require.Equal(t, "require-typed-collection", report.Diagnostics[0].Rule)
 	for _, diagnostic := range report.Diagnostics {
-		if strings.HasPrefix(diagnostic.Path, "features/shared_runtime/") {
-			t.Errorf("a rule reported inside the mount: %+v", diagnostic)
-		}
+		assert.False(t, strings.HasPrefix(diagnostic.Path, "features/shared_runtime/"))
 	}
 }

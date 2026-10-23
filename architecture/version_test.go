@@ -2,10 +2,11 @@ package architecture
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/cafecito-games/gdkit/internal/versiongate"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // pretendVersion makes LoadConfig see a fixed binary version for one test.
@@ -25,12 +26,8 @@ func TestLoadConfigAcceptsASatisfiedMinimumVersion(t *testing.T) {
 				DefaultConfigPath: `{"version": 1, "minimum_gdkit_version": "0.3.0"}`,
 			})
 			config, err := LoadConfig(root, "")
-			if err != nil {
-				t.Fatalf("binary %s did not satisfy floor 0.3.0: %v", binary, err)
-			}
-			if config.MinimumGDKitVersion != "0.3.0" {
-				t.Fatalf("MinimumGDKitVersion = %q, want \"0.3.0\"", config.MinimumGDKitVersion)
-			}
+			require.NoError(t, err)
+			require.Equal(t, "0.3.0", config.MinimumGDKitVersion)
 		})
 	}
 }
@@ -42,13 +39,9 @@ func TestLoadConfigRejectsABinaryBelowTheMinimumVersion(t *testing.T) {
 		DefaultConfigPath: `{"version": 1, "minimum_gdkit_version": "0.3.0"}`,
 	})
 	_, err := LoadConfig(root, "")
-	if err == nil {
-		t.Fatal("a binary below the floor was accepted")
-	}
+	require.Error(t, err)
 	for _, want := range []string{"0.3.0", "0.2.0", DefaultConfigPath} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not contain %q", err, want)
-		}
+		assert.Contains(t, err.Error(), want)
 	}
 }
 
@@ -62,15 +55,9 @@ func TestLoadConfigReportsTheMinimumVersionBeforeAnUnknownKey(t *testing.T) {
 		DefaultConfigPath: `{"version": 1, "minimum_gdkit_version": "0.3.0", "zones": ["anything"]}`,
 	})
 	_, err := LoadConfig(root, "")
-	if err == nil {
-		t.Fatal("a binary below the floor was accepted")
-	}
-	if !strings.Contains(err.Error(), "0.3.0") {
-		t.Fatalf("error %q does not report the required version", err)
-	}
-	if strings.Contains(err.Error(), "zones") {
-		t.Fatalf("error %q names the unknown key instead of the version floor", err)
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "0.3.0")
+	require.NotContains(t, err.Error(), "zones")
 }
 
 func TestLoadConfigReportsTheMinimumVersionBeforeAValidationError(t *testing.T) {
@@ -80,15 +67,9 @@ func TestLoadConfigReportsTheMinimumVersionBeforeAValidationError(t *testing.T) 
 		DefaultConfigPath: `{"version": 1, "minimum_gdkit_version": "0.3.0", "classifications": [{"pattern": "aaa/**", "feature": "f"}]}`,
 	})
 	_, err := LoadConfig(root, "")
-	if err == nil {
-		t.Fatal("a binary below the floor was accepted")
-	}
-	if !strings.Contains(err.Error(), "0.3.0") {
-		t.Fatalf("error %q does not report the required version", err)
-	}
-	if strings.Contains(err.Error(), "requires a layer") {
-		t.Fatalf("error %q reports the validation failure instead of the version floor", err)
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "0.3.0")
+	require.NotContains(t, err.Error(), "requires a layer")
 }
 
 func TestLoadConfigRejectsAMalformedMinimumVersion(t *testing.T) {
@@ -100,15 +81,9 @@ func TestLoadConfigRejectsAMalformedMinimumVersion(t *testing.T) {
 				DefaultConfigPath: `{"version": 1, "minimum_gdkit_version": "` + value + `"}`,
 			})
 			_, err := LoadConfig(root, "")
-			if err == nil {
-				t.Fatalf("minimum_gdkit_version %q was accepted", value)
-			}
-			if !strings.Contains(err.Error(), "minimum_gdkit_version") {
-				t.Fatalf("error %q does not name the offending key", err)
-			}
-			if !strings.Contains(err.Error(), "major.minor.patch") {
-				t.Fatalf("error %q does not say what a valid value looks like", err)
-			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "minimum_gdkit_version")
+			require.Contains(t, err.Error(), "major.minor.patch")
 		})
 	}
 }
@@ -120,12 +95,8 @@ func TestLoadConfigIgnoresAnAbsentMinimumVersion(t *testing.T) {
 		DefaultConfigPath: `{"version": 1}`,
 	})
 	config, err := LoadConfig(root, "")
-	if err != nil {
-		t.Fatalf("a config without a floor was rejected: %v", err)
-	}
-	if config.MinimumGDKitVersion != "" {
-		t.Fatalf("MinimumGDKitVersion = %q, want empty", config.MinimumGDKitVersion)
-	}
+	require.NoError(t, err)
+	require.Empty(t, config.MinimumGDKitVersion)
 }
 
 func TestLoadConfigFailsClosedOnADevelopmentBuild(t *testing.T) {
@@ -135,17 +106,12 @@ func TestLoadConfigFailsClosedOnADevelopmentBuild(t *testing.T) {
 		DefaultConfigPath: `{"version": 1, "minimum_gdkit_version": "0.3.0"}`,
 	})
 	_, err := LoadConfig(root, "")
-	if err == nil {
-		t.Fatal("a development build satisfied a version floor")
-	}
-	if !strings.Contains(err.Error(), versiongate.AllowDevelopmentEnvironmentVariable) {
-		t.Fatalf("error %q does not name the bypass", err)
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), versiongate.AllowDevelopmentEnvironmentVariable)
 
 	t.Setenv(versiongate.AllowDevelopmentEnvironmentVariable, "1")
-	if _, err := LoadConfig(root, ""); err != nil {
-		t.Fatalf("%s did not bypass the floor: %v", versiongate.AllowDevelopmentEnvironmentVariable, err)
-	}
+	_, err = LoadConfig(root, "")
+	require.NoError(t, err)
 }
 
 // The bypass covers development builds only; it must not excuse a real
@@ -157,9 +123,8 @@ func TestLoadConfigBypassDoesNotExcuseAnOldRelease(t *testing.T) {
 	writeProject(t, root, map[string]string{
 		DefaultConfigPath: `{"version": 1, "minimum_gdkit_version": "0.3.0"}`,
 	})
-	if _, err := LoadConfig(root, ""); err == nil {
-		t.Fatal("the development bypass excused an old release")
-	}
+	_, err := LoadConfig(root, "")
+	require.Error(t, err)
 }
 
 func TestLoadConfigNamesTheResolvedConfigPath(t *testing.T) {
@@ -170,19 +135,13 @@ func TestLoadConfigNamesTheResolvedConfigPath(t *testing.T) {
 		name: `{"version": 1, "minimum_gdkit_version": "0.3.0"}`,
 	})
 	_, err := LoadConfig(root, name)
-	if err == nil {
-		t.Fatal("a binary below the floor was accepted")
-	}
-	if !strings.Contains(filepath.ToSlash(err.Error()), "strict.json") {
-		t.Fatalf("error %q does not name the resolved config path", err)
-	}
+	require.Error(t, err)
+	require.Contains(t, filepath.ToSlash(err.Error()), "strict.json")
 }
 
 // A generated config must not pin itself to whichever binary generated it.
 func TestDefaultConfigDeclaresNoMinimumVersion(t *testing.T) {
-	if got := DefaultConfig().MinimumGDKitVersion; got != "" {
-		t.Fatalf("DefaultConfig().MinimumGDKitVersion = %q, want empty", got)
-	}
+	require.Empty(t, DefaultConfig().MinimumGDKitVersion)
 }
 
 // encoding/json's Decoder reads one value and stops, while the whole-document
@@ -209,9 +168,8 @@ func TestLoadConfigRejectsContentAfterTheTopLevelObject(t *testing.T) {
 			pretendVersion(t, "0.2.0")
 			root := t.TempDir()
 			writeProject(t, root, map[string]string{DefaultConfigPath: contents})
-			if _, err := LoadConfig(root, ""); err == nil {
-				t.Fatal("content after the top-level object was accepted")
-			}
+			_, err := LoadConfig(root, "")
+			require.Error(t, err)
 		})
 	}
 }
@@ -222,10 +180,6 @@ func TestLoadConfigReportsMalformedJSONWithItsOffset(t *testing.T) {
 	root := t.TempDir()
 	writeProject(t, root, map[string]string{DefaultConfigPath: `{"version": 1,`})
 	_, err := LoadConfig(root, "")
-	if err == nil {
-		t.Fatal("malformed JSON was accepted")
-	}
-	if !strings.Contains(err.Error(), "parse config") {
-		t.Fatalf("error %q is not reported as a parse failure", err)
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "parse config")
 }

@@ -1,8 +1,10 @@
 package versiongate
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseReadsTripleAndIgnoresSuffixes(t *testing.T) {
@@ -17,38 +19,28 @@ func TestParseReadsTripleAndIgnoresSuffixes(t *testing.T) {
 		"0.0.0":                  {0, 0, 0},
 	} {
 		got, err := Parse(input)
-		if err != nil {
-			t.Errorf("Parse(%q) returned error %v", input, err)
-			continue
-		}
-		if got != want {
-			t.Errorf("Parse(%q) = %#v, want %#v", input, got, want)
+		if assert.NoError(t, err) {
+			assert.Equal(t, want, got)
 		}
 	}
 }
 
 func TestParseRejectsNonReleaseVersions(t *testing.T) {
 	for _, input := range []string{"", "dev", "0.2", "0.2.0.1", "a.b.c", "-1.0.0", "0..0", "1.2.x", "+1.2.3", "0.2.0 "} {
-		if got, err := Parse(input); err == nil {
-			t.Errorf("Parse(%q) = %#v, want an error", input, got)
-		}
+		_, err := Parse(input)
+		assert.Error(t, err)
 	}
 }
 
 func TestParseRequirementIsStricterThanParse(t *testing.T) {
 	got, err := ParseRequirement("0.3.0")
-	if err != nil {
-		t.Fatalf("ParseRequirement(\"0.3.0\") returned error %v", err)
-	}
-	if want := (Version{0, 3, 0}); got != want {
-		t.Fatalf("ParseRequirement(\"0.3.0\") = %#v, want %#v", got, want)
-	}
+	require.NoError(t, err)
+	require.Equal(t, Version{0, 3, 0}, got)
 	// A floor comes from a config file or a command line, where a leading "v"
 	// or a prerelease suffix is a mistake worth naming.
 	for _, input := range []string{"v0.3.0", "0.2.1-SNAPSHOT-9060007", "0.2.0+meta", "0.3", "", "dev"} {
-		if got, err := ParseRequirement(input); err == nil {
-			t.Errorf("ParseRequirement(%q) = %#v, want an error", input, got)
-		}
+		_, err := ParseRequirement(input)
+		assert.Error(t, err)
 	}
 }
 
@@ -71,22 +63,17 @@ func TestLessOrdersNumerically(t *testing.T) {
 		{Version{1, 2, 9}, Version{1, 2, 10}, true},
 	}
 	for _, test := range cases {
-		if got := test.left.Less(test.right); got != test.want {
-			t.Errorf("%#v.Less(%#v) = %t, want %t", test.left, test.right, got, test.want)
-		}
+		got := test.left.Less(test.right)
+		assert.Equal(t, test.want, got)
 	}
 }
 
 func TestIsDevelopment(t *testing.T) {
 	for _, input := range []string{"dev", ""} {
-		if !IsDevelopment(input) {
-			t.Errorf("IsDevelopment(%q) = false, want true", input)
-		}
+		assert.True(t, IsDevelopment(input))
 	}
 	for _, input := range []string{"0.2.0", "v0.2.0", "0.2.1-SNAPSHOT-9060007", "1.10.2"} {
-		if IsDevelopment(input) {
-			t.Errorf("IsDevelopment(%q) = true, want false", input)
-		}
+		assert.False(t, IsDevelopment(input))
 	}
 }
 
@@ -116,25 +103,19 @@ func TestParseEngineVersion(t *testing.T) {
 	for _, test := range tests {
 		got, err := ParseEngineVersion(test.value)
 		if test.wantErr {
-			if err == nil {
-				t.Errorf("ParseEngineVersion(%q) = %v, want an error", test.value, got)
+			if !assert.Error(t, err) {
 				continue
 			}
 			// The message names the two forms this function accepts.
 			// parseTriple's own message names only the three-component form,
 			// which would tell a reader to write a patch level that is
 			// optional here.
-			if !strings.Contains(err.Error(), "major.minor or major.minor.patch") {
-				t.Errorf("ParseEngineVersion(%q) = %v, want the message to name both accepted forms", test.value, err)
-			}
+			assert.Contains(t, err.Error(), "major.minor or major.minor.patch")
 			continue
 		}
-		if err != nil {
-			t.Errorf("ParseEngineVersion(%q) = %v", test.value, err)
+		if !assert.NoError(t, err) {
 			continue
 		}
-		if got != test.want {
-			t.Errorf("ParseEngineVersion(%q) = %v, want %v", test.value, got, test.want)
-		}
+		assert.Equal(t, test.want, got)
 	}
 }

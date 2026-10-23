@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/stretchr/testify/require"
 )
 
 const uncleanScript = "extends Node\nvar a=1\nfunc doThing( x ):\n\treturn x+a\n"
@@ -26,22 +27,16 @@ func TestRunLintAndFormatHonourIgnoreFile(t *testing.T) {
 		t.Run(strings.Join(command, " "), func(t *testing.T) {
 			root := writeIgnoreProject(t)
 			var stdout, stderr bytes.Buffer
-			if code := run(append(command, root), &stdout, &stderr); code != 1 {
-				t.Fatalf("without an ignore file: exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-			}
-			if !strings.Contains(stdout.String(), "apps/editor/addons/tool/tool.gd") {
-				t.Fatalf("unexpected output: %s", stdout.String())
-			}
+			code := run(append(command, root), &stdout, &stderr)
+			require.Equal(t, 1, code)
+			require.Contains(t, stdout.String(), "apps/editor/addons/tool/tool.gd")
 
 			writeCLIFile(t, root, project.IgnoreFileName, "addons/\n")
 			stdout.Reset()
 			stderr.Reset()
-			if code := run(append(command, root), &stdout, &stderr); code != 0 {
-				t.Fatalf("with an ignore file: exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-			}
-			if strings.Contains(stdout.String(), "addons") {
-				t.Fatalf("ignored file appears in output: %s", stdout.String())
-			}
+			code = run(append(command, root), &stdout, &stderr)
+			require.Equal(t, 0, code)
+			require.NotContains(t, stdout.String(), "addons")
 		})
 	}
 }
@@ -51,30 +46,23 @@ func TestRunFormatWriteLeavesIgnoredFilesUntouched(t *testing.T) {
 	writeCLIFile(t, root, "scripts/enemy.gd", unformattedScript)
 	writeCLIFile(t, root, project.IgnoreFileName, "addons/\n")
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "write", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if got := readCLIFile(t, root, "apps/editor/addons/tool/tool.gd"); got != uncleanScript {
-		t.Fatalf("format write rewrote an ignored file: %q", got)
-	}
-	if got := readCLIFile(t, root, "scripts/enemy.gd"); got == unformattedScript {
-		t.Fatal("format write did not rewrite a file that is not ignored")
-	}
+	code := run([]string{"format", "write", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	got := readCLIFile(t, root, "apps/editor/addons/tool/tool.gd")
+	require.Equal(t, uncleanScript, got)
+	got = readCLIFile(t, root, "scripts/enemy.gd")
+	require.NotEqual(t, unformattedScript, got)
 	want := "reformatted scripts/enemy.gd\nformat write: 1 reformatted, 1 unchanged\n"
-	if stdout.String() != want {
-		t.Fatalf("output = %q, want %q", stdout.String(), want)
-	}
+	require.Equal(t, want, stdout.String())
 }
 
 func TestRunFormatWriteWithoutIgnoreFileRewritesNestedAddons(t *testing.T) {
 	root := writeIgnoreProject(t)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "write", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if got := readCLIFile(t, root, "apps/editor/addons/tool/tool.gd"); got == uncleanScript {
-		t.Fatal("format write should rewrite the file when nothing ignores it")
-	}
+	code := run([]string{"format", "write", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	got := readCLIFile(t, root, "apps/editor/addons/tool/tool.gd")
+	require.NotEqual(t, uncleanScript, got)
 }
 
 func TestRunRejectsMalformedIgnoreFile(t *testing.T) {
@@ -84,15 +72,11 @@ func TestRunRejectsMalformedIgnoreFile(t *testing.T) {
 			root := writeIgnoreProject(t)
 			writeCLIFile(t, root, project.IgnoreFileName, "addons/\n[unterminated\n")
 			var stdout, stderr bytes.Buffer
-			if code := run(append(command, root), &stdout, &stderr); code != 2 {
-				t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-			}
-			if !strings.HasPrefix(stderr.String(), "gdkit: parse .gdkitignore: line 2: ") {
-				t.Fatalf("unexpected error: %s", stderr.String())
-			}
-			if got := readCLIFile(t, root, "apps/editor/addons/tool/tool.gd"); got != uncleanScript {
-				t.Fatalf("a failed run rewrote a file: %q", got)
-			}
+			code := run(append(command, root), &stdout, &stderr)
+			require.Equal(t, 2, code)
+			require.True(t, strings.HasPrefix(stderr.String(), "gdkit: parse .gdkitignore: line 2: "))
+			got := readCLIFile(t, root, "apps/editor/addons/tool/tool.gd")
+			require.Equal(t, uncleanScript, got)
 		})
 	}
 }
@@ -104,19 +88,15 @@ func TestRunArchCheckDoesNotReadIgnoreFile(t *testing.T) {
 	writeCLIFile(t, root, "features/combat/domain/health.gd", "class_name Health extends Node\n")
 	arguments := []string{"arch", "check", "--format", "json", "--show-edges", root}
 	var before, stderr bytes.Buffer
-	if code := run(arguments, &before, &stderr); code != 1 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, before.String(), stderr.String())
-	}
+	code := run(arguments, &before, &stderr)
+	require.Equal(t, 1, code)
 
 	for _, contents := range []string{"features/\n*.gd\n", "[unterminated\n"} {
 		writeCLIFile(t, root, project.IgnoreFileName, contents)
 		var after bytes.Buffer
 		stderr.Reset()
-		if code := run(arguments, &after, &stderr); code != 1 {
-			t.Fatalf("with ignore file %q: exit %d: stdout=%s stderr=%s", contents, code, after.String(), stderr.String())
-		}
-		if after.String() != before.String() {
-			t.Fatalf("ignore file %q changed arch check output:\n%s\nwant:\n%s", contents, after.String(), before.String())
-		}
+		code = run(arguments, &after, &stderr)
+		require.Equal(t, 1, code)
+		require.Equal(t, before.String(), after.String())
 	}
 }

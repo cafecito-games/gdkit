@@ -12,6 +12,7 @@ import (
 	"github.com/cafecito-games/gdkit/internal/semanticsource"
 	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdparser/ast"
+	"github.com/stretchr/testify/require"
 )
 
 // TestCorpusReducer measures the reducer against a caller-supplied real
@@ -28,27 +29,17 @@ func TestCorpusReducer(t *testing.T) {
 		Exclude:    []string{".worktrees/**", ".claude/**"},
 		Identities: true,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	loaded, err := engineschema.LoadEmbedded(4, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	source := semanticsource.NewSnapshot(snapshot)
 	first := collectReducerCorpusReceipt(semantic.NewAnalyzer(source, loaded.Engine), source)
 	second := collectReducerCorpusReceipt(semantic.NewAnalyzer(source, loaded.Engine), source)
 	firstJSON, err := json.Marshal(first)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	secondJSON, err := json.Marshal(second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(firstJSON) != string(secondJSON) {
-		t.Fatalf("two reducer corpus receipts differ:\n%s\n%s", firstJSON, secondJSON)
-	}
+	require.NoError(t, err)
+	require.Equal(t, string(secondJSON), string(firstJSON))
 	t.Logf("%s", first.summary())
 }
 
@@ -134,16 +125,10 @@ func TestReducerCorpusReceiptKeepsNamedEnumReasonOutsideTopTen(t *testing.T) {
 	}
 	receipt := reducerCorpusReceipt{}
 	finalizeReducerCorpusReceipt(&receipt, reasons)
-	if receipt.NamedEnumMemberAbsent != 5436 {
-		t.Fatalf("exact named-enum reason = %d, want 5436", receipt.NamedEnumMemberAbsent)
-	}
-	if len(receipt.Reasons) != 10 {
-		t.Fatalf("presented reasons = %d, want top ten", len(receipt.Reasons))
-	}
+	require.Equal(t, 5436, receipt.NamedEnumMemberAbsent)
+	require.Len(t, receipt.Reasons, 10)
 	for _, reason := range receipt.Reasons {
-		if reason.Reason == namedEnumMemberAbsentReason {
-			t.Fatal("target reason unexpectedly remained in the deliberately truncating top ten")
-		}
+		require.NotEqual(t, namedEnumMemberAbsentReason, reason.Reason)
 	}
 }
 
@@ -154,16 +139,10 @@ func TestReducerCorpusReceiptKeepsStringReasonOutsideTopTen(t *testing.T) {
 	}
 	receipt := reducerCorpusReceipt{}
 	finalizeReducerCorpusReceipt(&receipt, reasons)
-	if receipt.StringReceiverNotSubscriptable != 7 {
-		t.Fatalf("exact String reason = %d, want 7", receipt.StringReceiverNotSubscriptable)
-	}
-	if len(receipt.Reasons) != 10 {
-		t.Fatalf("presented reasons = %d, want top ten", len(receipt.Reasons))
-	}
+	require.Equal(t, 7, receipt.StringReceiverNotSubscriptable)
+	require.Len(t, receipt.Reasons, 10)
 	for _, reason := range receipt.Reasons {
-		if reason.Reason == stringReceiverNotSubscriptableReason {
-			t.Fatal("target reason unexpectedly remained in the deliberately truncating top ten")
-		}
+		require.NotEqual(t, stringReceiverNotSubscriptableReason, reason.Reason)
 	}
 }
 
@@ -178,16 +157,14 @@ func TestReducerCorpusReceiptKeepsBuiltinConstructorReasonsOutsideTopTen(t *test
 	}
 	receipt := reducerCorpusReceipt{}
 	finalizeReducerCorpusReceipt(&receipt, reasons)
-	if receipt.Vector2iNoClassObject != 4456 || receipt.Vector3iNoClassObject != 2807 || receipt.Vector2NoClassObject != 2487 {
-		t.Fatalf("exact builtin constructor reasons = %d/%d/%d", receipt.Vector2iNoClassObject, receipt.Vector3iNoClassObject, receipt.Vector2NoClassObject)
-	}
-	if len(receipt.Reasons) != 10 {
-		t.Fatalf("presented reasons = %d, want top ten", len(receipt.Reasons))
-	}
+	require.Equal(t, 4456, receipt.Vector2iNoClassObject)
+	require.Equal(t, 2807, receipt.Vector3iNoClassObject)
+	require.Equal(t, 2487, receipt.Vector2NoClassObject)
+	require.Len(t, receipt.Reasons, 10)
 	for _, reason := range receipt.Reasons {
-		if reason.Reason == vector2iNoClassObjectReason || reason.Reason == vector3iNoClassObjectReason || reason.Reason == vector2NoClassObjectReason {
-			t.Fatalf("target reason %q unexpectedly remained in the deliberately truncating top ten", reason.Reason)
-		}
+		require.NotEqual(t, vector2iNoClassObjectReason, reason.Reason)
+		require.NotEqual(t, vector3iNoClassObjectReason, reason.Reason)
+		require.NotEqual(t, vector2NoClassObjectReason, reason.Reason)
 	}
 }
 

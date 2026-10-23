@@ -11,32 +11,29 @@ import (
 	"time"
 
 	"github.com/cafecito-games/gdkit/internal/failure"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExtensionAPIRejectsUnixSocketAsInvalid(t *testing.T) {
 	root := t.TempDir()
 	path := "extension_api.json"
 	listener, err := net.Listen("unix", filepath.Join(root, path))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = listener.Close() })
 
 	config := DefaultConfig()
 	config.ExtensionAPI = &path
 	linter, err := newLinterForProject(root, config, nil)
-	if err == nil || linter != nil {
-		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
-	}
+	require.Error(t, err)
+	require.Nil(t, linter)
 	assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, path))
 }
 
 func TestExtensionAPIRejectsFIFOWithoutBlocking(t *testing.T) {
 	root := t.TempDir()
 	path := "extension_api.json"
-	if err := syscall.Mkfifo(filepath.Join(root, path), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	err := syscall.Mkfifo(filepath.Join(root, path), 0o600)
+	require.NoError(t, err)
 	config := DefaultConfig()
 	config.ExtensionAPI = &path
 	type result struct {
@@ -65,11 +62,10 @@ func TestExtensionAPIRejectsFIFOWithoutBlocking(t *testing.T) {
 			case <-time.After(time.Second):
 			}
 		}
-		t.Fatalf("FIFO rejection blocked for more than one second (unblock: %v)", unblockErr)
+		require.FailNow(t, "FIFO rejection blocked for more than one second", "unblock error: %v", unblockErr)
 	}
 	linter, err := got.linter, got.err
-	if err == nil || linter != nil {
-		t.Fatalf("newLinterForProject() = %+v, %v", linter, err)
-	}
+	require.Error(t, err)
+	require.Nil(t, linter)
 	assertFailure(t, err, failure.ConfigInvalid, filepath.Join(root, path))
 }

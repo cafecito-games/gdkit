@@ -3,6 +3,9 @@ package generate
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const valueObjectPair = "class_name Coordinate\nextends RefCounted\n\nvar q: int\n"
@@ -14,14 +17,10 @@ func TestDeepEqualsRecursesIntoAProjectClassField(t *testing.T) {
 	})
 	// The same instance is strictly equal, which is also what makes the
 	// realistic recursive shapes terminate.
-	if !strings.HasPrefix(got, "func deep_equals(p_other: Variant) -> bool:\n\tif self == p_other:\n\t\treturn true\n") {
-		t.Errorf("no identity short-circuit:\n%s", got)
-	}
+	assert.True(t, strings.HasPrefix(got, "func deep_equals(p_other: Variant) -> bool:\n\tif self == p_other:\n\t\treturn true\n"), "no identity short-circuit")
 	for _, name := range []string{"name", "position"} {
 		want := "\tif not GDKitEquality.deep_equals(self." + name + ", p_other." + name + "):\n\t\treturn false\n"
-		if !strings.Contains(got, want) {
-			t.Errorf("%s did not go through the helper:\n%s", name, got)
-		}
+		assert.Contains(t, got, want, name+" did not go through the helper")
 	}
 }
 
@@ -31,12 +30,8 @@ func TestDeepEqualsSuppressesOnlyMaxReturnsOnItsFinalReturn(t *testing.T) {
 	got := emitFor(t, "unit.gd", deepEqualsGenerator{}, map[string]string{
 		"unit.gd": "class_name Unit\nextends RefCounted\n\nvar name: String\n",
 	})
-	if !strings.HasSuffix(got, "\treturn true  # gdkit:ignore = max-returns\n") {
-		t.Errorf("final return carries no max-returns suppression:\n%s", got)
-	}
-	if strings.Count(got, "gdkit:ignore") != 1 {
-		t.Errorf("want exactly one suppression:\n%s", got)
-	}
+	assert.True(t, strings.HasSuffix(got, "\treturn true  # gdkit:ignore = max-returns\n"), "final return carries no max-returns suppression")
+	assert.Equal(t, 1, strings.Count(got, "gdkit:ignore"), "want exactly one suppression")
 }
 
 func TestDeepEqualsComposesWithTheParentProvider(t *testing.T) {
@@ -45,9 +40,7 @@ func TestDeepEqualsComposesWithTheParentProvider(t *testing.T) {
 			"func deep_equals(p_other: Variant) -> bool:\n\treturn true\n",
 		"hex.gd": "class_name Hex\nextends Coordinate\n\nvar terrain: String\n",
 	})
-	if !strings.Contains(got, "\tif not super.deep_equals(p_other):\n\t\treturn false\n") {
-		t.Errorf("did not compose with the parent:\n%s", got)
-	}
+	assert.Contains(t, got, "\tif not super.deep_equals(p_other):\n\t\treturn false\n", "did not compose with the parent")
 }
 
 // A cyclic value object is pathological and cannot be shown to terminate, so
@@ -58,13 +51,9 @@ func TestACyclicFieldTypeGraphIsRefused(t *testing.T) {
 			"var parent: TreeNode\nvar label: String\n",
 	}))
 	diagnostic := assertDiagnostic(t, report, ruleUnsupported)
-	if !strings.Contains(diagnostic.Message, "cycle") {
-		t.Errorf("message = %q, want the cycle named", diagnostic.Message)
-	}
+	assert.Contains(t, diagnostic.Message, "cycle", "the cycle was not named")
 	for _, result := range report.Results {
-		if result.Path == "node.gd" && result.Changed {
-			t.Error("a cyclic class produced a candidate")
-		}
+		assert.False(t, result.Path == "node.gd" && result.Changed, "a cyclic class produced a candidate")
 	}
 }
 
@@ -86,33 +75,23 @@ func TestAContainerOfTheSameClassIsNotACycle(t *testing.T) {
 			"var children: Array[Branch]\nvar label: String\n",
 	}))
 	for _, diagnostic := range report.Diagnostics {
-		if diagnostic.Rule != ruleStale {
-			t.Errorf("a container of the same class was read as a cycle: %s", diagnostic)
-		}
+		assert.Equal(t, ruleStale, diagnostic.Rule, "a container of the same class was read as a cycle")
 	}
-	if !report.HasChanges() {
-		t.Error("nothing was generated")
-	}
+	assert.True(t, report.HasChanges(), "nothing was generated")
 }
 
 // deep_equals is a registered generator name now, in the directive and in
 // configuration.
 func TestDeepEqualsIsARegisteredGeneratorName(t *testing.T) {
-	if !isGeneratorName("deep_equals") {
-		t.Fatal("deep_equals is not registered")
-	}
+	require.True(t, isGeneratorName("deep_equals"), "deep_equals is not registered")
 	names := GeneratorNames()
-	if len(names) != 3 {
-		t.Errorf("GeneratorNames() = %v, want three", names)
-	}
+	assert.Len(t, names, 3)
 	// Registry order decides the region's content, not the directive's order.
 	ordered := inRegistryOrder([]string{"deep_equals", "equals", "to_string"})
 	got := []string{ordered[0].Name(), ordered[1].Name(), ordered[2].Name()}
 	want := []string{"to_string", "equals", "deep_equals"}
 	for index := range want {
-		if got[index] != want[index] {
-			t.Errorf("order = %v, want %v", got, want)
-		}
+		assert.Equal(t, want[index], got[index])
 	}
 }
 
@@ -126,21 +105,15 @@ func TestDeepEqualsRoutesEveryFieldThroughTheHelper(t *testing.T) {
 	text := contents["a.gd"]
 	for _, field := range []string{"origin", "children", "table", "loose", "count"} {
 		want := "if not GDKitEquality.deep_equals(self." + field + ", p_other." + field + "):"
-		if !strings.Contains(text, want) {
-			t.Errorf("missing %q\ngot:\n%s", want, text)
-		}
+		assert.Contains(t, text, want)
 	}
-	if strings.Contains(text, "has_method") {
-		t.Error("the per-class method still dispatches inline; that belongs to the helper now")
-	}
+	assert.NotContains(t, text, "has_method", "the per-class method still dispatches inline; that belongs to the helper now")
 	for _, guard := range []string{
 		"if self == p_other:",
 		"if not p_other is Object:",
 		"if p_other.get_script() != get_script():",
 	} {
-		if !strings.Contains(text, guard) {
-			t.Errorf("guard %q was lost", guard)
-		}
+		assert.Contains(t, text, guard)
 	}
 }
 
@@ -149,7 +122,5 @@ func TestDeepEqualsComposesWithAnAncestorThroughTheHelper(t *testing.T) {
 		"base.gd":  "class_name Base\nextends RefCounted\n\n# gdkit:generate = deep_equals\nvar a: int\n",
 		"child.gd": "class_name Child\nextends Base\n\n# gdkit:generate = deep_equals\nvar b: int\n",
 	}))
-	if !strings.Contains(contents["child.gd"], "if not super.deep_equals(p_other):") {
-		t.Errorf("the super composition was lost\ngot:\n%s", contents["child.gd"])
-	}
+	assert.Contains(t, contents["child.gd"], "if not super.deep_equals(p_other):", "the super composition was lost")
 }

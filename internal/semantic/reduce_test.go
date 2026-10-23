@@ -8,15 +8,15 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdparser/ast"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAnalyzerReducesScalarAndCollectionLiterals(t *testing.T) {
 	source := sources(t, map[string]string{
 		"values.gd": "class_name Values\nfunc run():\n\tvar whole := 1\n\tvar decimal := 1.5\n\tvar text := \"text\"\n\tvar name := &\"name\"\n\tvar path := ^\"child\"\n\tvar truth := true\n\tvar nothing := null\n\tvar empty_array := []\n\tvar typed_array := [1, 2]\n\tvar nested_array := [[1], [1]]\n\tvar mixed_array := [1, \"two\"]\n\tvar variant_array := [null, null]\n\tvar unknown_array := [missing]\n\tvar mixed_unknown_array := [1, \"two\", missing]\n\tvar empty_dictionary := {}\n\tvar typed_dictionary := {\"one\": 1, \"two\": 2}\n\tvar variant_dictionary := {null: null}\n\tvar mixed_dictionary := {\"one\": 1, 2: 3}\n\tvar unknown_dictionary := {missing: 1}\n\tvar mixed_unknown_dictionary := {\"one\": 1, 2: 3, \"three\": missing}\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	file := source.File("values.gd")
 	for _, testCase := range []struct {
@@ -42,17 +42,14 @@ func TestAnalyzerReducesScalarAndCollectionLiterals(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
-			if !got.Equal(testCase.want) {
-				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
-			}
+			require.True(t, got.Equal(testCase.want))
 		})
 	}
 	for _, name := range []string{"unknown_array", "mixed_unknown_array", "unknown_dictionary", "mixed_unknown_dictionary"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
-			if got.Kind() != KindUnknown || got.Reason() == "" {
-				t.Fatalf("TypeOf(%s) = %s (%q), want reasoned Unknown", name, got, got.Reason())
-			}
+			require.Equal(t, KindUnknown, got.Kind())
+			require.NotEmpty(t, got.Reason())
 		})
 	}
 }
@@ -61,17 +58,14 @@ func TestAnalyzerFailsClosedForNonRepresentableCollectionComponents(t *testing.T
 	source := sources(t, map[string]string{
 		"collections.gd": "class_name Collections\nenum Choice { READY }\nfunc returns_void() -> void:\n\tpass\nfunc run(choice: Choice):\n\tvar void_array := [returns_void(), returns_void()]\n\tvar meta_array := [Node, Node]\n\tvar void_dictionary := {returns_void(): returns_void()}\n\tvar meta_dictionary := {Node: Node}\n\tvar enum_array := [Choice, Choice]\n\tvar enum_dictionary := {Choice: Choice}\n\tvar enum_value_array := [choice, choice]\n\tvar enum_value_dictionary := {choice: choice}\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	file := source.File("collections.gd")
 	for _, name := range []string{"void_array", "meta_array", "void_dictionary", "meta_dictionary", "enum_array", "enum_dictionary"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
-			if got.Kind() != KindUnknown || got.Reason() == "" {
-				t.Fatalf("TypeOf(%s) = %s (%q), want reasoned Unknown", name, got, got.Reason())
-			}
+			require.Equal(t, KindUnknown, got.Kind())
+			require.NotEmpty(t, got.Reason())
 		})
 	}
 	enumValue := Enum("collections.gd.Choice")
@@ -84,9 +78,7 @@ func TestAnalyzerFailsClosedForNonRepresentableCollectionComponents(t *testing.T
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
-			if !got.Equal(testCase.want) {
-				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
-			}
+			require.True(t, got.Equal(testCase.want))
 		})
 	}
 }
@@ -95,29 +87,25 @@ func TestAnalyzerFailsClosedForUnsupportedOrUnavailableExpressionForms(t *testin
 	source := sources(t, map[string]string{
 		"forms.gd": "class_name Forms\nfunc run():\n\tvar literal := 1\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	literal := reducerVariableValue(t, source.File("forms.gd"), "literal").(*ast.Literal)
 	literal.Kind = ast.LiteralKind("future_literal")
-	if got := analyzer.TypeOf(literal); got.Kind() != KindUnknown || got.Reason() != `literal kind "future_literal" is unsupported` {
-		t.Fatalf("future literal = %s (%q), want named reasoned Unknown", got, got.Reason())
-	}
+	got := analyzer.TypeOf(literal)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.Equal(t, `literal kind "future_literal" is unsupported`, got.Reason())
 
 	var unavailable *ast.Literal
-	if got := analyzer.TypeOf(unavailable); got.Kind() != KindUnknown || got.Reason() != "expression form *ast.Literal is unavailable" {
-		t.Fatalf("unavailable literal = %s (%q), want form-named Unknown", got, got.Reason())
-	}
+	got = analyzer.TypeOf(unavailable)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.Equal(t, "expression form *ast.Literal is unavailable", got.Reason())
 }
 
 func TestAnalyzerReducesOperatorsTernariesAndSubscripts(t *testing.T) {
 	source := sources(t, map[string]string{
 		"operators.gd": "class_name Operators\nfunc run():\n\tvar promise := 1\n\tvar unary := -1\n\tvar negated := !1\n\tvar awaited := await promise\n\tvar binary := 1 + 2\n\tvar widened := 1 + 2.0\n\tvar symbolic_and := true && false\n\tvar symbolic_or := true || false\n\tvar word_and := true and false\n\tvar word_or := true or false\n\tvar casted := 1 as float\n\tvar checked := 1 is int\n\tvar checked_not := 1 is not int\n\tvar not_in := 1 not in 2\n\tvar ternary_equal := 1 if true else 1\n\tvar ternary_float := 1 if true else 2.0\n\tvar ternary_conflict := 1 if true else \"two\"\n\tvar missing_operator := 1 * 2\n\tvar missing_unary := ~1\n\tvar meta_operand := Node + 1\n\tvar unsupported_cast := 1 as Missing\n\tvar typed_array: Array[int] = [1]\n\tvar array_item := typed_array[0]\n\tvar plain_array := []\n\tvar plain_item := plain_array[0]\n\tvar typed_dictionary: Dictionary[String, int] = {\"one\": 1}\n\tvar dictionary_item := typed_dictionary[\"one\"]\n\tvar dynamic: Variant\n\tvar variant_item := dynamic[0]\n\tvar missing_index := typed_array[missing]\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	file := source.File("operators.gd")
 	for _, testCase := range []struct {
@@ -147,17 +135,14 @@ func TestAnalyzerReducesOperatorsTernariesAndSubscripts(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
-			if !got.Equal(testCase.want) {
-				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
-			}
+			require.True(t, got.Equal(testCase.want))
 		})
 	}
 	for _, name := range []string{"missing_operator", "missing_unary", "meta_operand", "unsupported_cast", "missing_index"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
-			if got.Kind() != KindUnknown || got.Reason() == "" {
-				t.Fatalf("TypeOf(%s) = %s (%q), want reasoned Unknown", name, got, got.Reason())
-			}
+			require.Equal(t, KindUnknown, got.Kind())
+			require.NotEmpty(t, got.Reason())
 		})
 	}
 }
@@ -177,9 +162,7 @@ func run(text: String):
 	var unsupported := 1[0]
 `,
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	engine := reducerTestEngine(t)
 	analyzer := NewAnalyzer(source, engine)
 	file := source.File("strings.gd")
@@ -187,9 +170,7 @@ func run(text: String):
 	for _, name := range []string{"direct", "literal", "chained", "inferred_return"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
-			if !got.Equal(stringType) {
-				t.Fatalf("TypeOf(%s) = %s (%q), want selected-engine %s", name, got, got.Reason(), stringType)
-			}
+			require.True(t, got.Equal(stringType))
 		})
 	}
 
@@ -203,35 +184,32 @@ func run(text: String):
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
-			if got.Kind() != KindUnknown || got.Reason() != testCase.wantReason {
-				t.Fatalf("TypeOf(%s) = %s (%q), want Unknown %q", testCase.name, got, got.Reason(), testCase.wantReason)
-			}
+			require.Equal(t, KindUnknown, got.Kind())
+			require.Equal(t, testCase.wantReason, got.Reason())
 		})
 	}
 
 	direct := reducerVariableValue(t, file, "direct")
 	scope, ok := analyzer.scopes.ScopeAt(direct)
-	if !ok {
-		t.Fatal("direct String subscript has no recorded scope")
-	}
+	require.True(t, ok, "direct String subscript has no recorded scope")
 	result := analyzer.typeOfIn(direct, scope, reductionContextToken{})
-	if !result.typeValue.Equal(stringType) || result.member != nil || result.special != "" || result.hasConstructor || result.constructor.Kind() != KindUnknown {
-		t.Fatalf("direct String subscript retained provenance: %#v", result)
-	}
-	if repeated := analyzer.TypeOf(direct); !repeated.Equal(stringType) {
-		t.Fatalf("repeated String subscript = %s (%q), want %s", repeated, repeated.Reason(), stringType)
-	}
-	if _, cached := analyzer.cache[reductionKey{expression: direct, scope: scope.ID()}]; !cached {
-		t.Fatal("completed String subscript was not published to the shared cache")
-	}
+	require.True(t, result.typeValue.Equal(stringType))
+	require.Nil(t, result.member)
+	require.Empty(t, result.special)
+	require.False(t, result.hasConstructor)
+	require.Equal(t, KindUnknown, result.constructor.Kind())
+	repeated := analyzer.TypeOf(direct)
+	require.True(t, repeated.Equal(stringType))
+	_, cached := analyzer.cache[reductionKey{expression: direct, scope: scope.ID()}]
+	require.True(t, cached, "completed String subscript was not published to the shared cache")
 
 	foreignSource := sources(t, map[string]string{
 		"strings.gd": "class_name Strings\nfunc run(text: String):\n\tvar direct := text[0]\n",
 	})
 	foreign := reducerVariableValue(t, foreignSource.File("strings.gd"), "direct")
-	if got := analyzer.TypeOf(foreign); got.Kind() != KindUnknown || got.Reason() != "expression is not indexed by this source snapshot" {
-		t.Fatalf("foreign String subscript = %s (%q), want snapshot-bound Unknown", got, got.Reason())
-	}
+	got := analyzer.TypeOf(foreign)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.Equal(t, "expression is not indexed by this source snapshot", got.Reason())
 
 	cold := NewAnalyzer(source, engine)
 	const readers = 16
@@ -252,7 +230,7 @@ func run(text: String):
 	done.Wait()
 	close(problems)
 	for problem := range problems {
-		t.Errorf("concurrent cold String subscript = %s, want %s", problem, stringType)
+		assert.Fail(t, problem)
 	}
 }
 
@@ -260,16 +238,12 @@ func TestAnalyzerStringSubscriptRequiresSelectedEngineCanonicalType(t *testing.T
 	source := sources(t, map[string]string{
 		"strings.gd": "class_name Strings\nfunc run():\n\tvar literal := \"text\"[0]\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	expression := reducerVariableValue(t, source.File("strings.gd"), "literal")
 
 	missingBuilder := NewEngineBuilder()
 	missing, err := missingBuilder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	wrongKind := reducerTestEngine(t)
 	wrongKind.classes["String"] = Class("String", nil, false)
 	malformed := reducerTestEngine(t)
@@ -289,9 +263,8 @@ func TestAnalyzerStringSubscriptRequiresSelectedEngineCanonicalType(t *testing.T
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := NewAnalyzer(source, testCase.engine).TypeOf(expression)
-			if got.Kind() != KindUnknown || got.Reason() == "" {
-				t.Fatalf("String subscript = %s (%q), want reasoned Unknown", got, got.Reason())
-			}
+			require.Equal(t, KindUnknown, got.Kind())
+			require.NotEmpty(t, got.Reason())
 		})
 	}
 }
@@ -302,9 +275,7 @@ func TestAnalyzerReducesIdentifiersDeferredHeadersAndSuper(t *testing.T) {
 		"child.gd":       "class_name Child extends Base\nfunc same():\n\tvar bare := super()\nfunc caller():\n\tvar named_result := super.named()\n",
 		"identifiers.gd": "class_name Identifiers\nvar shadowed: String\nconst TOP := 1 + 2\nconst BROKEN: Missing = 1\nfunc helper() -> int:\n\tpass\nfunc values(inferred_default := 1 + 2, ordinary_default = 1 + 2, explicit_default: int = 1 + 2):\n\tvar top_use := TOP\n\tvar broken_use := BROKEN\n\tvar inferred := 1 + 2\n\tvar inferred_use := inferred\n\tvar dynamic = 1 + 2\n\tvar dynamic_use := dynamic\n\tvar explicit: float = 1\n\tvar explicit_use := explicit\n\tvar inferred_default_use := inferred_default\n\tvar ordinary_default_use := ordinary_default\n\tvar explicit_default_use := explicit_default\n\tvar inferred_method := helper\n\tvar inferred_method_call := inferred_method()\n\tvar before := later\n\tvar later := 1\n\tvar before_use := before\nfunc shadows(shadowed := 2):\n\tvar shadowed_use := shadowed\nfunc callable_default(callback := helper):\n\tvar callback_call := callback()\nfunc default_scope(late_default := later):\n\tvar later := 1\n\tvar late_default_use := late_default\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	identifiers := source.File("identifiers.gd")
 	for _, testCase := range []struct {
@@ -322,24 +293,22 @@ func TestAnalyzerReducesIdentifiersDeferredHeadersAndSuper(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, identifiers, testCase.name))
-			if !got.Equal(testCase.want) {
-				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
-			}
+			require.True(t, got.Equal(testCase.want))
 		})
 	}
-	if got := analyzer.TypeOf(reducerVariableValue(t, identifiers, "before_use")); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("use before declaration = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
-	if got := analyzer.TypeOf(reducerVariableValue(t, identifiers, "broken_use")); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("unresolved constant annotation = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
-	if got := analyzer.TypeOf(reducerVariableValue(t, identifiers, "late_default_use")); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("inferred default reduced in later use scope = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
+	got := analyzer.TypeOf(reducerVariableValue(t, identifiers, "before_use"))
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
+	got = analyzer.TypeOf(reducerVariableValue(t, identifiers, "broken_use"))
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
+	got = analyzer.TypeOf(reducerVariableValue(t, identifiers, "late_default_use"))
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
 	for _, name := range []string{"inferred_method_call", "callback_call"} {
-		if got := analyzer.TypeOf(reducerVariableValue(t, identifiers, name)); got.Kind() != KindUnknown || got.Reason() == "" {
-			t.Fatalf("deferred callable %s = %s (%q), want reasoned Unknown", name, got, got.Reason())
-		}
+		got = analyzer.TypeOf(reducerVariableValue(t, identifiers, name))
+		require.Equal(t, KindUnknown, got.Kind())
+		require.NotEmpty(t, got.Reason())
 	}
 
 	child := source.File("child.gd")
@@ -352,9 +321,7 @@ func TestAnalyzerReducesIdentifiersDeferredHeadersAndSuper(t *testing.T) {
 	} {
 		t.Run("super "+testCase.name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, child, testCase.name))
-			if !got.Equal(testCase.want) {
-				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
-			}
+			require.True(t, got.Equal(testCase.want))
 		})
 	}
 }
@@ -363,9 +330,7 @@ func TestAnalyzerReducesDeferredMemberHeaders(t *testing.T) {
 	source := sources(t, map[string]string{
 		"members.gd": "class_name Members\nconst LIMIT := 1 + 2\nvar inferred := 1 + 2\nvar dynamic = 1 + 2\nfunc values(other: Members):\n\tvar bare_inferred := inferred\n\tvar self_inferred := self.inferred\n\tvar other_inferred := other.inferred\n\tvar bare_limit := LIMIT\n\tvar self_limit := self.LIMIT\n\tvar other_limit := other.LIMIT\n\tvar bare_dynamic := dynamic\n\tvar self_dynamic := self.dynamic\n\tvar other_dynamic := other.dynamic\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	file := source.File("members.gd")
 	for _, testCase := range []struct {
@@ -384,9 +349,7 @@ func TestAnalyzerReducesDeferredMemberHeaders(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
-			if !got.Equal(testCase.want) {
-				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
-			}
+			require.True(t, got.Equal(testCase.want))
 		})
 	}
 }
@@ -395,9 +358,7 @@ func TestAnalyzerReducesMembersCallsAndDeferredSpecials(t *testing.T) {
 	source := sources(t, map[string]string{
 		"calls.gd": "class_name Calls\nvar node: Node\nvar dynamic: Variant\nvar callable: Callable\nfunc user() -> float:\n\tpass\nfunc omitted():\n\tpass\nfunc run():\n\tvar member := node.engine_method\n\tvar engine_property := node.engine_property\n\tvar engine_call := node.engine_method()\n\tvar user_call := user()\n\tvar omitted_call := omitted()\n\tvar dynamic_member := dynamic.anything\n\tvar dynamic_call := dynamic()\n\tvar callable_call := callable()\n\tvar missing_member := node.missing\n\tvar unknown_receiver := missing.member\n\tvar meta_member := Node.missing\n\tvar unknown_argument := user(missing)\n\tvar special_call := preload(\"res://thing.gd\")\n\tvar load_call := load(\"res://thing.gd\")\n\tvar constructor_call := Node()\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	file := source.File("calls.gd")
 	for _, testCase := range []struct {
@@ -414,17 +375,14 @@ func TestAnalyzerReducesMembersCallsAndDeferredSpecials(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
-			if !got.Equal(testCase.want) {
-				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
-			}
+			require.True(t, got.Equal(testCase.want))
 		})
 	}
 	for _, name := range []string{"callable_call", "missing_member", "unknown_receiver", "meta_member", "unknown_argument", "special_call", "load_call", "constructor_call"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
-			if got.Kind() != KindUnknown || got.Reason() == "" {
-				t.Fatalf("TypeOf(%s) = %s (%q), want reasoned Unknown", name, got, got.Reason())
-			}
+			require.Equal(t, KindUnknown, got.Kind())
+			require.NotEmpty(t, got.Reason())
 		})
 	}
 }
@@ -446,18 +404,14 @@ func TestAnalyzerReducesSchemaBackedBuiltinConstructors(t *testing.T) {
 		"local_shadow.gd":  "class_name LocalShadow\nfunc run():\n\tvar Vector2: Callable\n\tvar local_shadowed := Vector2()\n",
 		"member_shadow.gd": "class_name MemberShadow\nvar Vector2: Callable\nfunc run():\n\tvar member_shadowed := Vector2()\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("builtin constructor fixture did not parse: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "builtin constructor fixture did not parse")
 	engine := builtinConstructorTestEngine(t)
 	analyzer := NewAnalyzer(source, engine)
 	file := source.File("constructors.gd")
 	for index, name := range mandatory {
 		got := analyzer.TypeOf(reducerVariableValue(t, file, fmt.Sprintf("mandatory_%d", index)))
 		want := engine.ResolveType(name)
-		if !got.Equal(want) {
-			t.Errorf("%s constructor = %s (%q), want %s", name, got, got.Reason(), want)
-		}
+		assert.True(t, got.Equal(want))
 	}
 	for _, testCase := range []struct {
 		name string
@@ -475,29 +429,23 @@ func TestAnalyzerReducesSchemaBackedBuiltinConstructors(t *testing.T) {
 		{name: "shadowed", want: Variant()},
 	} {
 		got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
-		if !got.Equal(testCase.want) {
-			t.Errorf("%s = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
-		}
+		assert.True(t, got.Equal(testCase.want))
 	}
 	for _, name := range []string{"dormant", "missing", "unknown_argument", "bare", "bare_member", "bare_member_call", "member_chain_call"} {
 		got := analyzer.TypeOf(reducerVariableValue(t, file, name))
-		if got.Kind() != KindUnknown || got.Reason() == "" {
-			t.Errorf("%s = %s (%q), want reasoned Unknown", name, got, got.Reason())
-		}
+		assert.Equal(t, KindUnknown, got.Kind())
+		assert.NotEmpty(t, got.Reason())
 	}
 	for fileName, name := range map[string]string{
 		"local_shadow.gd":  "local_shadowed",
 		"member_shadow.gd": "member_shadowed",
 	} {
 		got := analyzer.TypeOf(reducerVariableValue(t, source.File(fileName), name))
-		if got.Kind() != KindUnknown || got.Reason() == "" {
-			t.Errorf("%s = %s (%q), want shadowed reasoned Unknown", name, got, got.Reason())
-		}
+		assert.Equal(t, KindUnknown, got.Kind())
+		assert.NotEmpty(t, got.Reason())
 	}
 	unknownArgument := analyzer.TypeOf(reducerVariableValue(t, file, "unknown_argument"))
-	if !strings.Contains(unknownArgument.Reason(), "not_retained") {
-		t.Fatalf("unknown constructor argument reason = %q, want originating identifier", unknownArgument.Reason())
-	}
+	require.Contains(t, unknownArgument.Reason(), "not_retained")
 }
 
 func TestAnalyzerKeepsBuiltinConstructorCapabilityEngineAndSnapshotBound(t *testing.T) {
@@ -506,13 +454,9 @@ func TestAnalyzerKeepsBuiltinConstructorCapabilityEngineAndSnapshotBound(t *test
 		source := sources(t, map[string]string{
 			"constructors.gd": "class_name BuiltinCalls\nfunc run():\n\tvar value := Vector2(1, 2)\n",
 		})
-		if failures := source.ParseFailures(); len(failures) != 0 {
-			t.Fatalf("builtin constructor fixture did not parse: %v", failures)
-		}
+		require.Empty(t, source.ParseFailures(), "builtin constructor fixture did not parse")
 		call, ok := reducerVariableValue(t, source.File("constructors.gd"), "value").(*ast.CallExpression)
-		if !ok {
-			t.Fatalf("value expression = %T, want CallExpression", reducerVariableValue(t, source.File("constructors.gd"), "value"))
-		}
+		require.True(t, ok)
 		return source, call
 	}
 
@@ -520,70 +464,52 @@ func TestAnalyzerKeepsBuiltinConstructorCapabilityEngineAndSnapshotBound(t *test
 	engine := builtinConstructorTestEngine(t)
 	analyzer := NewAnalyzer(source, engine)
 	want := engine.ResolveType("Vector2")
-	if got := analyzer.TypeOf(call.Callee); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("bare constructor queried first = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
+	got := analyzer.TypeOf(call.Callee)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
 	for attempt := 0; attempt < 2; attempt++ {
-		if got := analyzer.TypeOf(call); !got.Equal(want) {
-			t.Fatalf("cached constructor = %s (%q), want %s", got, got.Reason(), want)
-		}
+		got = analyzer.TypeOf(call)
+		require.True(t, got.Equal(want))
 	}
 	calleeScope, ok := analyzer.scopes.ScopeAt(call.Callee)
-	if !ok {
-		t.Fatal("constructor callee has no scope")
-	}
+	require.True(t, ok, "constructor callee has no scope")
 	callScope, ok := analyzer.scopes.ScopeAt(call)
-	if !ok {
-		t.Fatal("constructor call has no scope")
-	}
+	require.True(t, ok, "constructor call has no scope")
 	for _, token := range []reductionContextToken{{overlay: &reductionOverlay{}}, {overlay: &reductionOverlay{}}} {
 		got := analyzer.typeOfIn(call, callScope, token)
-		if !got.typeValue.Equal(want) {
-			t.Fatalf("overlay constructor = %s (%q), want %s", got.typeValue, got.typeValue.Reason(), want)
-		}
-		if _, cached := analyzer.cache[reductionKey{expression: call, scope: callScope.ID(), token: token}]; !cached {
-			t.Fatal("constructor overlay result did not retain distinct cache identity")
-		}
+		require.True(t, got.typeValue.Equal(want))
+		_, cached := analyzer.cache[reductionKey{expression: call, scope: callScope.ID(), token: token}]
+		require.True(t, cached, "constructor overlay result did not retain distinct cache identity")
 	}
 	original := analyzer.typeOfIn(call.Callee, calleeScope, reductionContextToken{})
 	cloned := cloneReductionResult(original)
-	if original.builtinConstructor == nil || cloned.builtinConstructor == nil || original.builtinConstructor == cloned.builtinConstructor {
-		t.Fatal("cloneReductionResult did not defensively copy builtin constructor provenance")
-	}
+	require.NotNil(t, original.builtinConstructor)
+	require.NotNil(t, cloned.builtinConstructor)
+	require.False(t, original.builtinConstructor == cloned.builtinConstructor)
 	cycleSource, cycleCall := parse(t)
 	cycleAnalyzer := NewAnalyzer(cycleSource, builtinConstructorTestEngine(t))
 	cycleCallScope, ok := cycleAnalyzer.scopes.ScopeAt(cycleCall)
-	if !ok {
-		t.Fatal("cycle constructor call has no scope")
-	}
+	require.True(t, ok, "cycle constructor call has no scope")
 	cycleCalleeScope, ok := cycleAnalyzer.scopes.ScopeAt(cycleCall.Callee)
-	if !ok {
-		t.Fatal("cycle constructor callee has no scope")
-	}
+	require.True(t, ok, "cycle constructor callee has no scope")
 	cycleKey := reductionKey{expression: cycleCall.Callee, scope: cycleCalleeScope.ID()}
 	request := &reductionRequest{active: map[reductionKey]bool{cycleKey: true}}
 	cycled := cycleAnalyzer.reduce(cycleCall, reductionContext{scope: cycleCallScope}, request)
-	if cycled.typeValue.Kind() != KindUnknown || cycled.typeValue.Reason() != "expression reduction cycle" {
-		t.Fatalf("cycle-tainted constructor = %s (%q), want cycle Unknown", cycled.typeValue, cycled.typeValue.Reason())
-	}
-	if got := cycleAnalyzer.TypeOf(cycleCall); !got.Equal(cycleAnalyzer.engine.ResolveType("Vector2")) {
-		t.Fatalf("clean read after cycle-tainted constructor = %s (%q)", got, got.Reason())
-	}
+	require.Equal(t, KindUnknown, cycled.typeValue.Kind())
+	require.Equal(t, "expression reduction cycle", cycled.typeValue.Reason())
+	got = cycleAnalyzer.TypeOf(cycleCall)
+	require.True(t, got.Equal(cycleAnalyzer.engine.ResolveType("Vector2")))
 
 	foreignSource, foreignCall := parse(t)
-	if got := analyzer.TypeOf(foreignCall); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("foreign parsed call = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
+	got = analyzer.TypeOf(foreignCall)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
 	foreignEngine := builtinConstructorTestEngine(t)
 	foreignAnalyzer := NewAnalyzer(foreignSource, engine)
 	foreignCalleeScope, ok := foreignAnalyzer.scopes.ScopeAt(foreignCall.Callee)
-	if !ok {
-		t.Fatal("foreign constructor callee has no scope")
-	}
+	require.True(t, ok, "foreign constructor callee has no scope")
 	foreignResult, ok := foreignEngine.builtinConstructor("Vector2")
-	if !ok {
-		t.Fatal("foreign Engine has no Vector2 constructor")
-	}
+	require.True(t, ok, "foreign Engine has no Vector2 constructor")
 	foreignAnalyzer.cache[reductionKey{expression: foreignCall.Callee, scope: foreignCalleeScope.ID()}] = reductionResult{
 		typeValue:      Unknown(`engine type "Vector2" has no class-object representation`),
 		constructor:    foreignResult,
@@ -595,16 +521,14 @@ func TestAnalyzerKeepsBuiltinConstructorCapabilityEngineAndSnapshotBound(t *test
 			result: foreignResult,
 		},
 	}
-	if got := foreignAnalyzer.TypeOf(foreignCall); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "another Engine") {
-		t.Fatalf("foreign Engine capability = %s (%q), want engine-bound Unknown", got, got.Reason())
-	}
+	got = foreignAnalyzer.TypeOf(foreignCall)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.Contains(t, got.Reason(), "another Engine")
 
 	invalidSource, invalidCall := parse(t)
 	invalid := NewAnalyzer(invalidSource, engine)
 	invalidCalleeScope, ok := invalid.scopes.ScopeAt(invalidCall.Callee)
-	if !ok {
-		t.Fatal("invalid constructor callee has no scope")
-	}
+	require.True(t, ok, "invalid constructor callee has no scope")
 	invalid.cache[reductionKey{expression: invalidCall.Callee, scope: invalidCalleeScope.ID()}] = reductionResult{
 		typeValue:      Unknown(`engine type "Vector2" has no class-object representation`),
 		constructor:    Builtin("float"),
@@ -616,9 +540,9 @@ func TestAnalyzerKeepsBuiltinConstructorCapabilityEngineAndSnapshotBound(t *test
 			result: Builtin("float"),
 		},
 	}
-	if got := invalid.TypeOf(invalidCall); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "canonical") {
-		t.Fatalf("malformed constructor capability = %s (%q), want canonical-type Unknown", got, got.Reason())
-	}
+	got = invalid.TypeOf(invalidCall)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.Contains(t, got.Reason(), "canonical")
 
 	coldSource, coldCall := parse(t)
 	cold := NewAnalyzer(coldSource, builtinConstructorTestEngine(t))
@@ -641,47 +565,32 @@ func TestAnalyzerKeepsBuiltinConstructorCapabilityEngineAndSnapshotBound(t *test
 	done.Wait()
 	close(problems)
 	for problem := range problems {
-		t.Errorf("concurrent cold builtin constructor = %s", problem)
+		assert.Fail(t, problem)
 	}
 }
 
 func TestAnalyzerRejectsBuiltinConstructorCategoryCollisions(t *testing.T) {
 	builder := NewEngineBuilder()
 	for _, name := range []string{"Vector2", "Collision", "int"} {
-		if err := builder.AddBuiltin(name); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(name))
 	}
 	for _, name := range []string{"Vector2", "Collision"} {
-		if err := builder.AddBuiltinConstructor(name); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltinConstructor(name))
 	}
-	if err := builder.AddClass("Object", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddClass("RefCounted", "Object"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddUtility("Vector2", "int", nil, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddSingleton("Collision", "Object"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddClass("Object", ""))
+	require.NoError(t, builder.AddClass("RefCounted", "Object"))
+	require.NoError(t, builder.AddUtility("Vector2", "int", nil, false))
+	require.NoError(t, builder.AddSingleton("Collision", "Object"))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	source := sources(t, map[string]string{
 		"collisions.gd": "class_name Collisions\nfunc run():\n\tvar utility_collision := Vector2()\n\tvar singleton_collision := Collision()\n",
 	})
 	analyzer := NewAnalyzer(source, engine)
 	for _, name := range []string{"utility_collision", "singleton_collision"} {
 		got := analyzer.TypeOf(reducerVariableValue(t, source.File("collisions.gd"), name))
-		if got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "multiple categories") {
-			t.Errorf("%s = %s (%q), want collision Unknown", name, got, got.Reason())
-		}
+		assert.Equal(t, KindUnknown, got.Kind())
+		assert.Contains(t, got.Reason(), "multiple categories")
 	}
 }
 
@@ -694,9 +603,7 @@ func TestAnalyzerResolvesLanguageSpecialResourcesAndMetaMembers(t *testing.T) {
 		"broken.gd":       "class_name Broken extends Missing\n",
 		"loader.gd":       "class_name Loader\nvar actor_instance: Actor\nfunc shadow(load):\n\tvar shadowed := load(\"res://shadowed.gd\")\nfunc run():\n\tvar script := preload(\"res://actors/enemy.gd\")\n\tvar raw_script := load(r\"res://actors/enemy.gd\")\n\tvar triple_script := load(\"\"\"res://actors/enemy.gd\"\"\")\n\tvar created := preload(\"res://actors/enemy.gd\").new()\n\tvar scene := load(\"res://levels/arena.tscn\")\n\tvar scene_instance := load(\"res://levels/arena.tscn\").instantiate()\n\tvar text := preload(\"res://data/settings.tres\")\n\tvar static_method := Actor.static_method()\n\tvar static_value := Actor.static_value\n\tvar enum_type := Actor.Mode\n\tvar enum_type_array := [Actor.Mode]\n\tvar enum_type_dictionary := {Actor.Mode: 1}\n\tvar resource_enum_type := preload(\"res://actors/enemy.gd\").Mode\n\tvar resource_enum_type_array := [preload(\"res://actors/enemy.gd\").Mode]\n\tvar enum_value := Actor.READY\n\tvar inner := Actor.Inner\n\tvar actor := Actor.new()\n\tvar incomplete := Broken.new()\n\tvar node := Node.new()\n\tvar engine_static := Node.engine_static()\n\tvar resource_loader := ResourceLoader.load(\"res://resource-loader.gd\")\n\tvar missing := preload(\"res://gone.gd\")\n\tvar parse_failed := load(\"res://actors/broken.gd\")\n\tvar string_name := load(&\"res://string-name.gd\")\n\tvar wrong_arity := load(\"res://wrong-arity.gd\", \"res://wrong-arity.gd\")\n\tvar named := \"res://dynamic.gd\"\n\tvar dynamic_load := load(named)\n\tvar interpolated_load := load(\"res://%s.gd\" % \"dynamic\")\n\tvar unknown_argument := load(missing_argument)\n\tvar load_alias := load\n\tvar alias_load := load_alias(\"res://alias.gd\")\n\tvar instance := Actor.instance_value\n\tvar instance_method := Actor.instance_method()\n\tvar invalid_new := actor_instance.new()\n\tvar direct := Actor()\n",
 	})
-	if failures := base.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, base.ParseFailures(), "real parser fixture failed")
 	source := &resourceTestSources{
 		memorySources: base,
 		resolutions: map[string]ResourceResolution{
@@ -710,13 +617,9 @@ func TestAnalyzerResolvesLanguageSpecialResourcesAndMetaMembers(t *testing.T) {
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	file := source.File("loader.gd")
 	actor, ok := analyzer.interfaces.Class("actors/enemy.gd")
-	if !ok {
-		t.Fatal("Actor interface is unavailable")
-	}
+	require.True(t, ok, "Actor interface is unavailable")
 	broken, ok := analyzer.interfaces.Class("broken.gd")
-	if !ok {
-		t.Fatal("Broken interface is unavailable")
-	}
+	require.True(t, ok, "Broken interface is unavailable")
 	for _, testCase := range []struct {
 		name string
 		want Type
@@ -746,36 +649,27 @@ func TestAnalyzerResolvesLanguageSpecialResourcesAndMetaMembers(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
-			if !got.Equal(testCase.want) {
-				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
-			}
+			require.True(t, got.Equal(testCase.want))
 		})
 	}
 	for _, name := range []string{"missing", "parse_failed", "string_name", "wrong_arity", "dynamic_load", "interpolated_load", "unknown_argument", "alias_load", "instance", "instance_method", "invalid_new", "direct"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
-			if got.Kind() != KindUnknown || got.Reason() == "" {
-				t.Fatalf("TypeOf(%s) = %s (%q), want reasoned Unknown", name, got, got.Reason())
-			}
+			require.Equal(t, KindUnknown, got.Kind())
+			require.NotEmpty(t, got.Reason())
 		})
 	}
 	for _, target := range []string{"res://shadowed.gd", "res://resource-loader.gd", "res://string-name.gd", "res://wrong-arity.gd", "res://dynamic.gd", "res://%s.gd", "res://alias.gd"} {
-		if got := source.callsFor("loader.gd", target); got != 0 {
-			t.Fatalf("ordinary/non-literal loader %q queried ResourceResolver %d times", target, got)
-		}
+		require.Equal(t, 0, source.callsFor("loader.gd", target))
 	}
 	cacheSource := &resourceTestSources{memorySources: base, resolutions: source.resolutions}
 	cacheAnalyzer := NewAnalyzer(cacheSource, reducerTestEngine(t))
 	cacheExpression := reducerVariableValue(t, file, "script")
 	for attempt := 0; attempt < 2; attempt++ {
 		got := cacheAnalyzer.TypeOf(cacheExpression)
-		if !got.Equal(Class("actors/enemy.gd", nil, true)) {
-			t.Fatalf("cached resource reduction = %s (%q), want Actor meta class", got, got.Reason())
-		}
+		require.True(t, got.Equal(Class("actors/enemy.gd", nil, true)))
 	}
-	if got := cacheSource.callsFor("loader.gd", "res://actors/enemy.gd"); got != 1 {
-		t.Fatalf("resource resolver calls = %d, want one completed-result cache lookup", got)
-	}
+	require.Equal(t, 1, cacheSource.callsFor("loader.gd", "res://actors/enemy.gd"))
 }
 
 func TestAnalyzerReducesNamedEnumObjectMembers(t *testing.T) {
@@ -800,9 +694,7 @@ func run():
 	var arbitrary_member := arbitrary.IDLE
 `,
 	})
-	if failures := base.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, base.ParseFailures(), "real parser fixture failed")
 	source := &resourceTestSources{
 		memorySources: base,
 		resolutions: map[string]ResourceResolution{
@@ -827,19 +719,15 @@ func run():
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, testCase.name))
-			if !got.Equal(testCase.want) {
-				t.Fatalf("TypeOf(%s) = %s (%q), want %s", testCase.name, got, got.Reason(), testCase.want)
-			}
+			require.True(t, got.Equal(testCase.want))
 		})
 	}
 	missing := analyzer.TypeOf(reducerVariableValue(t, file, "missing"))
-	if missing.Kind() != KindUnknown || !strings.Contains(missing.Reason(), `member "MISSING" is absent from named enum`) {
-		t.Fatalf("missing named-enum member = %s (%q), want enum-specific reasoned Unknown", missing, missing.Reason())
-	}
+	require.Equal(t, KindUnknown, missing.Kind())
+	require.Contains(t, missing.Reason(), `member "MISSING" is absent from named enum`)
 	arbitrary := analyzer.TypeOf(reducerVariableValue(t, file, "arbitrary_member"))
-	if arbitrary.Kind() != KindUnknown || !strings.Contains(arbitrary.Reason(), `member "IDLE" is absent from Dictionary`) {
-		t.Fatalf("arbitrary Dictionary member = %s (%q), want ordinary Dictionary Unknown", arbitrary, arbitrary.Reason())
-	}
+	require.Equal(t, KindUnknown, arbitrary.Kind())
+	require.Contains(t, arbitrary.Reason(), `member "IDLE" is absent from Dictionary`)
 }
 
 func TestAnalyzerKeepsNamedEnumProvenanceSnapshotAndCacheBound(t *testing.T) {
@@ -850,91 +738,68 @@ func TestAnalyzerKeepsNamedEnumProvenanceSnapshotAndCacheBound(t *testing.T) {
 	parse := func(t *testing.T) (*memorySources, *ast.MemberExpression, *ast.MemberExpression) {
 		t.Helper()
 		source := sources(t, program)
-		if failures := source.ParseFailures(); len(failures) != 0 {
-			t.Fatalf("real parser fixture failed: %v", failures)
-		}
+		require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 		selected, ok := reducerVariableValue(t, source.File("loader.gd"), "selected").(*ast.MemberExpression)
-		if !ok {
-			t.Fatalf("selected expression = %T, want MemberExpression", reducerVariableValue(t, source.File("loader.gd"), "selected"))
-		}
+		require.True(t, ok)
 		enumObject, ok := selected.Object.(*ast.MemberExpression)
-		if !ok {
-			t.Fatalf("selected receiver = %T, want MemberExpression", selected.Object)
-		}
+		require.True(t, ok)
 		return source, selected, enumObject
 	}
 	want := Enum("actor.gd.Mode")
 
 	source, selected, enumObject := parse(t)
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
-	if got := analyzer.TypeOf(enumObject); !got.Equal(Dictionary(nil, nil)) {
-		t.Fatalf("enum object queried first = %s (%q), want Dictionary", got, got.Reason())
-	}
+	got := analyzer.TypeOf(enumObject)
+	require.True(t, got.Equal(Dictionary(nil, nil)))
 	for attempt := 0; attempt < 2; attempt++ {
-		if got := analyzer.TypeOf(selected); !got.Equal(want) {
-			t.Fatalf("cached named enum selection = %s (%q), want %s", got, got.Reason(), want)
-		}
+		got = analyzer.TypeOf(selected)
+		require.True(t, got.Equal(want))
 	}
 	scope, ok := analyzer.scopes.ScopeAt(selected)
-	if !ok {
-		t.Fatal("selected expression has no recorded scope")
-	}
+	require.True(t, ok, "selected expression has no recorded scope")
 	for _, token := range []reductionContextToken{
 		{overlay: &reductionOverlay{}},
 		{overlay: &reductionOverlay{}},
 	} {
-		if got := analyzer.typeOfIn(selected, scope, token); !got.typeValue.Equal(want) {
-			t.Fatalf("overlay named enum selection = %s (%q), want %s", got.typeValue, got.typeValue.Reason(), want)
-		}
-		if _, cached := analyzer.cache[reductionKey{expression: selected, scope: scope.ID(), token: token}]; !cached {
-			t.Fatal("named enum overlay result did not retain its distinct cache identity")
-		}
+		got := analyzer.typeOfIn(selected, scope, token)
+		require.True(t, got.typeValue.Equal(want))
+		_, cached := analyzer.cache[reductionKey{expression: selected, scope: scope.ID(), token: token}]
+		require.True(t, cached, "named enum overlay result did not retain its distinct cache identity")
 	}
 
 	cloneSource, _, cloneEnumObject := parse(t)
 	cloneAnalyzer := NewAnalyzer(cloneSource, reducerTestEngine(t))
 	cloneScope, ok := cloneAnalyzer.scopes.ScopeAt(cloneEnumObject)
-	if !ok {
-		t.Fatal("enum object has no recorded scope")
-	}
+	require.True(t, ok, "enum object has no recorded scope")
 	original := cloneAnalyzer.typeOfIn(cloneEnumObject, cloneScope, reductionContextToken{})
 	cloned := cloneReductionResult(original)
-	if original.namedEnumObject == nil || cloned.namedEnumObject == nil || original.namedEnumObject == cloned.namedEnumObject {
-		t.Fatal("cloneReductionResult did not defensively copy named enum provenance")
-	}
-	if cloned.namedEnumObject.set != original.namedEnumObject.set || cloned.namedEnumObject.declaration != original.namedEnumObject.declaration {
-		t.Fatal("cloneReductionResult changed immutable named enum identity")
-	}
+	require.NotNil(t, original.namedEnumObject)
+	require.NotNil(t, cloned.namedEnumObject)
+	require.False(t, original.namedEnumObject == cloned.namedEnumObject)
+	require.True(t, cloned.namedEnumObject.set == original.namedEnumObject.set)
+	require.True(t, cloned.namedEnumObject.declaration == original.namedEnumObject.declaration)
 
 	cycleSource, cycleSelected, cycleEnumObject := parse(t)
 	cycleAnalyzer := NewAnalyzer(cycleSource, reducerTestEngine(t))
 	cycleScope, ok := cycleAnalyzer.scopes.ScopeAt(cycleSelected)
-	if !ok {
-		t.Fatal("cycle fixture selected expression has no scope")
-	}
+	require.True(t, ok, "cycle fixture selected expression has no scope")
 	cycleEnumScope, ok := cycleAnalyzer.scopes.ScopeAt(cycleEnumObject)
-	if !ok {
-		t.Fatal("cycle fixture enum object has no scope")
-	}
+	require.True(t, ok, "cycle fixture enum object has no scope")
 	cycleKey := reductionKey{expression: cycleEnumObject, scope: cycleEnumScope.ID()}
 	request := &reductionRequest{active: map[reductionKey]bool{cycleKey: true}}
 	cycled := cycleAnalyzer.reduce(cycleSelected, reductionContext{scope: cycleScope}, request)
-	if cycled.typeValue.Kind() != KindUnknown || cycled.typeValue.Reason() != "expression reduction cycle" {
-		t.Fatalf("cycle-tainted named enum selection = %s (%q), want cycle Unknown", cycled.typeValue, cycled.typeValue.Reason())
-	}
-	if got := cycleAnalyzer.TypeOf(cycleSelected); !got.Equal(want) {
-		t.Fatalf("clean read after cycle-tainted request = %s (%q), want %s", got, got.Reason(), want)
-	}
+	require.Equal(t, KindUnknown, cycled.typeValue.Kind())
+	require.Equal(t, "expression reduction cycle", cycled.typeValue.Reason())
+	got = cycleAnalyzer.TypeOf(cycleSelected)
+	require.True(t, got.Equal(want))
 
 	foreignSource, foreignSelected, foreignEnumObject := parse(t)
 	foreignAnalyzer := NewAnalyzer(foreignSource, reducerTestEngine(t))
-	if got := analyzer.TypeOf(foreignSelected); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("foreign parsed expression = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
+	got = analyzer.TypeOf(foreignSelected)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
 	foreignScope, ok := foreignAnalyzer.scopes.ScopeAt(foreignEnumObject)
-	if !ok {
-		t.Fatal("foreign enum object has no scope")
-	}
+	require.True(t, ok, "foreign enum object has no scope")
 	foreignKey := reductionKey{expression: foreignEnumObject, scope: foreignScope.ID()}
 	foreignAnalyzer.cache[foreignKey] = reductionResult{
 		typeValue:          Dictionary(nil, nil),
@@ -942,24 +807,20 @@ func TestAnalyzerKeepsNamedEnumProvenanceSnapshotAndCacheBound(t *testing.T) {
 		hasNamedEnumObject: true,
 	}
 	foreign := foreignAnalyzer.TypeOf(foreignSelected)
-	if foreign.Kind() != KindUnknown || !strings.Contains(foreign.Reason(), "another interface set") {
-		t.Fatalf("foreign cached provenance = %s (%q), want interface-specific Unknown", foreign, foreign.Reason())
-	}
+	require.Equal(t, KindUnknown, foreign.Kind())
+	require.Contains(t, foreign.Reason(), "another interface set")
 
 	invalidSource, invalidSelected, invalidEnumObject := parse(t)
 	invalidAnalyzer := NewAnalyzer(invalidSource, reducerTestEngine(t))
 	invalidScope, ok := invalidAnalyzer.scopes.ScopeAt(invalidEnumObject)
-	if !ok {
-		t.Fatal("invalid-cache enum object has no scope")
-	}
+	require.True(t, ok, "invalid-cache enum object has no scope")
 	invalidAnalyzer.cache[reductionKey{expression: invalidEnumObject, scope: invalidScope.ID()}] = reductionResult{
 		typeValue:          Dictionary(nil, nil),
 		hasNamedEnumObject: true,
 	}
 	invalid := invalidAnalyzer.TypeOf(invalidSelected)
-	if invalid.Kind() != KindUnknown || !strings.Contains(invalid.Reason(), "provenance is unavailable") {
-		t.Fatalf("invalid cached provenance = %s (%q), want provenance-specific Unknown", invalid, invalid.Reason())
-	}
+	require.Equal(t, KindUnknown, invalid.Kind())
+	require.Contains(t, invalid.Reason(), "provenance is unavailable")
 
 	coldSource, coldSelected, _ := parse(t)
 	cold := NewAnalyzer(coldSource, reducerTestEngine(t))
@@ -981,7 +842,7 @@ func TestAnalyzerKeepsNamedEnumProvenanceSnapshotAndCacheBound(t *testing.T) {
 	done.Wait()
 	close(problems)
 	for problem := range problems {
-		t.Errorf("concurrent cold named enum selection = %s, want %s", problem, want)
+		assert.Fail(t, problem)
 	}
 }
 
@@ -989,14 +850,12 @@ func TestAnalyzerFailsClosedForUnavailableInvalidAndUnsupportedResourceEvidence(
 	base := sources(t, map[string]string{
 		"loader.gd": "class_name Loader\nfunc run():\n\tvar unavailable := load(\"res://levels/main.tscn\")\n\tvar invalid := load(\"res://invalid.tres\")\n\tvar mismatched := load(\"res://mismatched.tres\")\n\tvar wrong_provenance := load(\"res://wrong-provenance.gd\")\n\tvar scene := load(\"res://levels/main.tscn\")\n\tvar text := load(\"res://theme.tres\")\n",
 	})
-	if failures := base.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, base.ParseFailures(), "real parser fixture failed")
 	minimal := resourceMinimalEngine(t)
 	withoutResolver := NewAnalyzer(base, minimal)
-	if got := withoutResolver.TypeOf(reducerVariableValue(t, base.File("loader.gd"), "unavailable")); got.Kind() != KindUnknown || !strings.Contains(got.Reason(), "resolver") {
-		t.Fatalf("unavailable resolver = %s (%q), want resolver-specific Unknown", got, got.Reason())
-	}
+	got := withoutResolver.TypeOf(reducerVariableValue(t, base.File("loader.gd"), "unavailable"))
+	require.Equal(t, KindUnknown, got.Kind())
+	require.Contains(t, got.Reason(), "resolver")
 	source := &resourceTestSources{
 		memorySources: base,
 		resolutions: map[string]ResourceResolution{
@@ -1012,9 +871,8 @@ func TestAnalyzerFailsClosedForUnavailableInvalidAndUnsupportedResourceEvidence(
 	for _, name := range []string{"invalid", "mismatched", "wrong_provenance", "scene", "text"} {
 		t.Run(name, func(t *testing.T) {
 			got := analyzer.TypeOf(reducerVariableValue(t, file, name))
-			if got.Kind() != KindUnknown || strings.TrimSpace(got.Reason()) == "" {
-				t.Fatalf("TypeOf(%s) = %s (%q), want reasoned Unknown", name, got, got.Reason())
-			}
+			require.Equal(t, KindUnknown, got.Kind())
+			require.NotEmpty(t, strings.TrimSpace(got.Reason()))
 		})
 	}
 }
@@ -1035,14 +893,11 @@ func TestReducerMemberLookupStateClosure(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			got := reduceMemberLookup(Class("Node", nil, false), "value", testCase.lookup)
 			if testCase.wantReason != "" {
-				if got.typeValue.Kind() != KindUnknown || got.typeValue.Reason() != testCase.wantReason {
-					t.Fatalf("result = %s (%q), want Unknown(%q)", got.typeValue, got.typeValue.Reason(), testCase.wantReason)
-				}
+				require.Equal(t, KindUnknown, got.typeValue.Kind())
+				require.Equal(t, testCase.wantReason, got.typeValue.Reason())
 				return
 			}
-			if !got.typeValue.Equal(testCase.want) {
-				t.Fatalf("result = %s (%q), want %s", got.typeValue, got.typeValue.Reason(), testCase.want)
-			}
+			require.True(t, got.typeValue.Equal(testCase.want))
 		})
 	}
 }
@@ -1051,20 +906,16 @@ func TestAnalyzerHandlesLambdaNodePathAndPatternOnlyForms(t *testing.T) {
 	source := sources(t, map[string]string{
 		"forms.gd": "class_name Forms\nfunc run(value):\n\tvar closure = func(default := 1 + 2): return default\n\tvar closure_unknown = func(default := missing): return default\n\tvar shortcut = $Child\n\tvar cast = value as int\n\tmatch value:\n\t\t[var captured, _, ..]:\n\t\t\tpass\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	file := source.File("forms.gd")
-	if got := analyzer.TypeOf(reducerVariableValue(t, file, "closure")); !got.Equal(Callable()) {
-		t.Fatalf("lambda = %s (%q), want Callable", got, got.Reason())
-	}
-	if got := analyzer.TypeOf(reducerVariableValue(t, file, "closure_unknown")); !got.Equal(Callable()) {
-		t.Fatalf("lambda with unavailable default = %s (%q), want Callable", got, got.Reason())
-	}
-	if got := analyzer.TypeOf(reducerVariableValue(t, file, "shortcut")); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("node-path shorthand = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
+	got := analyzer.TypeOf(reducerVariableValue(t, file, "closure"))
+	require.True(t, got.Equal(Callable()))
+	got = analyzer.TypeOf(reducerVariableValue(t, file, "closure_unknown"))
+	require.True(t, got.Equal(Callable()))
+	got = analyzer.TypeOf(reducerVariableValue(t, file, "shortcut"))
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
 
 	var typeExpression ast.Expression
 	patterns := []ast.Expression{}
@@ -1077,19 +928,15 @@ func TestAnalyzerHandlesLambdaNodePathAndPatternOnlyForms(t *testing.T) {
 		}
 		return true
 	})
-	if typeExpression == nil {
-		t.Fatal("real parser fixture did not produce TypeExpression")
-	}
-	if got := analyzer.TypeOf(typeExpression); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("TypeExpression as value = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
-	if len(patterns) != 3 {
-		t.Fatalf("real parser fixture patterns = %d, want binding/wildcard/rest", len(patterns))
-	}
+	require.NotNil(t, typeExpression)
+	got = analyzer.TypeOf(typeExpression)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
+	require.Len(t, patterns, 3)
 	for _, pattern := range patterns {
-		if got := analyzer.TypeOf(pattern); got.Kind() != KindUnknown || got.Reason() == "" {
-			t.Errorf("%T as value = %s (%q), want reasoned Unknown", pattern, got, got.Reason())
-		}
+		got = analyzer.TypeOf(pattern)
+		assert.Equal(t, KindUnknown, got.Kind())
+		assert.NotEmpty(t, got.Reason())
 	}
 }
 
@@ -1099,88 +946,54 @@ func TestAnalyzerIsSnapshotBoundCachesCompletedResultsAndTerminatesCycles(t *tes
 	})
 	file := source.File("cache.gd")
 	before, err := json.Marshal(file)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	after, err := json.Marshal(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(before) != string(after) {
-		t.Fatal("NewAnalyzer mutated the parsed AST")
-	}
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after), "NewAnalyzer mutated the parsed AST")
 
 	expression := reducerVariableValue(t, file, "expression")
 	scope, ok := analyzer.scopes.ScopeAt(expression)
-	if !ok {
-		t.Fatal("expression has no recorded scope")
-	}
+	require.True(t, ok, "expression has no recorded scope")
 	otherExpression := reducerVariableValue(t, file, "cycle")
 	otherScope, ok := analyzer.scopes.ScopeAt(otherExpression)
-	if !ok || otherScope.ID() == scope.ID() {
-		t.Fatal("fixture did not produce a distinct recorded lexical scope")
-	}
-	if wrongContext := analyzer.typeOfIn(expression, otherScope, reductionContextToken{}); wrongContext.typeValue.Kind() != KindUnknown || wrongContext.typeValue.Reason() != "expression scope does not match this analyzer snapshot" {
-		t.Fatalf("mismatched internal context = %s (%q), want scope-bound Unknown", wrongContext.typeValue, wrongContext.typeValue.Reason())
-	}
+	require.True(t, ok)
+	require.False(t, otherScope.ID() == scope.ID(), "fixture did not produce a distinct recorded lexical scope")
+	wrongContext := analyzer.typeOfIn(expression, otherScope, reductionContextToken{})
+	require.Equal(t, KindUnknown, wrongContext.typeValue.Kind())
+	require.Equal(t, "expression scope does not match this analyzer snapshot", wrongContext.typeValue.Reason())
 	base := analyzer.typeOfIn(expression, scope, reductionContextToken{})
-	if !base.typeValue.Equal(Builtin("int")) {
-		t.Fatalf("base reduction = %s (%q), want int", base.typeValue, base.typeValue.Reason())
-	}
-	if repeated := analyzer.TypeOf(expression); !repeated.Equal(base.typeValue) || repeated.Reason() != base.typeValue.Reason() {
-		t.Fatalf("repeated reduction = %s (%q), want %s (%q)", repeated, repeated.Reason(), base.typeValue, base.typeValue.Reason())
-	}
+	require.True(t, base.typeValue.Equal(Builtin("int")))
+	repeated := analyzer.TypeOf(expression)
+	require.True(t, repeated.Equal(base.typeValue))
+	require.Equal(t, base.typeValue.Reason(), repeated.Reason())
 	afterQuery, err := json.Marshal(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(before) != string(afterQuery) {
-		t.Fatal("TypeOf mutated the parsed AST")
-	}
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(afterQuery), "TypeOf mutated the parsed AST")
 	overlay := reductionContextToken{overlay: &reductionOverlay{}}
 	covered := analyzer.typeOfIn(expression, scope, overlay)
-	if !covered.typeValue.Equal(Builtin("int")) {
-		t.Fatalf("overlay reduction = %s (%q), want int", covered.typeValue, covered.typeValue.Reason())
-	}
+	require.True(t, covered.typeValue.Equal(Builtin("int")))
 	secondOverlay := reductionContextToken{overlay: &reductionOverlay{}}
-	if overlay == secondOverlay {
-		t.Fatal("distinct immutable overlays share a cache token identity")
-	}
+	require.False(t, overlay == secondOverlay, "distinct immutable overlays share a cache token identity")
 	secondCovered := analyzer.typeOfIn(expression, scope, secondOverlay)
-	if !secondCovered.typeValue.Equal(Builtin("int")) {
-		t.Fatalf("second overlay reduction = %s (%q), want int", secondCovered.typeValue, secondCovered.typeValue.Reason())
-	}
+	require.True(t, secondCovered.typeValue.Equal(Builtin("int")))
 	baseKey := reductionKey{expression: expression, scope: scope.ID(), token: reductionContextToken{}}
 	overlayKey := reductionKey{expression: expression, scope: scope.ID(), token: overlay}
 	secondOverlayKey := reductionKey{expression: expression, scope: scope.ID(), token: secondOverlay}
-	if _, found := analyzer.cache[baseKey]; !found {
-		t.Fatal("base result was not cached as a completed result")
-	}
-	if _, found := analyzer.cache[overlayKey]; !found {
-		t.Fatal("overlay result reused the base cache key")
-	}
-	if overlayKey == secondOverlayKey {
-		t.Fatal("distinct overlays reused one cache key")
-	}
-	if _, found := analyzer.cache[secondOverlayKey]; !found {
-		t.Fatal("second overlay result reused another overlay cache key")
-	}
+	_, found := analyzer.cache[baseKey]
+	require.True(t, found, "base result was not cached as a completed result")
+	_, found = analyzer.cache[overlayKey]
+	require.True(t, found, "overlay result reused the base cache key")
+	require.False(t, overlayKey == secondOverlayKey, "distinct overlays reused one cache key")
+	_, found = analyzer.cache[secondOverlayKey]
+	require.True(t, found, "second overlay result reused another overlay cache key")
 
 	secondScopes := BuildScopes(analyzer.interfaces)
 	secondScope, ok := secondScopes.ScopeAt(expression)
-	if !ok {
-		t.Fatal("repeat scope build lost expression")
-	}
-	if scope.ID().String() != secondScope.ID().String() {
-		t.Fatalf("repeat scope build IDs no longer share their ordinal spelling: %q / %q", scope.ID(), secondScope.ID())
-	}
-	if scope.ID() == secondScope.ID() {
-		t.Fatal("full ScopeID identity collided across scope builds")
-	}
-	if baseKey == (reductionKey{expression: expression, scope: secondScope.ID()}) {
-		t.Fatal("reduction key compared ScopeID.String rather than full ScopeID")
-	}
+	require.True(t, ok, "repeat scope build lost expression")
+	require.Equal(t, secondScope.ID().String(), scope.ID().String())
+	require.False(t, scope.ID() == secondScope.ID(), "full ScopeID identity collided across scope builds")
+	require.False(t, baseKey == reductionKey{expression: expression, scope: secondScope.ID()}, "reduction key compared ScopeID.String rather than full ScopeID")
 
 	const readers = 24
 	const readsPerReader = 100
@@ -1201,7 +1014,7 @@ func TestAnalyzerIsSnapshotBoundCachesCompletedResultsAndTerminatesCycles(t *tes
 	done.Wait()
 	close(problems)
 	for problem := range problems {
-		t.Errorf("concurrent read = %s, want int", problem)
+		assert.Fail(t, problem)
 	}
 
 	cold := NewAnalyzer(source, reducerTestEngine(t))
@@ -1222,46 +1035,44 @@ func TestAnalyzerIsSnapshotBoundCachesCompletedResultsAndTerminatesCycles(t *tes
 	done.Wait()
 	close(problems)
 	for problem := range problems {
-		t.Errorf("concurrent cold reduction = %s, want int", problem)
+		assert.Fail(t, problem)
 	}
 
 	foreignSource := sources(t, map[string]string{
 		"cache.gd": "class_name Cache\nfunc run():\n\tvar expression := 1 + 2\n",
 	})
 	foreign := reducerVariableValue(t, foreignSource.File("cache.gd"), "expression")
-	if got := analyzer.TypeOf(foreign); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("foreign expression = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
+	got := analyzer.TypeOf(foreign)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
 	var absent *ast.Literal
-	if got := analyzer.TypeOf(absent); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("typed nil expression = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
-	if got := NewAnalyzer(nil, reducerTestEngine(t)).TypeOf(expression); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("nil source analyzer = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
+	got = analyzer.TypeOf(absent)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
+	got = NewAnalyzer(nil, reducerTestEngine(t)).TypeOf(expression)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
 	var typedNilSource *memorySources
-	if got := NewAnalyzer(typedNilSource, reducerTestEngine(t)).TypeOf(expression); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("typed nil source analyzer = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
+	got = NewAnalyzer(typedNilSource, reducerTestEngine(t)).TypeOf(expression)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
 	var unavailable *Analyzer
-	if got := unavailable.TypeOf(expression); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("nil analyzer = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
+	got = unavailable.TypeOf(expression)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
 
 	cycle := reducerVariableValue(t, file, "cycle").(*ast.UnaryExpression)
 	cycle.Operand = cycle
-	if got := analyzer.TypeOf(cycle); got.Kind() != KindUnknown || got.Reason() != "expression reduction cycle" {
-		t.Fatalf("recursive expression = %s (%q), want cycle Unknown", got, got.Reason())
-	}
+	got = analyzer.TypeOf(cycle)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.Equal(t, "expression reduction cycle", got.Reason())
 }
 
 func TestAnalyzerReducesDeferredHeadersUnderTheBaseOverlay(t *testing.T) {
 	source := sources(t, map[string]string{
 		"overlay.gd": "class_name Overlay\nvar field := 1 + 2\nfunc locals():\n\tvar local := 1 + 2\n\tvar local_use := local\nfunc members():\n\tvar field_use := self.field\nfunc defaults(parameter := 1 + 2):\n\tvar parameter_use := parameter\nfunc lambdas():\n\tvar closure := func(default := 1 + 2): return default\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	file := source.File("overlay.gd")
 	var parameterDefault ast.Expression
 	ast.Inspect(file, func(node ast.Node) bool {
@@ -1271,13 +1082,11 @@ func TestAnalyzerReducesDeferredHeadersUnderTheBaseOverlay(t *testing.T) {
 		}
 		return true
 	})
-	if parameterDefault == nil {
-		t.Fatal("real parser fixture did not retain the inferred parameter default")
-	}
+	require.NotNil(t, parameterDefault)
 	lambda, ok := reducerVariableValue(t, file, "closure").(*ast.LambdaExpression)
-	if !ok || len(lambda.Parameters) != 1 || lambda.Parameters[0].Default == nil {
-		t.Fatalf("real parser fixture did not retain the lambda default: %#v", lambda)
-	}
+	require.True(t, ok)
+	require.Len(t, lambda.Parameters, 1)
+	require.NotNil(t, lambda.Parameters[0].Default)
 	for _, testCase := range []struct {
 		name     string
 		use      ast.Expression
@@ -1292,25 +1101,18 @@ func TestAnalyzerReducesDeferredHeadersUnderTheBaseOverlay(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			analyzer := NewAnalyzer(source, reducerTestEngine(t))
 			scope, ok := analyzer.scopes.ScopeAt(testCase.use)
-			if !ok {
-				t.Fatal("use expression has no recorded scope")
-			}
+			require.True(t, ok, "use expression has no recorded scope")
 			overlay := reductionContextToken{overlay: &reductionOverlay{}}
-			if got := analyzer.typeOfIn(testCase.use, scope, overlay); !got.typeValue.Equal(testCase.want) {
-				t.Fatalf("overlay reduction = %s (%q), want %s", got.typeValue, got.typeValue.Reason(), testCase.want)
-			}
+			got := analyzer.typeOfIn(testCase.use, scope, overlay)
+			require.True(t, got.typeValue.Equal(testCase.want))
 			deferredScope, ok := analyzer.scopes.ScopeAt(testCase.deferred)
-			if !ok {
-				t.Fatal("deferred expression has no recorded scope")
-			}
+			require.True(t, ok, "deferred expression has no recorded scope")
 			baseKey := reductionKey{expression: testCase.deferred, scope: deferredScope.ID(), token: reductionContextToken{}}
 			overlayKey := reductionKey{expression: testCase.deferred, scope: deferredScope.ID(), token: overlay}
-			if _, found := analyzer.cache[baseKey]; !found {
-				t.Fatal("deferred expression was not cached under its base context")
-			}
-			if _, found := analyzer.cache[overlayKey]; found {
-				t.Fatal("deferred expression inherited the use-site overlay context")
-			}
+			_, found := analyzer.cache[baseKey]
+			require.True(t, found, "deferred expression was not cached under its base context")
+			_, found = analyzer.cache[overlayKey]
+			require.False(t, found, "deferred expression inherited the use-site overlay context")
 		})
 	}
 }
@@ -1319,58 +1121,45 @@ func TestAnalyzerNarrowingKeepsDeferredInitializersAndDefaultsAtBase(t *testing.
 	source := sources(t, map[string]string{
 		"deferred_narrow.gd": "class_name DeferredNarrow\nfunc run(value: Variant):\n\tif value is Node:\n\t\tvar inferred := value\n\t\tvar through_inferred := inferred\n\t\tvar closure := func(default := value): return default\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	file := source.File("deferred_narrow.gd")
 	inferredValue := reducerVariableValue(t, file, "inferred")
 	lambda, ok := reducerVariableValue(t, file, "closure").(*ast.LambdaExpression)
-	if !ok || len(lambda.Parameters) != 1 || lambda.Parameters[0].Default == nil {
-		t.Fatalf("real parser fixture lambda = %#v, want one retained default", lambda)
-	}
+	require.True(t, ok)
+	require.Len(t, lambda.Parameters, 1)
+	require.NotNil(t, lambda.Parameters[0].Default)
 	defaultValue := lambda.Parameters[0].Default
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
-	if got := analyzer.TypeOf(reducerVariableValue(t, file, "through_inferred")); !got.Equal(Variant()) {
-		t.Fatalf("deferred initializer under guard = %s (%q), want base Variant", got, got.Reason())
-	}
-	if got := analyzer.TypeOf(lambda); !got.Equal(Callable()) {
-		t.Fatalf("lambda with deferred default = %s (%q), want Callable", got, got.Reason())
-	}
+	got := analyzer.TypeOf(reducerVariableValue(t, file, "through_inferred"))
+	require.True(t, got.Equal(Variant()))
+	got = analyzer.TypeOf(lambda)
+	require.True(t, got.Equal(Callable()))
 	for _, expression := range []ast.Expression{inferredValue, defaultValue} {
 		scope, ok := analyzer.scopes.ScopeAt(expression)
-		if !ok {
-			t.Fatalf("deferred expression %T has no recorded scope", expression)
-		}
+		require.True(t, ok)
 		overlay := analyzer.narrow.tokenAt(expression)
-		if overlay.overlay == nil {
-			t.Fatalf("deferred expression %T was not written under the guarded source view", expression)
-		}
+		require.NotNil(t, overlay.overlay)
 		baseKey := reductionKey{expression: expression, scope: scope.ID(), token: reductionContextToken{}}
 		overlayKey := reductionKey{expression: expression, scope: scope.ID(), token: overlay}
-		if _, found := analyzer.cache[baseKey]; !found {
-			t.Fatalf("deferred expression %T was not reduced under base context", expression)
-		}
-		if _, found := analyzer.cache[overlayKey]; found {
-			t.Fatalf("deferred expression %T inherited a guarded overlay", expression)
-		}
+		_, found := analyzer.cache[baseKey]
+		require.True(t, found)
+		_, found = analyzer.cache[overlayKey]
+		require.False(t, found)
 	}
-	if got := analyzer.TypeOf(inferredValue); !got.Equal(reducerTestEngine(t).Class("Node")) {
-		t.Fatalf("direct source query of guarded initializer = %s (%q), want Node", got, got.Reason())
-	}
+	got = analyzer.TypeOf(inferredValue)
+	require.True(t, got.Equal(reducerTestEngine(t).Class("Node")))
 }
 
 func TestAnalyzerDoesNotPublishCycleTaintedLambdaDefaults(t *testing.T) {
 	source := sources(t, map[string]string{
 		"cycles.gd": "class_name Cycles\nfunc run():\n\tvar holder := missing\n\tvar closure := func(default := holder): return default\n\tvar observed := holder\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	file := source.File("cycles.gd")
 	lambda, ok := reducerVariableValue(t, file, "closure").(*ast.LambdaExpression)
-	if !ok || len(lambda.Parameters) != 1 || lambda.Parameters[0].Default == nil {
-		t.Fatalf("real parser fixture did not produce one lambda default: %#v", lambda)
-	}
+	require.True(t, ok)
+	require.Len(t, lambda.Parameters, 1)
+	require.NotNil(t, lambda.Parameters[0].Default)
 	defaultValue := lambda.Parameters[0].Default
 	observed := reducerVariableValue(t, file, "observed")
 	var holder *ast.VariableDeclaration
@@ -1381,9 +1170,8 @@ func TestAnalyzerDoesNotPublishCycleTaintedLambdaDefaults(t *testing.T) {
 		}
 		return true
 	})
-	if holder == nil || !holder.Inferred {
-		t.Fatalf("real parser fixture did not produce inferred holder: %#v", holder)
-	}
+	require.NotNil(t, holder)
+	require.True(t, holder.Inferred)
 	originalHolderValue := holder.Value
 
 	for _, testCase := range []struct {
@@ -1402,17 +1190,13 @@ func TestAnalyzerDoesNotPublishCycleTaintedLambdaDefaults(t *testing.T) {
 			holder.Value = lambda
 			t.Cleanup(func() { holder.Value = originalHolderValue })
 			for _, expression := range testCase.order {
-				if got := analyzer.TypeOf(expression); !got.Equal(Callable()) {
-					t.Fatalf("TypeOf(%T) = %s (%q), want Callable", expression, got, got.Reason())
-				}
+				got := analyzer.TypeOf(expression)
+				require.True(t, got.Equal(Callable()))
 			}
 			scope, found := analyzer.scopes.ScopeAt(defaultValue)
-			if !found {
-				t.Fatal("lambda default has no recorded scope")
-			}
-			if _, found := analyzer.cache[reductionKey{expression: defaultValue, scope: scope.ID()}]; found {
-				t.Fatal("cycle-tainted lambda default was published to the completed cache")
-			}
+			require.True(t, found, "lambda default has no recorded scope")
+			_, found = analyzer.cache[reductionKey{expression: defaultValue, scope: scope.ID()}]
+			require.False(t, found, "cycle-tainted lambda default was published to the completed cache")
 		})
 	}
 }
@@ -1429,14 +1213,10 @@ func TestAnalyzerMemoizesCycleTaintedFanoutWithinOneRequest(t *testing.T) {
 		fmt.Fprintf(&program, "\tvar a%d := [%s, %s]\n", level, child, child)
 	}
 	source := sources(t, map[string]string{"fanout.gd": program.String()})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	file := source.File("fanout.gd")
 	lambda, ok := reducerVariableValue(t, file, "closure").(*ast.LambdaExpression)
-	if !ok {
-		t.Fatalf("real parser fixture did not produce a lambda: %#v", lambda)
-	}
+	require.True(t, ok)
 	var holder *ast.VariableDeclaration
 	ast.Inspect(file, func(node ast.Node) bool {
 		declaration, ok := node.(*ast.VariableDeclaration)
@@ -1445,9 +1225,8 @@ func TestAnalyzerMemoizesCycleTaintedFanoutWithinOneRequest(t *testing.T) {
 		}
 		return true
 	})
-	if holder == nil || !holder.Inferred {
-		t.Fatalf("real parser fixture did not produce inferred holder: %#v", holder)
-	}
+	require.NotNil(t, holder)
+	require.True(t, holder.Inferred)
 	originalHolderValue := holder.Value
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	holder.Value = lambda
@@ -1457,38 +1236,28 @@ func TestAnalyzerMemoizesCycleTaintedFanoutWithinOneRequest(t *testing.T) {
 	for level := 0; level <= fanoutDepth; level++ {
 		want = reducerArray(want)
 	}
-	if got := analyzer.TypeOf(top); !got.Equal(want) {
-		t.Fatalf("fanout TypeOf = %s (%q), want %s", got, got.Reason(), want)
-	}
+	got := analyzer.TypeOf(top)
+	require.True(t, got.Equal(want))
 	firstFanout, ok := reducerVariableValue(t, file, "a0").(*ast.ArrayLiteral)
-	if !ok || len(firstFanout.Elements) != 2 {
-		t.Fatalf("real parser fixture did not produce two fanout consumers: %#v", firstFanout)
-	}
+	require.True(t, ok)
+	require.Len(t, firstFanout.Elements, 2)
 	for _, consumer := range firstFanout.Elements {
 		consumerScope, found := analyzer.scopes.ScopeAt(consumer)
-		if !found {
-			t.Fatal("fanout consumer has no recorded scope")
-		}
+		require.True(t, found, "fanout consumer has no recorded scope")
 		consumerKey := reductionKey{expression: consumer, scope: consumerScope.ID()}
-		if _, found := analyzer.cache[consumerKey]; found {
-			t.Fatal("consumer of a cycle-tainted local result escaped into the shared cache")
-		}
+		_, found = analyzer.cache[consumerKey]
+		require.False(t, found, "consumer of a cycle-tainted local result escaped into the shared cache")
 	}
 	scope, found := analyzer.scopes.ScopeAt(top)
-	if !found {
-		t.Fatal("fanout expression has no recorded scope")
-	}
+	require.True(t, found, "fanout expression has no recorded scope")
 	request := &reductionRequest{active: map[reductionKey]bool{}}
-	if got := analyzer.reduce(top, reductionContext{scope: scope}, request); !got.typeValue.Equal(want) {
-		t.Fatalf("fanout request result = %s (%q), want %s", got.typeValue, got.typeValue.Reason(), want)
-	}
+	fanoutResult := analyzer.reduce(top, reductionContext{scope: scope}, request)
+	require.True(t, fanoutResult.typeValue.Equal(want))
 	key := reductionKey{expression: top, scope: scope.ID()}
-	if _, found := request.local[key]; !found {
-		t.Fatal("cycle-tainted fanout was not memoized within its request")
-	}
-	if _, found := analyzer.cache[key]; found {
-		t.Fatal("cycle-tainted fanout escaped into the shared completed cache")
-	}
+	_, found = request.local[key]
+	require.True(t, found, "cycle-tainted fanout was not memoized within its request")
+	_, found = analyzer.cache[key]
+	require.False(t, found, "cycle-tainted fanout escaped into the shared completed cache")
 }
 
 func TestAnalyzerUnifiesTernaryClassesOnlyAcrossCompleteAncestry(t *testing.T) {
@@ -1499,36 +1268,31 @@ func TestAnalyzerUnifiesTernaryClassesOnlyAcrossCompleteAncestry(t *testing.T) {
 		"broken.gd": "class_name Broken extends MissingBase\n",
 		"merge.gd":  "class_name Merge\nfunc run(left: Left, right: Right, broken: Broken):\n\tvar common := left if true else right\n\tvar unknown_condition := 1 if missing else 2\n\tvar incomplete := broken if true else left\n",
 	})
-	if failures := source.ParseFailures(); len(failures) != 0 {
-		t.Fatalf("real parser fixture failed: %v", failures)
-	}
+	require.Empty(t, source.ParseFailures(), "real parser fixture failed")
 	analyzer := NewAnalyzer(source, reducerTestEngine(t))
 	file := source.File("merge.gd")
 	wantBase := analyzer.interfaces.ResolveType("merge.gd", "Base")
-	if got := analyzer.TypeOf(reducerVariableValue(t, file, "common")); !got.Equal(wantBase) {
-		t.Fatalf("common class ternary = %s (%q), want %s", got, got.Reason(), wantBase)
-	}
+	got := analyzer.TypeOf(reducerVariableValue(t, file, "common"))
+	require.True(t, got.Equal(wantBase))
 	for _, name := range []string{"unknown_condition", "incomplete"} {
-		if got := analyzer.TypeOf(reducerVariableValue(t, file, name)); got.Kind() != KindUnknown || got.Reason() == "" {
-			t.Errorf("%s = %s (%q), want reasoned Unknown", name, got, got.Reason())
-		}
+		got = analyzer.TypeOf(reducerVariableValue(t, file, name))
+		assert.Equal(t, KindUnknown, got.Kind())
+		assert.NotEmpty(t, got.Reason())
 	}
 
 	loopNode := &typeNode{kind: KindClass, name: "Loop"}
 	loop := Type{node: loopNode}
 	loopNode.base, loopNode.hasBase = loop, true
-	if got := analyzer.commonType(loop, wantBase); got.Kind() != KindUnknown || got.Reason() == "" {
-		t.Fatalf("cyclic class ancestry = %s (%q), want reasoned Unknown", got, got.Reason())
-	}
+	got = analyzer.commonType(loop, wantBase)
+	require.Equal(t, KindUnknown, got.Kind())
+	require.NotEmpty(t, got.Reason())
 }
 
 func reducerTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	builder := NewEngineBuilder()
 	for _, builtin := range []string{"int", "float", "String", "StringName", "NodePath", "bool", "Array", "Dictionary", "Callable", "Signal", "Variant"} {
-		if err := builder.AddBuiltin(builtin); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(builtin))
 	}
 	for _, class := range []struct{ name, parent string }{
 		{name: "Object"},
@@ -1538,9 +1302,7 @@ func reducerTestEngine(t *testing.T) *Engine {
 		{name: "PackedScene", parent: "Resource"},
 		{name: "ResourceLoader", parent: "Object"},
 	} {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
 	for _, operator := range []struct {
 		left, operator, right, result string
@@ -1553,35 +1315,17 @@ func reducerTestEngine(t *testing.T) *Engine {
 		{left: "bool", operator: "or", right: "bool", result: "bool"},
 		{left: "int", operator: "in", right: "int", result: "bool"},
 	} {
-		if err := builder.AddOperator(operator.left, operator.operator, operator.right, operator.result); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddOperator(operator.left, operator.operator, operator.right, operator.result))
 	}
-	if err := builder.AddMethod("Node", "engine_method", "int", nil, false, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddMethod("String", "to_upper", "String", nil, false, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddMethod("Node", "engine_static", "int", nil, true, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddMethod("Node", "engine_instance", "int", nil, false, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddProperty("Node", "engine_property", "int"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddMethod("PackedScene", "instantiate", "Node", nil, false, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddMethod("ResourceLoader", "load", "Resource", nil, true, false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddMethod("Node", "engine_method", "int", nil, false, false))
+	require.NoError(t, builder.AddMethod("String", "to_upper", "String", nil, false, false))
+	require.NoError(t, builder.AddMethod("Node", "engine_static", "int", nil, true, false))
+	require.NoError(t, builder.AddMethod("Node", "engine_instance", "int", nil, false, false))
+	require.NoError(t, builder.AddProperty("Node", "engine_property", "int"))
+	require.NoError(t, builder.AddMethod("PackedScene", "instantiate", "Node", nil, false, false))
+	require.NoError(t, builder.AddMethod("ResourceLoader", "load", "Resource", nil, true, false))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return engine
 }
 
@@ -1597,34 +1341,22 @@ func builtinConstructorTestEngine(t *testing.T) *Engine {
 		"Variant", "bool", "int", "float", "Array", "Dictionary", "Callable", "Signal",
 		"PackedByteArray", "FutureValue", "Dormant",
 	}, mandatory...) {
-		if err := builder.AddBuiltin(name); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltin(name))
 	}
 	for _, name := range append([]string{"PackedByteArray", "FutureValue"}, mandatory...) {
-		if err := builder.AddBuiltinConstructor(name); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddBuiltinConstructor(name))
 	}
 	for _, class := range []struct{ name, parent string }{
 		{name: "Object"},
 		{name: "RefCounted", parent: "Object"},
 		{name: "Node", parent: "Object"},
 	} {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
-	if err := builder.AddOperator("Vector2", "+", "Vector2", "Vector2"); err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddMethod("Vector2", "length", "float", nil, false, false); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, builder.AddOperator("Vector2", "+", "Vector2", "Vector2"))
+	require.NoError(t, builder.AddMethod("Vector2", "length", "float", nil, false, false))
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return engine
 }
 
@@ -1632,14 +1364,10 @@ func resourceMinimalEngine(t *testing.T) *Engine {
 	t.Helper()
 	builder := NewEngineBuilder()
 	for _, class := range []struct{ name, parent string }{{name: "Object"}, {name: "RefCounted", parent: "Object"}} {
-		if err := builder.AddClass(class.name, class.parent); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, builder.AddClass(class.name, class.parent))
 	}
 	engine, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return engine
 }
 
@@ -1687,9 +1415,8 @@ func reducerVariableValue(t *testing.T, file *ast.File, name string) ast.Express
 		}
 		return true
 	})
-	if len(declarations) != 1 || declarations[0].Value == nil {
-		t.Fatalf("variable %q declarations = %#v, want one initialized declaration", name, declarations)
-	}
+	require.Len(t, declarations, 1)
+	require.NotNil(t, declarations[0].Value)
 	return declarations[0].Value
 }
 

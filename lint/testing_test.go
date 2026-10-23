@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdkit/project"
+	"github.com/stretchr/testify/require"
 )
 
 // lintProject writes files into a temp project and lints it with config.
@@ -15,13 +16,9 @@ func lintProject(t *testing.T, config Config, files map[string]string) Report {
 	t.Helper()
 	root := writeTree(t, files)
 	linter, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	snapshot, err := project.Load(lintLoadConfig(root, config, linter))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return linter.Lint(snapshot)
 }
 
@@ -40,7 +37,7 @@ func lintSourceWithConfig(t *testing.T, config Config, rule, source string) []Di
 	var out []Diagnostic
 	for _, diagnostic := range report.Diagnostics {
 		if diagnostic.Rule == "source-parse" && rule != "source-parse" {
-			t.Fatalf("fixture does not parse: %s", diagnostic.Message)
+			require.False(t, diagnostic.Rule == "source-parse", "fixture does not parse: %s", diagnostic.Message)
 		}
 		if diagnostic.Rule == rule {
 			out = append(out, diagnostic)
@@ -60,26 +57,15 @@ func assertRule(t *testing.T, rule, source string, lines ...int) {
 func assertRuleWithConfig(t *testing.T, config Config, rule, source string, lines ...int) {
 	t.Helper()
 	found := lintSourceWithConfig(t, config, rule, source)
-	got := make([]int, len(found))
-	for index, diagnostic := range found {
-		got[index] = diagnostic.Line
-	}
-	if len(got) == len(lines) {
-		same := true
-		for index := range got {
-			if got[index] != lines[index] {
-				same = false
-			}
-		}
-		if same {
-			return
-		}
+	var got []int
+	for _, diagnostic := range found {
+		got = append(got, diagnostic.Line)
 	}
 	var detail strings.Builder
 	for _, diagnostic := range found {
 		fmt.Fprintf(&detail, "\n  %d:%d %s", diagnostic.Line, diagnostic.Column, diagnostic.Message)
 	}
-	t.Fatalf("%s fired on lines %v, want %v%s", rule, got, lines, detail.String())
+	require.Equal(t, lines, got, "%s fired on wrong lines%s", rule, detail.String())
 }
 
 // assertNoRule fails if the named rule fires at all under the default
@@ -95,12 +81,8 @@ func writeTree(t *testing.T, files map[string]string) string {
 	root := t.TempDir()
 	for name, contents := range files {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
+		require.NoError(t, os.WriteFile(absolute, []byte(contents), 0o644))
 	}
 	return root
 }
@@ -132,13 +114,9 @@ func lintTree(t *testing.T, config Config, rules []Rule, files map[string]string
 	t.Helper()
 	root := writeTree(t, files)
 	linter, err := newLinterForProject(root, config, rules)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	snapshot, err := project.Load(lintLoadConfig(root, config, linter))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return snapshot, linter.Lint(snapshot)
 }
 

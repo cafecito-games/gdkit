@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAnalyzerIndexesReferencesAndIgnoresCommentsAndStrings(t *testing.T) {
@@ -35,17 +37,17 @@ func accepts_shadow(InfraStore):
 	})
 
 	report := analyzeDefault(t, root)
-	if report.HasErrors() {
-		t.Fatalf("unexpected diagnostics: %#v", report.Diagnostics)
-	}
+	require.False(t, report.HasErrors())
 	assertEdge(t, report, "features/combat/application/ports/reader.gd", "features/combat/domain/health.gd")
 	assertEdge(t, report, "features/combat/infrastructure/store.gd", "features/combat/application/ports/reader.gd")
 	assertEdge(t, report, "features/combat/presentation/view.gd", "features/combat/application/intents/heal.gd")
+	found := false
 	for _, edge := range report.Edges {
 		if edge.From == "features/combat/presentation/view.gd" && edge.To == "features/combat/infrastructure/store.gd" {
-			t.Fatal("class name in a comment or string became an edge")
+			found = true
 		}
 	}
+	assert.False(t, found, "class name in a comment or string became an edge")
 }
 
 func TestAnalyzerRejectsDirectionCyclesAndEngineAccess(t *testing.T) {
@@ -73,9 +75,7 @@ var store: Store
 	report := analyzeDefault(t, root)
 	rules := diagnosticRules(report)
 	for _, expected := range []string{"dependency.cycle", "dependency.direction", "engine.reference", "engine.signal", "engine.tree"} {
-		if !slices.Contains(rules, expected) {
-			t.Errorf("missing %s in diagnostics: %#v", expected, report.Diagnostics)
-		}
+		assert.Contains(t, rules, expected)
 	}
 }
 
@@ -97,9 +97,7 @@ var missing = load("res://missing.tres")
 	report := analyzeDefault(t, root)
 	rules := diagnosticRules(report)
 	for _, expected := range []string{"dependency.direction", "resource.missing", "test.node_inspection", "test.scene_load"} {
-		if !slices.Contains(rules, expected) {
-			t.Errorf("missing %s in diagnostics: %#v", expected, report.Diagnostics)
-		}
+		assert.Contains(t, rules, expected)
 	}
 	assertEdge(t, report, "features/combat/domain/tests/health_test.gd", "features/combat/presentation/health.tscn")
 }
@@ -113,9 +111,7 @@ signal happened
 	})
 
 	report := analyzeDefault(t, root)
-	if report.HasErrors() {
-		t.Fatalf("unexpected diagnostics: %#v", report.Diagnostics)
-	}
+	require.False(t, report.HasErrors())
 }
 
 func TestAllowlistRequiresExistingADR(t *testing.T) {
@@ -133,15 +129,12 @@ func TestAllowlistRequiresExistingADR(t *testing.T) {
 	})
 
 	report := analyzeDefault(t, root)
-	if !slices.Contains(diagnosticRules(report), "allowlist.adr") || !slices.Contains(diagnosticRules(report), "dependency.direction") {
-		t.Fatalf("missing ADR should fail and leave violation active: %#v", report.Diagnostics)
-	}
+	require.Contains(t, diagnosticRules(report), "allowlist.adr")
+	require.Contains(t, diagnosticRules(report), "dependency.direction")
 
 	writeProject(t, root, map[string]string{"docs/adr/0001.md": "# Temporary dependency\n"})
 	report = analyzeDefault(t, root)
-	if report.HasErrors() {
-		t.Fatalf("valid ADR-backed exception was not applied: %#v", report.Diagnostics)
-	}
+	require.False(t, report.HasErrors())
 }
 
 func TestDuplicateClassAndUnclassifiedFile(t *testing.T) {
@@ -154,29 +147,24 @@ func TestDuplicateClassAndUnclassifiedFile(t *testing.T) {
 
 	report := analyzeDefault(t, root)
 	rules := diagnosticRules(report)
-	if !slices.Contains(rules, "class_name.duplicate") || !slices.Contains(rules, "classification.missing") {
-		t.Fatalf("unexpected diagnostics: %#v", report.Diagnostics)
-	}
+	require.Contains(t, rules, "class_name.duplicate")
+	require.Contains(t, rules, "classification.missing")
 }
 
 func TestClassificationCapturesFeature(t *testing.T) {
 	config := DefaultConfig()
 	got, ok := config.classify("src/features/inventory/domain/item.gd")
-	if !ok || got.Layer != "domain" || got.Feature != "inventory" {
-		t.Fatalf("classification = %#v, %v", got, ok)
-	}
+	require.True(t, ok)
+	require.Equal(t, "domain", got.Layer)
+	require.Equal(t, "inventory", got.Feature)
 }
 
 func analyzeDefault(t *testing.T, root string) Report {
 	t.Helper()
 	analyzer, err := NewAnalyzer(root, DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	report, err := analyzer.Analyze()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return report
 }
 
@@ -184,21 +172,15 @@ func writeProject(t *testing.T, root string, files map[string]string) {
 	t.Helper()
 	for name, contents := range files {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
+		require.NoError(t, os.WriteFile(absolute, []byte(contents), 0o644))
 	}
 }
 
 func writeJSON(t *testing.T, name string, value any) {
 	t.Helper()
 	data, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	writeProject(t, filepath.Dir(filepath.Dir(name)), map[string]string{filepath.Base(filepath.Dir(name)) + "/" + filepath.Base(name): string(data)})
 }
 
@@ -212,12 +194,13 @@ func diagnosticRules(report Report) []string {
 
 func assertEdge(t *testing.T, report Report, from, to string) {
 	t.Helper()
+	found := false
 	for _, edge := range report.Edges {
 		if edge.From == from && edge.To == to {
-			return
+			found = true
 		}
 	}
-	t.Errorf("missing edge %s -> %s in %#v", from, to, report.Edges)
+	assert.True(t, found, "missing edge %s -> %s", from, to)
 }
 
 func TestAnalyzerResolvesIdentifiersDeclaredInsideResources(t *testing.T) {
@@ -234,9 +217,7 @@ var theme = load("uid://ctheme")
 	})
 
 	report := analyzeDefault(t, root)
-	if report.HasErrors() {
-		t.Fatalf("unexpected diagnostics: %#v", report.Diagnostics)
-	}
+	require.False(t, report.HasErrors())
 	assertEdge(t, report, "features/combat/presentation/view.gd", "features/combat/presentation/panel.tscn")
 	assertEdge(t, report, "features/combat/presentation/view.gd", "features/combat/presentation/panel.theme.tres")
 }
@@ -256,25 +237,17 @@ var state: ProbeState
 	})
 
 	widened := configAllowingReadModels(nil)
-	if report := analyzeWith(t, root, widened); report.HasErrors() {
-		t.Fatalf("widened to_paths should allow both references: %#v", report.Diagnostics)
-	}
+	require.False(t, analyzeWith(t, root, widened).HasErrors())
 
 	narrowed := configAllowingReadModels([]string{"**/ports/**"})
 	report := analyzeWith(t, root, narrowed)
 	violations := 0
 	for _, diagnostic := range report.Diagnostics {
-		if diagnostic.Rule != "dependency.direction" {
-			t.Fatalf("unexpected diagnostic: %#v", diagnostic)
-		}
-		if diagnostic.Location.Path != "features/probe/application/probe_service.gd" {
-			t.Fatalf("from_paths did not scope the rule's source: %#v", diagnostic)
-		}
+		require.Equal(t, "dependency.direction", diagnostic.Rule)
+		require.Equal(t, "features/probe/application/probe_service.gd", diagnostic.Location.Path)
 		violations++
 	}
-	if violations != 1 {
-		t.Fatalf("want one violation outside ports/, got %#v", report.Diagnostics)
-	}
+	require.Equal(t, 1, violations)
 	assertEdge(t, report, "features/probe/application/ports/probe_port.gd", "features/probe/application/read_models/probe_state.gd")
 }
 
@@ -315,12 +288,8 @@ func TestLoadConfigRejectsUnknownKeys(t *testing.T) {
 			root := t.TempDir()
 			writeProject(t, root, map[string]string{DefaultConfigPath: testCase.contents})
 			_, err := LoadConfig(root, "")
-			if err == nil {
-				t.Fatal("unknown key was accepted")
-			}
-			if !strings.Contains(err.Error(), testCase.wantKey) {
-				t.Fatalf("error %q does not name %s", err, testCase.wantKey)
-			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), testCase.wantKey)
 		})
 	}
 }
@@ -331,12 +300,8 @@ func TestLoadConfigRequiresClassificationLayer(t *testing.T) {
 		DefaultConfigPath: `{"version": 1, "classifications": [{"pattern": "aaa/**", "feature": "f"}]}`,
 	})
 	_, err := LoadConfig(root, "")
-	if err == nil {
-		t.Fatal("a classification with no layer was accepted")
-	}
-	if !strings.Contains(err.Error(), "requires a layer") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires a layer")
 }
 
 // Omitted lists inherit the built-in policy, and a declared entry keeps
@@ -348,27 +313,18 @@ func TestLoadConfigInheritsOmittedListsWithoutMergingEntries(t *testing.T) {
 		DefaultConfigPath: `{"version": 1, "dependencies": [{"from_layers": ["domain"], "to_layers": ["domain"]}]}`,
 	})
 	config, err := LoadConfig(root, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(config.Dependencies) != 1 || len(config.Dependencies[0].ToFeatures) != 0 {
-		t.Fatalf("declared rule merged with a default rule: %#v", config.Dependencies)
-	}
-	if len(config.Classifications) != len(DefaultConfig().Classifications) {
-		t.Fatalf("omitted classifications did not inherit the defaults: %#v", config.Classifications)
-	}
+	require.NoError(t, err)
+	require.Len(t, config.Dependencies, 1)
+	require.Empty(t, config.Dependencies[0].ToFeatures)
+	require.Len(t, config.Classifications, len(DefaultConfig().Classifications))
 }
 
 func analyzeWith(t *testing.T, root string, config Config) Report {
 	t.Helper()
 	analyzer, err := NewAnalyzer(root, config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	report, err := analyzer.Analyze()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return report
 }
 
@@ -385,9 +341,7 @@ func TestAnalyzerIndexesClassNamesDeclaredBesideAnAnnotation(t *testing.T) {
 		"features/catalog/application/use.gd": "extends RefCounted\n\n\nfunc run():\n\tprint(Item.new(), Crate.new())\n",
 	})
 	report := analyzeDefault(t, root)
-	if rules := diagnosticRules(report); len(rules) != 0 {
-		t.Fatalf("diagnostics = %v, want none", rules)
-	}
+	require.Len(t, diagnosticRules(report), 0)
 	assertEdge(t, report, "features/catalog/application/use.gd", "features/catalog/domain/item.gd")
 	assertEdge(t, report, "features/catalog/application/use.gd", "features/catalog/domain/crate.gd")
 }
@@ -402,9 +356,7 @@ func TestAnalyzerIndexesReferencesBesideAOneLineClassBody(t *testing.T) {
 		"features/catalog/application/use.gd": "class Holder: var held = 1; var made = Item.new()\n",
 	})
 	report := analyzeDefault(t, root)
-	if rules := diagnosticRules(report); len(rules) != 0 {
-		t.Fatalf("diagnostics = %v, want none", rules)
-	}
+	require.Len(t, diagnosticRules(report), 0)
 	assertEdge(t, report, "features/catalog/application/use.gd", "features/catalog/domain/item.gd")
 }
 
@@ -422,12 +374,8 @@ func TestTheCompanionAddonIsNotADependency(t *testing.T) {
 			"\treturn GDKitEquality.deep_equals(self.count, p_other.count)\n",
 	})
 	report := analyzeDefault(t, root)
-	if len(report.Diagnostics) != 0 {
-		t.Errorf("diagnostics = %v, want none", report.Diagnostics)
-	}
+	assert.Len(t, report.Diagnostics, 0)
 	for _, edge := range report.Edges {
-		if strings.Contains(edge.To, "addons/") {
-			t.Errorf("an edge to the addon was recorded: %+v", edge)
-		}
+		assert.NotContains(t, edge.To, "addons/")
 	}
 }

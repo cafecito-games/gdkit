@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/cafecito-games/gdkit/format"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -20,9 +22,7 @@ const (
 func readCLIFile(t *testing.T, root, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return string(data)
 }
 
@@ -30,12 +30,9 @@ func TestRunFormatCheckClean(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", formattedScript)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "check", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if stdout.String() != "format check passed (1 files)\n" {
-		t.Fatalf("unexpected output: %s", stdout.String())
-	}
+	code := run([]string{"format", "check", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	require.Equal(t, "format check passed (1 files)\n", stdout.String())
 }
 
 func TestRunFormatCheckReportsUnformattedFileWithoutWriting(t *testing.T) {
@@ -43,77 +40,57 @@ func TestRunFormatCheckReportsUnformattedFileWithoutWriting(t *testing.T) {
 	writeCLIFile(t, root, "clean.gd", formattedScript)
 	writeCLIFile(t, root, "scripts/player.gd", unformattedScript)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "check", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code := run([]string{"format", "check", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
 	want := "would reformat scripts/player.gd\nformat check failed (1 to reformat, 0 diagnostics)\n"
-	if stdout.String() != want {
-		t.Fatalf("output = %q, want %q", stdout.String(), want)
-	}
-	if got := readCLIFile(t, root, "scripts/player.gd"); got != unformattedScript {
-		t.Fatalf("check rewrote the file: %q", got)
-	}
+	require.Equal(t, want, stdout.String())
+	got := readCLIFile(t, root, "scripts/player.gd")
+	require.Equal(t, unformattedScript, got)
 }
 
 func TestRunBareFormatRunsCheck(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", unformattedScript)
 	previous, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(root))
 	t.Cleanup(func() { _ = os.Chdir(previous) })
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format"}, &stdout, &stderr); code != 1 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "would reformat player.gd") {
-		t.Fatalf("unexpected output: %s", stdout.String())
-	}
-	if got := readCLIFile(t, root, "player.gd"); got != unformattedScript {
-		t.Fatalf("bare format rewrote the file: %q", got)
-	}
+	code := run([]string{"format"}, &stdout, &stderr)
+	require.Equal(t, 1, code)
+	require.Contains(t, stdout.String(), "would reformat player.gd")
+	got := readCLIFile(t, root, "player.gd")
+	require.Equal(t, unformattedScript, got)
 }
 
 func TestRunFormatCheckReportsUnparseableFile(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "broken.gd", unparseableScript)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "check", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code := run([]string{"format", "check", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
 	output := stdout.String()
-	if !strings.Contains(output, "broken.gd:1: Error: ") || !strings.Contains(output, "(source-parse)") {
-		t.Fatalf("parse failure missing from output: %s", output)
-	}
-	if !strings.Contains(output, "format check failed (0 to reformat, 1 diagnostics)") {
-		t.Fatalf("unexpected summary: %s", output)
-	}
+	require.Contains(t, output, "broken.gd:1: Error: ")
+	require.Contains(t, output, "(source-parse)")
+	require.Contains(t, output, "format check failed (0 to reformat, 1 diagnostics)")
 }
 
 func TestRunFormatCheckDiff(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "player.gd", unformattedScript)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "check", "--diff", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code := run([]string{"format", "check", "--diff", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
 	for _, want := range []string{
 		"would reformat player.gd\n--- a/player.gd\n+++ b/player.gd\n@@ ",
 		"\n-var a=1\n",
 		"\n+var a = 1\n",
 		"\nformat check failed (1 to reformat, 0 diagnostics)\n",
 	} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Errorf("diff output does not contain %q:\n%s", want, stdout.String())
-		}
+		assert.Contains(t, stdout.String(), want)
 	}
-	if got := readCLIFile(t, root, "player.gd"); got != unformattedScript {
-		t.Fatalf("check --diff rewrote the file: %q", got)
-	}
+	got := readCLIFile(t, root, "player.gd")
+	require.Equal(t, unformattedScript, got)
 }
 
 func TestRunFormatJSON(t *testing.T) {
@@ -129,12 +106,10 @@ func TestRunFormatJSON(t *testing.T) {
 	}
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "check", "--format", "json", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("empty project exit %d: %s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "  \"results\": []") || !strings.Contains(stdout.String(), "  \"diagnostics\": []") {
-		t.Fatalf("empty JSON should hold empty arrays: %s", stdout.String())
-	}
+	code := run([]string{"format", "check", "--format", "json", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	require.Contains(t, stdout.String(), "  \"results\": []")
+	require.Contains(t, stdout.String(), "  \"diagnostics\": []")
 
 	writeCLIFile(t, root, "broken.gd", unparseableScript)
 	writeCLIFile(t, root, "clean.gd", formattedScript)
@@ -142,27 +117,24 @@ func TestRunFormatJSON(t *testing.T) {
 	for _, command := range []string{"check", "write"} {
 		stdout.Reset()
 		stderr.Reset()
-		if code := run([]string{"format", command, "--format", "json", root}, &stdout, &stderr); code != 1 {
-			t.Fatalf("%s exit %d: %s", command, code, stderr.String())
-		}
+		code = run([]string{"format", command, "--format", "json", root}, &stdout, &stderr)
+		require.Equal(t, 1, code, command)
 		var decoded report
-		if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
-			t.Fatalf("%s output is not JSON: %v\n%s", command, err, stdout.String())
-		}
-		if len(decoded.Results) != 2 || decoded.Results[0].Path != "clean.gd" || decoded.Results[0].Changed ||
-			decoded.Results[1].Path != "player.gd" || !decoded.Results[1].Changed {
-			t.Errorf("%s results = %+v", command, decoded.Results)
-		}
-		if len(decoded.Diagnostics) != 1 || decoded.Diagnostics[0].Rule != "source-parse" || decoded.Diagnostics[0].Path != "broken.gd" {
-			t.Errorf("%s diagnostics = %+v", command, decoded.Diagnostics)
-		}
-		if command == "check" && readCLIFile(t, root, "player.gd") != unformattedScript {
-			t.Fatal("check --format json rewrote the file")
+		err := json.Unmarshal(stdout.Bytes(), &decoded)
+		require.NoError(t, err, command)
+		require.Len(t, decoded.Results, 2)
+		require.Equal(t, "clean.gd", decoded.Results[0].Path)
+		require.False(t, decoded.Results[0].Changed)
+		require.Equal(t, "player.gd", decoded.Results[1].Path)
+		require.True(t, decoded.Results[1].Changed)
+		require.Len(t, decoded.Diagnostics, 1)
+		require.Equal(t, "source-parse", decoded.Diagnostics[0].Rule)
+		require.Equal(t, "broken.gd", decoded.Diagnostics[0].Path)
+		if command == "check" {
+			require.Equal(t, unformattedScript, readCLIFile(t, root, "player.gd"))
 		}
 	}
-	if readCLIFile(t, root, "player.gd") == unformattedScript {
-		t.Fatal("write --format json did not rewrite the file")
-	}
+	require.NotEqual(t, unformattedScript, readCLIFile(t, root, "player.gd"))
 }
 
 func TestRunFormatUsageErrors(t *testing.T) {
@@ -182,27 +154,20 @@ func TestRunFormatUsageErrors(t *testing.T) {
 	}
 	for name, args := range cases {
 		var stdout, stderr bytes.Buffer
-		if code := run(args, &stdout, &stderr); code != 2 {
-			t.Errorf("%s: exit %d, want 2 (stdout=%s stderr=%s)", name, code, stdout.String(), stderr.String())
-		}
-		if stderr.Len() == 0 {
-			t.Errorf("%s: nothing was written to stderr", name)
-		}
+		code := run(args, &stdout, &stderr)
+		assert.Equal(t, 2, code, name)
+		assert.NotEmpty(t, stderr.String(), name)
 	}
 
 	writeCLIFile(t, root, ".gdkit/format.json", "{not json")
 	for _, command := range []string{"check", "write"} {
 		var stdout, stderr bytes.Buffer
-		if code := run([]string{"format", command, root}, &stdout, &stderr); code != 2 {
-			t.Errorf("%s with bad config: exit %d, want 2", command, code)
-		}
-		if !strings.HasPrefix(stderr.String(), "gdkit: ") {
-			t.Errorf("%s with bad config: stderr = %q", command, stderr.String())
-		}
+		code := run([]string{"format", command, root}, &stdout, &stderr)
+		assert.Equal(t, 2, code, command)
+		assert.True(t, strings.HasPrefix(stderr.String(), "gdkit: "), command)
 	}
-	if got := readCLIFile(t, root, "player.gd"); got != unformattedScript {
-		t.Fatalf("a failed run rewrote the file: %q", got)
-	}
+	got := readCLIFile(t, root, "player.gd")
+	require.Equal(t, unformattedScript, got)
 }
 
 func TestRunFormatHonoursConfig(t *testing.T) {
@@ -210,13 +175,11 @@ func TestRunFormatHonoursConfig(t *testing.T) {
 	writeCLIFile(t, root, "player.gd", "func f():\n    pass\n")
 	writeCLIFile(t, root, "style.json", `{"indent": "spaces"}`)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "check", "--config", "style.json", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code := run([]string{"format", "check", "--config", "style.json", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 	stdout.Reset()
-	if code := run([]string{"format", "check", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("default style exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code = run([]string{"format", "check", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
 }
 
 func TestRunFormatWriteThenCheckPasses(t *testing.T) {
@@ -224,31 +187,22 @@ func TestRunFormatWriteThenCheckPasses(t *testing.T) {
 	writeCLIFile(t, root, "clean.gd", formattedScript)
 	writeCLIFile(t, root, "player.gd", unformattedScript)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "write", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("write exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code := run([]string{"format", "write", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 	want := "reformatted player.gd\nformat write: 1 reformatted, 1 unchanged\n"
-	if stdout.String() != want {
-		t.Fatalf("output = %q, want %q", stdout.String(), want)
-	}
-	if got := readCLIFile(t, root, "player.gd"); got != "extends Node\nvar a = 1\n\n\nfunc f(x):\n\treturn x + a\n" {
-		t.Fatalf("unexpected rewritten file: %q", got)
-	}
-	if got := readCLIFile(t, root, "clean.gd"); got != formattedScript {
-		t.Fatalf("clean file changed: %q", got)
-	}
+	require.Equal(t, want, stdout.String())
+	got := readCLIFile(t, root, "player.gd")
+	require.Equal(t, "extends Node\nvar a = 1\n\n\nfunc f(x):\n\treturn x + a\n", got)
+	got = readCLIFile(t, root, "clean.gd")
+	require.Equal(t, formattedScript, got)
 
 	stdout.Reset()
-	if code := run([]string{"format", "check", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("check after write exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code = run([]string{"format", "check", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 	stdout.Reset()
-	if code := run([]string{"format", "write", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("second write exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if stdout.String() != "format write: 0 reformatted, 2 unchanged\n" {
-		t.Fatalf("second write output: %q", stdout.String())
-	}
+	code = run([]string{"format", "write", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	require.Equal(t, "format write: 0 reformatted, 2 unchanged\n", stdout.String())
 }
 
 func TestRunFormatWriteSkipsUnparseableFile(t *testing.T) {
@@ -256,22 +210,16 @@ func TestRunFormatWriteSkipsUnparseableFile(t *testing.T) {
 	writeCLIFile(t, root, "broken.gd", unparseableScript)
 	writeCLIFile(t, root, "player.gd", unformattedScript)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "write", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
+	code := run([]string{"format", "write", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
 	output := stdout.String()
-	if !strings.HasPrefix(output, "reformatted player.gd\nbroken.gd:1: Error: ") || !strings.Contains(output, "(source-parse)") {
-		t.Fatalf("unexpected output: %s", output)
-	}
-	if !strings.HasSuffix(output, "format write: 1 reformatted, 0 unchanged, 1 skipped\n") {
-		t.Fatalf("unexpected summary: %s", output)
-	}
-	if got := readCLIFile(t, root, "broken.gd"); got != unparseableScript {
-		t.Fatalf("unparseable file was rewritten: %q", got)
-	}
-	if got := readCLIFile(t, root, "player.gd"); got == unformattedScript {
-		t.Fatal("the formattable file was not rewritten")
-	}
+	require.True(t, strings.HasPrefix(output, "reformatted player.gd\nbroken.gd:1: Error: "))
+	require.Contains(t, output, "(source-parse)")
+	require.True(t, strings.HasSuffix(output, "format write: 1 reformatted, 0 unchanged, 1 skipped\n"))
+	got := readCLIFile(t, root, "broken.gd")
+	require.Equal(t, unparseableScript, got)
+	got = readCLIFile(t, root, "player.gd")
+	require.NotEqual(t, unformattedScript, got)
 }
 
 func TestRunFormatWriteReportsWriteFailure(t *testing.T) {
@@ -282,77 +230,52 @@ func TestRunFormatWriteReportsWriteFailure(t *testing.T) {
 	writeCLIFile(t, root, "a.gd", unformattedScript)
 	writeCLIFile(t, root, "locked/b.gd", unformattedScript)
 	locked := filepath.Join(root, "locked")
-	if err := os.Chmod(locked, 0o555); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Chmod(locked, 0o555))
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "write", root}, &stdout, &stderr); code != 2 {
-		t.Fatalf("exit %d, want 2: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "reformatted a.gd\n") {
-		t.Errorf("the file written before the failure is not listed: %s", stdout.String())
-	}
-	if !strings.HasPrefix(stderr.String(), "gdkit: write locked/b.gd: ") {
-		t.Errorf("stderr = %q", stderr.String())
-	}
-	if got := readCLIFile(t, root, "locked/b.gd"); got != unformattedScript {
-		t.Errorf("the file that failed to write changed: %q", got)
-	}
+	code := run([]string{"format", "write", root}, &stdout, &stderr)
+	require.Equal(t, 2, code)
+	assert.Contains(t, stdout.String(), "reformatted a.gd\n")
+	assert.True(t, strings.HasPrefix(stderr.String(), "gdkit: write locked/b.gd: "))
+	got := readCLIFile(t, root, "locked/b.gd")
+	assert.Equal(t, unformattedScript, got)
 }
 
 func TestRunFormatInit(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "init", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("init exit %d: %s", code, stderr.String())
-	}
-	if stdout.String() != "wrote .gdkit/format.json\n" {
-		t.Fatalf("unexpected output: %s", stdout.String())
-	}
+	code := run([]string{"format", "init", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	require.Equal(t, "wrote .gdkit/format.json\n", stdout.String())
 	config, err := format.LoadConfig(root, "")
-	if err != nil {
-		t.Fatalf("written config does not load: %v", err)
-	}
-	if config.LineWidth != format.DefaultConfig().LineWidth || config.Indent != "tabs" {
-		t.Fatalf("written config is not the default: %+v", config)
-	}
+	require.NoError(t, err)
+	require.Equal(t, format.DefaultConfig().LineWidth, config.LineWidth)
+	require.Equal(t, "tabs", config.Indent)
 	name := filepath.Join(root, ".gdkit", "format.json")
-	if data := readCLIFile(t, root, ".gdkit/format.json"); !strings.HasSuffix(data, "}\n") || !strings.Contains(data, "\n  \"line_width\": 100,\n") {
-		t.Fatalf("unexpected config: %s", data)
-	}
+	data := readCLIFile(t, root, ".gdkit/format.json")
+	require.True(t, strings.HasSuffix(data, "}\n"))
+	require.Contains(t, data, "\n  \"line_width\": 100,\n")
 
-	if err := os.WriteFile(name, []byte("custom"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(name, []byte("custom"), 0o644))
 	stderr.Reset()
-	if code := run([]string{"format", "init", root}, &stdout, &stderr); code != 2 {
-		t.Fatalf("clobber exit %d, want 2", code)
-	}
-	if !strings.Contains(stderr.String(), "already exists (use --force to replace it)") {
-		t.Fatalf("stderr = %q", stderr.String())
-	}
-	if got, _ := os.ReadFile(name); string(got) != "custom" {
-		t.Fatalf("existing config was overwritten: %s", got)
-	}
-	if code := run([]string{"format", "init", "--force", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("force exit %d: %s", code, stderr.String())
-	}
-	if _, err := format.LoadConfig(root, ""); err != nil {
-		t.Fatalf("--force did not write a loadable config: %v", err)
-	}
+	code = run([]string{"format", "init", root}, &stdout, &stderr)
+	require.Equal(t, 2, code)
+	require.Contains(t, stderr.String(), "already exists (use --force to replace it)")
+	got, _ := os.ReadFile(name)
+	require.Equal(t, "custom", string(got))
+	code = run([]string{"format", "init", "--force", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	_, err = format.LoadConfig(root, "")
+	require.NoError(t, err)
 }
 
 func TestRunHelpMentionsFormatCommands(t *testing.T) {
 	for _, args := range [][]string{{"help"}, {"format", "help"}, {"format", "--help"}, {"format", "-h"}} {
 		var stdout, stderr bytes.Buffer
-		if code := run(args, &stdout, &stderr); code != 0 {
-			t.Fatalf("%v exit %d: %s", args, code, stderr.String())
-		}
+		code := run(args, &stdout, &stderr)
+		require.Equal(t, 0, code)
 		for _, command := range []string{"format check", "format write", "format init"} {
-			if !strings.Contains(stdout.String(), command) {
-				t.Errorf("%v output does not mention %q:\n%s", args, command, stdout.String())
-			}
+			assert.Contains(t, stdout.String(), command)
 		}
 	}
 }
@@ -362,22 +285,18 @@ func TestRunHelpMentionsFormatCommands(t *testing.T) {
 func decodeWritten(t *testing.T, output []byte) ([]string, bool) {
 	t.Helper()
 	var members map[string]json.RawMessage
-	if err := json.Unmarshal(output, &members); err != nil {
-		t.Fatalf("output is not JSON: %v\n%s", err, output)
-	}
+	require.NoError(t, json.Unmarshal(output, &members))
 	for _, name := range []string{"results", "diagnostics"} {
-		if _, ok := members[name]; !ok {
-			t.Fatalf("JSON has no %q member: %s", name, output)
-		}
+		require.Contains(t, members, name)
 	}
 	raw, ok := members["written"]
 	if !ok {
 		return nil, false
 	}
 	var written []string
-	if err := json.Unmarshal(raw, &written); err != nil || written == nil {
-		t.Fatalf("written is not an array: %s", raw)
-	}
+	err := json.Unmarshal(raw, &written)
+	require.NoError(t, err)
+	require.NotNil(t, written)
 	return written, true
 }
 
@@ -385,34 +304,26 @@ func TestRunFormatWriteJSONListsWrittenPaths(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "clean.gd", formattedScript)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "write", "--format", "json", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	if written, ok := decodeWritten(t, stdout.Bytes()); !ok || len(written) != 0 {
-		t.Fatalf("written = %v (present %v), want an empty array: %s", written, ok, stdout.String())
-	}
-	if !strings.Contains(stdout.String(), "  \"written\": []") {
-		t.Fatalf("written should be an empty array: %s", stdout.String())
-	}
+	code := run([]string{"format", "write", "--format", "json", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	written, ok := decodeWritten(t, stdout.Bytes())
+	require.True(t, ok)
+	require.Empty(t, written)
+	require.Contains(t, stdout.String(), "  \"written\": []")
 
 	writeCLIFile(t, root, "broken.gd", unparseableScript)
 	writeCLIFile(t, root, "b/player.gd", unformattedScript)
 	writeCLIFile(t, root, "a/player.gd", unformattedScript)
 	stdout.Reset()
-	if code := run([]string{"format", "check", "--format", "json", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("check exit %d: %s", code, stderr.String())
-	}
-	if _, ok := decodeWritten(t, stdout.Bytes()); ok {
-		t.Fatalf("check reported written files: %s", stdout.String())
-	}
+	code = run([]string{"format", "check", "--format", "json", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
+	_, ok = decodeWritten(t, stdout.Bytes())
+	require.False(t, ok)
 	stdout.Reset()
-	if code := run([]string{"format", "write", "--format", "json", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("write exit %d: %s", code, stderr.String())
-	}
-	written, _ := decodeWritten(t, stdout.Bytes())
-	if strings.Join(written, ",") != "a/player.gd,b/player.gd" {
-		t.Fatalf("written = %v: %s", written, stdout.String())
-	}
+	code = run([]string{"format", "write", "--format", "json", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
+	written, _ = decodeWritten(t, stdout.Bytes())
+	require.Equal(t, "a/player.gd,b/player.gd", strings.Join(written, ","))
 }
 
 func TestRunFormatWriteJSONListsWrittenPathsAfterAFailure(t *testing.T) {
@@ -424,28 +335,20 @@ func TestRunFormatWriteJSONListsWrittenPathsAfterAFailure(t *testing.T) {
 	writeCLIFile(t, root, "locked/b.gd", unformattedScript)
 	writeCLIFile(t, root, "z.gd", unformattedScript)
 	locked := filepath.Join(root, "locked")
-	if err := os.Chmod(locked, 0o555); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Chmod(locked, 0o555))
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "write", "--format", "json", root}, &stdout, &stderr); code != 2 {
-		t.Fatalf("exit %d, want 2: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if written, _ := decodeWritten(t, stdout.Bytes()); strings.Join(written, ",") != "a.gd" {
-		t.Fatalf("written = %v, want only a.gd: %s", written, stdout.String())
-	}
+	code := run([]string{"format", "write", "--format", "json", root}, &stdout, &stderr)
+	require.Equal(t, 2, code)
+	written, _ := decodeWritten(t, stdout.Bytes())
+	require.Equal(t, "a.gd", strings.Join(written, ","))
 	// --format json was asked for, so the failure is an envelope on stderr
 	// rather than prose. stdout still carries the report of what was written
 	// before the failure, which is why this run is not covered by the
 	// empty-stdout rule the other enveloped failures follow.
 	body := decodeFailure(t, stderr.Bytes())
-	if body.Kind != "file.write" {
-		t.Errorf("kind = %q, want file.write", body.Kind)
-	}
-	if !strings.HasPrefix(body.Message, "write locked/b.gd: ") {
-		t.Errorf("message = %q", body.Message)
-	}
+	assert.Equal(t, "file.write", body.Kind)
+	assert.True(t, strings.HasPrefix(body.Message, "write locked/b.gd: "))
 }
 
 func TestRunFormatRefusesAnUnsafeRewrite(t *testing.T) {
@@ -458,26 +361,19 @@ func TestRunFormatRefusesAnUnsafeRewrite(t *testing.T) {
 	want := "text.gd:1: Error: formatting would change the code a lint suppression comment applies to (format.unsafe)\n"
 	for _, command := range []string{"check", "write"} {
 		var stdout, stderr bytes.Buffer
-		if code := run([]string{"format", command, root}, &stdout, &stderr); code != 1 {
-			t.Fatalf("%s exit %d: stdout=%s stderr=%s", command, code, stdout.String(), stderr.String())
-		}
-		if !strings.Contains(stdout.String(), want) {
-			t.Errorf("%s output = %q, want it to contain %q", command, stdout.String(), want)
-		}
-		if got := readCLIFile(t, root, "text.gd"); got != unsafe {
-			t.Fatalf("%s rewrote the refused file: %q", command, got)
-		}
+		code := run([]string{"format", command, root}, &stdout, &stderr)
+		require.Equal(t, 1, code, command)
+		assert.Contains(t, stdout.String(), want, command)
+		got := readCLIFile(t, root, "text.gd")
+		require.Equal(t, unsafe, got, command)
 	}
-	if got := readCLIFile(t, root, "player.gd"); got == unformattedScript {
-		t.Fatal("write did not rewrite the safe file")
-	}
+	got := readCLIFile(t, root, "player.gd")
+	require.NotEqual(t, unformattedScript, got)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "write", "--format", "json", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("json write exit %d: %s", code, stderr.String())
-	}
-	if written, _ := decodeWritten(t, stdout.Bytes()); len(written) != 0 {
-		t.Fatalf("written = %v, want none", written)
-	}
+	code := run([]string{"format", "write", "--format", "json", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
+	written, _ := decodeWritten(t, stdout.Bytes())
+	require.Empty(t, written)
 }
 
 // A one-line class body holds one member, so writing the body as a block has
@@ -488,10 +384,8 @@ func TestRunFormatWritesOneLineClassMembersInTheirOwnScope(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, root, "inner.gd", source)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"format", "write", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit %d: stdout=%s stderr=%s", code, stdout.String(), stderr.String())
-	}
-	if got := readCLIFile(t, root, "inner.gd"); got != want {
-		t.Fatalf("written = %q, want %q", got, want)
-	}
+	code := run([]string{"format", "write", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
+	got := readCLIFile(t, root, "inner.gd")
+	require.Equal(t, want, got)
 }

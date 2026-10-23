@@ -1,6 +1,11 @@
 package buildinfo
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestCurrentUsesInjectedValues(t *testing.T) {
 	oldVersion, oldCommit, oldDate, oldTreeState := version, commit, date, treeState
@@ -13,9 +18,10 @@ func TestCurrentUsesInjectedValues(t *testing.T) {
 	treeState = "dirty"
 
 	got := Current()
-	if got.Version != "1.2.3" || got.Commit != commit || got.Date != date || !got.Dirty {
-		t.Fatalf("Current() = %#v", got)
-	}
+	require.Equal(t, "1.2.3", got.Version)
+	require.Equal(t, commit, got.Commit)
+	require.Equal(t, date, got.Date)
+	require.True(t, got.Dirty)
 }
 
 func TestInfoString(t *testing.T) {
@@ -26,9 +32,8 @@ func TestInfoString(t *testing.T) {
 		Dirty:   true,
 	}
 	want := "gdkit version 1.2.3 (commit 0123456789ab, dirty), built 2026-09-30T12:00:00Z"
-	if got := info.String(); got != want {
-		t.Fatalf("String() = %q, want %q", got, want)
-	}
+	got := info.String()
+	require.Equal(t, want, got)
 }
 
 func TestNormalizeVersion(t *testing.T) {
@@ -38,8 +43,7 @@ func TestNormalizeVersion(t *testing.T) {
 		"(devel)": "dev",
 		"":        "dev",
 	} {
-		if got := normalizeVersion(input); got != want {
-			t.Errorf("normalizeVersion(%q) = %q, want %q", input, got, want)
-		}
+		got := normalizeVersion(input)
+		assert.Equal(t, want, got)
 	}
 }

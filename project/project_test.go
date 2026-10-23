@@ -1,16 +1,16 @@
 package project
 
 import (
-	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const godotThemeBinaryFixture = "UlNSQwAAAAAAAAAABAAAAAcAAAAGAAAABgAAAFRoZW1lAAAAAAAAAAAAAwAAAPzo8aEmmiAKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAAAGAAAAHJlc291cmNlX2xvY2FsX3RvX3NjZW5lAA4AAAByZXNvdXJjZV9uYW1lABMAAABkZWZhdWx0X2Jhc2Vfc2NhbGUADQAAAGRlZmF1bHRfZm9udAASAAAAZGVmYXVsdF9mb250X3NpemUABwAAAHNjcmlwdAAAAAAAAQAAABQAAABsb2NhbDovL1RoZW1lX2I3NGl2AAUBAAAAAAAABgAAAFRoZW1lAAEAAAAFAAAAAQAAAFJTUkM="
@@ -19,12 +19,8 @@ func writeFiles(t *testing.T, root string, files map[string]string) {
 	t.Helper()
 	for name, contents := range files {
 		absolute := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
+		require.NoError(t, os.WriteFile(absolute, []byte(contents), 0o644))
 	}
 }
 
@@ -39,26 +35,16 @@ func TestLoadDiscoversParsesAndExcludes(t *testing.T) {
 	})
 
 	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"."}, Exclude: []string{"addons/**"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := []string{"nested/enemy.gd", "player.gd"}
-	if !slices.Equal(snapshot.Paths, want) {
-		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
-	}
+	require.Equal(t, want, snapshot.Paths)
 	script := snapshot.Scripts["player.gd"]
-	if script == nil || script.File == nil || script.ParseError != nil {
-		t.Fatalf("player.gd did not parse: %#v", script)
-	}
-	if string(script.Source) != "var speed := 1\n" {
-		t.Errorf("Source = %q", script.Source)
-	}
-	if len(script.Lines) != 1 {
-		t.Errorf("Lines = %v, want one line start", script.Lines)
-	}
-	if snapshot.UIDs["uid://abc123"] != "nested/enemy.gd" {
-		t.Errorf("UIDs = %v", snapshot.UIDs)
-	}
+	require.NotNil(t, script)
+	require.NotNil(t, script.File)
+	require.NoError(t, script.ParseError)
+	assert.Equal(t, "var speed := 1\n", string(script.Source))
+	assert.Len(t, script.Lines, 1)
+	assert.Equal(t, "nested/enemy.gd", snapshot.UIDs["uid://abc123"])
 }
 
 func TestLoadPublishesSortedResourceInventory(t *testing.T) {
@@ -74,12 +60,8 @@ func TestLoadPublishesSortedResourceInventory(t *testing.T) {
 	})
 
 	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"."}, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !snapshot.IdentityEvidence {
-		t.Fatal("identity evidence request was not retained")
-	}
+	require.NoError(t, err)
+	require.True(t, snapshot.IdentityEvidence)
 	want := []Resource{
 		{Path: "art/icon.png", Kind: ResourceImported},
 		{Path: "scripts/broken.gd", Kind: ResourceScript},
@@ -87,9 +69,7 @@ func TestLoadPublishesSortedResourceInventory(t *testing.T) {
 		{Path: "theme.tres", Kind: ResourceText},
 		{Path: "world/main.tscn", Kind: ResourceScene},
 	}
-	if !slices.Equal(snapshot.Resources, want) {
-		t.Fatalf("Resources = %#v, want %#v", snapshot.Resources, want)
-	}
+	require.Equal(t, want, snapshot.Resources)
 }
 
 func TestLoadKeepsIgnoredResourceOwnersOutOfInventoryInEveryIdentityMode(t *testing.T) {
@@ -108,14 +88,10 @@ func TestLoadKeepsIgnoredResourceOwnersOutOfInventoryInEveryIdentityMode(t *test
 	for _, identities := range []bool{false, true} {
 		t.Run(fmt.Sprintf("identities=%t", identities), func(t *testing.T) {
 			snapshot, err := Load(Config{Root: root, HonorIgnoreFile: true, Identities: identities})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !slices.Equal(snapshot.Resources, want) {
-				t.Fatalf("Resources = %#v, want ignored owners excluded regardless of Identities", snapshot.Resources)
-			}
-			if identities && len(snapshot.Claims) != 4 {
-				t.Fatalf("Claims = %#v, want all four ignored declarations retained", snapshot.Claims)
+			require.NoError(t, err)
+			require.Equal(t, want, snapshot.Resources)
+			if identities {
+				require.Len(t, snapshot.Claims, 4)
 			}
 		})
 	}
@@ -134,12 +110,8 @@ func TestLoadKeepsGeneratedMetadataOutOfInventoryInEveryIdentityMode(t *testing.
 	for _, identities := range []bool{false, true} {
 		t.Run(fmt.Sprintf("identities=%t", identities), func(t *testing.T) {
 			snapshot, err := Load(Config{Root: root, Identities: identities})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !slices.Equal(snapshot.Resources, want) {
-				t.Fatalf("Resources = %#v, want generated metadata excluded regardless of Identities", snapshot.Resources)
-			}
+			require.NoError(t, err)
+			require.Equal(t, want, snapshot.Resources)
 		})
 	}
 }
@@ -156,12 +128,9 @@ func TestLoadMarksIdentityEvidenceIncompleteWhenCoverageIsNarrowed(t *testing.T)
 		{Root: root, Exclude: []string{"outside/**"}, Identities: true},
 	} {
 		snapshot, err := Load(config)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
-			t.Fatalf("identity capture = requested:%t incomplete:%t, want requested but incomplete for narrowed discovery", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
-		}
+		require.NoError(t, err)
+		require.True(t, snapshot.IdentityEvidence)
+		require.True(t, snapshot.IdentityIncomplete)
 	}
 }
 
@@ -173,17 +142,12 @@ func TestLoadMarksUnreadableIdentityClaimEvidenceIncomplete(t *testing.T) {
 		"unreadable.gd":     "class_name Unreadable\n",
 		"unreadable.gd.uid": "uid://b\n",
 	})
-	if err := os.Chmod(path, 0); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Chmod(path, 0))
 	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
 	snapshot, err := Load(Config{Root: root, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
-		t.Fatalf("identity capture = requested:%t incomplete:%t, want unreadable claimant evidence to be incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
-	}
+	require.NoError(t, err)
+	require.True(t, snapshot.IdentityEvidence)
+	require.True(t, snapshot.IdentityIncomplete)
 }
 
 func TestLoadMarksUnscannableIdentityClaimEvidenceIncomplete(t *testing.T) {
@@ -193,12 +157,9 @@ func TestLoadMarksUnscannableIdentityClaimEvidenceIncomplete(t *testing.T) {
 		"oversize.tscn": strings.Repeat("x", maxResourceLine+1) + "\n",
 	})
 	snapshot, err := Load(Config{Root: root, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
-		t.Fatalf("identity capture = requested:%t incomplete:%t, want oversized claim source to be incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
-	}
+	require.NoError(t, err)
+	require.True(t, snapshot.IdentityEvidence)
+	require.True(t, snapshot.IdentityIncomplete)
 }
 
 func TestLoadMarksLeadingCommentUnscannableIdentityClaimEvidenceIncomplete(t *testing.T) {
@@ -208,12 +169,9 @@ func TestLoadMarksLeadingCommentUnscannableIdentityClaimEvidenceIncomplete(t *te
 		"oversize.tscn": "; Godot permits leading comments\n" + strings.Repeat("x", maxResourceLine+1) + "\n",
 	})
 	snapshot, err := Load(Config{Root: root, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
-		t.Fatalf("identity capture = requested:%t incomplete:%t, want an unreadable post-comment header to remain incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
-	}
+	require.NoError(t, err)
+	require.True(t, snapshot.IdentityEvidence)
+	require.True(t, snapshot.IdentityIncomplete)
 }
 
 func TestLoadMarksRealGodotBinaryResourceClaimEvidenceIncomplete(t *testing.T) {
@@ -248,36 +206,22 @@ func TestLoadMarksRealGodotBinaryResourceClaimEvidenceIncomplete(t *testing.T) {
 		t.Run(fixture.path, func(t *testing.T) {
 			root := t.TempDir()
 			data, err := base64.StdEncoding.DecodeString(fixture.data)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(data) < 4 || (string(data[:4]) != "RSRC" && string(data[:4]) != "RSCC") {
-				t.Fatalf("producer fixture %s has unexpected binary resource magic", fixture.path)
-			}
+			require.NoError(t, err)
+			require.GreaterOrEqual(t, len(data), 4)
+			require.Contains(t, []string{"RSRC", "RSCC"}, string(data[:4]))
 			writeFiles(t, root, map[string]string{"loader.gd": "class_name Loader\n"})
 			path := filepath.Join(root, fixture.path)
-			if err := os.WriteFile(path, data, 0o644); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.WriteFile(path, data, 0o644))
 			before, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
 			snapshot, err := Load(Config{Root: root, Identities: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !snapshot.IdentityEvidence || !snapshot.IdentityIncomplete {
-				t.Fatalf("identity capture = requested:%t incomplete:%t, want real binary resource to make opaque UID evidence incomplete", snapshot.IdentityEvidence, snapshot.IdentityIncomplete)
-			}
+			require.NoError(t, err)
+			require.True(t, snapshot.IdentityEvidence)
+			require.True(t, snapshot.IdentityIncomplete)
 			after, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(after, before) {
-				t.Fatalf("Load changed real producer bytes for %s", fixture.path)
-			}
+			require.NoError(t, err)
+			require.Equal(t, before, after)
 		})
 	}
 }
@@ -287,9 +231,7 @@ func TestLoadExcludesGeneratedMetadataFromIdentityEvidence(t *testing.T) {
 	// may contain it, but its UID is not part of the project's claimant
 	// universe and must not poison a complete project identity capture.
 	binary, err := base64.StdEncoding.DecodeString(godotThemeBinaryFixture)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for _, testCase := range []struct {
 		name    string
 		exclude []string
@@ -307,26 +249,16 @@ func TestLoadExcludesGeneratedMetadataFromIdentityEvidence(t *testing.T) {
 				".git/objects/claim.uid": "uid://b\n",
 			})
 			cachePath := filepath.Join(root, ".godot", "imported", "opaque.theme")
-			if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(cachePath, binary, 0o644); err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, os.MkdirAll(filepath.Dir(cachePath), 0o755))
+			require.NoError(t, os.WriteFile(cachePath, binary, 0o644))
 
 			snapshot, err := Load(Config{Root: root, Exclude: testCase.exclude, Identities: true})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if snapshot.IdentityIncomplete {
-				t.Fatal("generated metadata made project identity evidence incomplete")
-			}
-			if len(snapshot.Claims) != 1 || snapshot.Claims[0].Owner != "target.gd" || snapshot.Claims[0].UID != "uid://b" {
-				t.Fatalf("Claims = %#v, want only the project claimant", snapshot.Claims)
-			}
-			if snapshot.UIDs["uid://b"] != "target.gd" {
-				t.Fatalf("UIDs = %#v, want project claimant only", snapshot.UIDs)
-			}
+			require.NoError(t, err)
+			require.False(t, snapshot.IdentityIncomplete)
+			require.Len(t, snapshot.Claims, 1)
+			require.Equal(t, "target.gd", snapshot.Claims[0].Owner)
+			require.Equal(t, "uid://b", snapshot.Claims[0].UID)
+			require.Equal(t, "target.gd", snapshot.UIDs["uid://b"])
 		})
 	}
 }
@@ -338,19 +270,13 @@ func TestLoadKeepsHeaderClaimEvidenceCompleteAfterReferenceScanFailure(t *testin
 		"scene.tscn": "[gd_scene format=3 uid=\"uid://b\"]\n" + strings.Repeat("x", maxResourceLine+1) + "\n",
 	})
 	snapshot, err := Load(Config{Root: root, Identities: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.IdentityIncomplete {
-		t.Fatal("a later reference scan failure must not make the already-read header claimant incomplete")
-	}
+	require.NoError(t, err)
+	require.False(t, snapshot.IdentityIncomplete)
 }
 
 func TestResourceKindVocabularyIsClosed(t *testing.T) {
 	for _, kind := range []ResourceKind{ResourceScript, ResourceScene, ResourceText, ResourceImported} {
-		if kind.String() == "" {
-			t.Fatalf("resource kind %d is not closed", kind)
-		}
+		require.NotEmpty(t, kind.String())
 	}
 }
 
@@ -362,38 +288,25 @@ func TestLoadReportsParseFailureOnTheScript(t *testing.T) {
 	})
 
 	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"."}})
-	if err != nil {
-		t.Fatalf("Load should not fail on an unparseable file: %v", err)
-	}
-	if snapshot.Scripts["broken.gd"].ParseError == nil {
-		t.Error("broken.gd should carry a ParseError")
-	}
-	if snapshot.Scripts["broken.gd"].File != nil {
-		t.Error("broken.gd should have no tree")
-	}
-	if snapshot.Scripts["fine.gd"].ParseError != nil {
-		t.Error("fine.gd should have parsed")
-	}
+	require.NoError(t, err)
+	assert.NotNil(t, snapshot.Scripts["broken.gd"].ParseError)
+	assert.Nil(t, snapshot.Scripts["broken.gd"].File)
+	assert.NoError(t, snapshot.Scripts["fine.gd"].ParseError)
 }
 
 func TestLoadRejectsSourceRootOutsideProject(t *testing.T) {
 	root := t.TempDir()
-	if _, err := Load(Config{Root: root, SourceRoots: []string{".."}}); err == nil {
-		t.Error("a source root above the project root must be an error")
-	}
+	_, err := Load(Config{Root: root, SourceRoots: []string{".."}})
+	assert.Error(t, err)
 }
 
 func TestLineStartsCoverEveryLine(t *testing.T) {
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{"a.gd": "var a := 1\nvar b := 2\nvar c := 3\n"})
 	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"."}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	lines := snapshot.Scripts["a.gd"].Lines
-	if !slices.Equal(lines, []int{0, 11, 22}) {
-		t.Errorf("Lines = %v, want [0 11 22]", lines)
-	}
+	assert.Equal(t, []int{0, 11, 22}, lines)
 }
 
 func loadSingleScript(t *testing.T, source string) *Script {
@@ -401,13 +314,9 @@ func loadSingleScript(t *testing.T, source string) *Script {
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{"a.gd": source})
 	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"."}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	script := snapshot.Scripts["a.gd"]
-	if script == nil {
-		t.Fatal("a.gd was not discovered")
-	}
+	require.NotNil(t, script)
 	return script
 }
 
@@ -432,19 +341,13 @@ func TestScriptLineAndLineCount(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			script := loadSingleScript(t, test.source)
-			if got := script.LineCount(); got != test.wantCount {
-				t.Fatalf("LineCount() = %d, want %d", got, test.wantCount)
-			}
-			if len(script.Lines) != script.LineCount() {
-				t.Errorf("len(Lines) = %d, LineCount() = %d", len(script.Lines), script.LineCount())
-			}
-			if test.wantCount > 0 && script.Lines[0] != 0 {
-				t.Errorf("Lines[0] = %d, want 0", script.Lines[0])
+			require.Equal(t, test.wantCount, script.LineCount())
+			assert.Equal(t, script.LineCount(), len(script.Lines))
+			if test.wantCount > 0 {
+				assert.Equal(t, 0, script.Lines[0])
 			}
 			for index, want := range test.wantLines {
-				if got := script.Line(index + 1); got != want {
-					t.Errorf("Line(%d) = %q, want %q", index+1, got, want)
-				}
+				assert.Equal(t, want, script.Line(index+1))
 			}
 		})
 	}
@@ -453,22 +356,16 @@ func TestScriptLineAndLineCount(t *testing.T) {
 func TestScriptLineOutOfRangeReturnsEmpty(t *testing.T) {
 	script := loadSingleScript(t, "var a := 1\nvar b := 2\nvar c := 3\n")
 	for _, number := range []int{0, -1, 4, 1000} {
-		if got := script.Line(number); got != "" {
-			t.Errorf("Line(%d) = %q, want empty", number, got)
-		}
+		assert.Empty(t, script.Line(number))
 	}
 	empty := loadSingleScript(t, "")
-	if got := empty.Line(1); got != "" {
-		t.Errorf("Line(1) on an empty file = %q, want empty", got)
-	}
+	assert.Empty(t, empty.Line(1))
 }
 
 func loadHonoringIgnoreFile(t *testing.T, root string, exclude ...string) *Snapshot {
 	t.Helper()
 	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"."}, Exclude: exclude, HonorIgnoreFile: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return snapshot
 }
 
@@ -487,9 +384,7 @@ func TestLoadSkipsPathsFromTheIgnoreFile(t *testing.T) {
 
 	snapshot := loadHonoringIgnoreFile(t, root)
 	want := []string{"apps/editor/main.gd", "client/protocol/plain.gd", "player.gd"}
-	if !slices.Equal(snapshot.Paths, want) {
-		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
-	}
+	require.Equal(t, want, snapshot.Paths)
 }
 
 func TestLoadReincludesInsideAnIgnoredDirectory(t *testing.T) {
@@ -505,9 +400,7 @@ func TestLoadReincludesInsideAnIgnoredDirectory(t *testing.T) {
 
 	snapshot := loadHonoringIgnoreFile(t, root)
 	want := []string{"addons/our_plugin/nested/helper.gd", "addons/our_plugin/plugin.gd", "player.gd"}
-	if !slices.Equal(snapshot.Paths, want) {
-		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
-	}
+	require.Equal(t, want, snapshot.Paths)
 }
 
 func TestLoadConfigExcludeWinsOverIgnoreFileNegation(t *testing.T) {
@@ -521,9 +414,7 @@ func TestLoadConfigExcludeWinsOverIgnoreFileNegation(t *testing.T) {
 
 	snapshot := loadHonoringIgnoreFile(t, root, "addons/**", "vendor/*.gd")
 	want := []string{"player.gd"}
-	if !slices.Equal(snapshot.Paths, want) {
-		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
-	}
+	require.Equal(t, want, snapshot.Paths)
 }
 
 func TestLoadDoesNotConsultTheIgnoreFileUnlessAsked(t *testing.T) {
@@ -535,18 +426,13 @@ func TestLoadDoesNotConsultTheIgnoreFileUnlessAsked(t *testing.T) {
 	})
 
 	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"."}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := []string{"addons/plugin/in.gd", "player.gd"}
-	if !slices.Equal(snapshot.Paths, want) {
-		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
-	}
+	require.Equal(t, want, snapshot.Paths)
 
 	writeFiles(t, root, map[string]string{".gdkitignore": "[unterminated\n"})
-	if _, err := Load(Config{Root: root, SourceRoots: []string{"."}}); err != nil {
-		t.Fatalf("a malformed ignore file must not matter when it is not honored: %v", err)
-	}
+	_, err = Load(Config{Root: root, SourceRoots: []string{"."}})
+	require.NoError(t, err)
 }
 
 func TestLoadWithoutAnIgnoreFileIgnoresNothing(t *testing.T) {
@@ -554,9 +440,7 @@ func TestLoadWithoutAnIgnoreFileIgnoresNothing(t *testing.T) {
 	writeFiles(t, root, map[string]string{"addons/plugin/in.gd": "var kept := 1\n"})
 
 	snapshot := loadHonoringIgnoreFile(t, root)
-	if want := []string{"addons/plugin/in.gd"}; !slices.Equal(snapshot.Paths, want) {
-		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
-	}
+	require.Equal(t, []string{"addons/plugin/in.gd"}, snapshot.Paths)
 }
 
 func TestLoadReadsOnlyTheRootIgnoreFile(t *testing.T) {
@@ -567,9 +451,7 @@ func TestLoadReadsOnlyTheRootIgnoreFile(t *testing.T) {
 	})
 
 	snapshot := loadHonoringIgnoreFile(t, root)
-	if want := []string{"nested/enemy.gd"}; !slices.Equal(snapshot.Paths, want) {
-		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
-	}
+	require.Equal(t, []string{"nested/enemy.gd"}, snapshot.Paths)
 }
 
 func TestLoadRejectsMalformedIgnoreFile(t *testing.T) {
@@ -580,27 +462,17 @@ func TestLoadRejectsMalformedIgnoreFile(t *testing.T) {
 	})
 
 	_, err := Load(Config{Root: root, SourceRoots: []string{"."}, HonorIgnoreFile: true})
-	if err == nil {
-		t.Fatal("a malformed ignore file must be an error")
-	}
-	if !strings.HasPrefix(err.Error(), "parse .gdkitignore: line 2: ") {
-		t.Errorf("error = %q", err)
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse .gdkitignore: line 2: ")
 }
 
 func TestLoadRejectsUnreadableIgnoreFile(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, IgnoreFileName), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Mkdir(filepath.Join(root, IgnoreFileName), 0o755))
 
 	_, err := Load(Config{Root: root, SourceRoots: []string{"."}, HonorIgnoreFile: true})
-	if err == nil {
-		t.Fatal("an unreadable ignore file must be an error")
-	}
-	if !strings.HasPrefix(err.Error(), "read .gdkitignore: ") {
-		t.Errorf("error = %q", err)
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read .gdkitignore: ")
 }
 
 func TestLoadDoesNotRegisterUIDOfIgnoredScript(t *testing.T) {
@@ -619,9 +491,7 @@ func TestLoadDoesNotRegisterUIDOfIgnoredScript(t *testing.T) {
 
 	snapshot := loadHonoringIgnoreFile(t, root)
 	want := map[string]string{"uid://player": "player.gd", "uid://ourplugin": "addons/our_plugin/plugin.gd"}
-	if !maps.Equal(snapshot.UIDs, want) {
-		t.Fatalf("UIDs = %v, want %v", snapshot.UIDs, want)
-	}
+	require.Equal(t, want, snapshot.UIDs)
 }
 
 func TestParseFailureLocatesParserAndLexerErrors(t *testing.T) {
@@ -636,22 +506,21 @@ func TestParseFailureLocatesParserAndLexerErrors(t *testing.T) {
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
 			script := loadSingleScript(t, testCase.source)
-			if script.ParseError == nil {
-				t.Fatal("fixture parsed")
-			}
+			require.NotNil(t, script.ParseError)
 			line, column, message := script.ParseFailure()
-			if line != testCase.line || column != testCase.column || message != testCase.message {
-				t.Fatalf("ParseFailure() = %d, %d, %q; want %d, %d, %q", line, column, message, testCase.line, testCase.column, testCase.message)
-			}
+			require.Equal(t, testCase.line, line)
+			require.Equal(t, testCase.column, column)
+			require.Equal(t, testCase.message, message)
 		})
 	}
 }
 
 func TestParseFailureFallsBackToTheStartOfTheFile(t *testing.T) {
 	script := &Script{Path: "a.gd", ParseError: errors.New("opaque failure")}
-	if line, column, message := script.ParseFailure(); line != 1 || column != 1 || message != "opaque failure" {
-		t.Fatalf("ParseFailure() = %d, %d, %q", line, column, message)
-	}
+	line, column, message := script.ParseFailure()
+	require.Equal(t, 1, line)
+	require.Equal(t, 1, column)
+	require.Equal(t, "opaque failure", message)
 }
 
 func TestLoadRecordsSidecarsItCannotResolve(t *testing.T) {
@@ -667,23 +536,17 @@ func TestLoadRecordsSidecarsItCannotResolve(t *testing.T) {
 	})
 
 	snapshot, err := Load(Config{Root: root})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := []Sidecar{
 		{Path: "broken.gd.uid", Owner: "broken.gd", Text: "nonsense"},
 		{Path: "nested/enemy.gd.uid", Owner: "nested/enemy.gd", Text: "uid://abc123"},
 		{Path: "player.gd.uid", Owner: "player.gd", Text: "uid://abc123"},
 		{Path: "water.gdshader.uid", Owner: "water.gdshader", Text: "uid://shader"},
 	}
-	if !slices.Equal(snapshot.Sidecars, want) {
-		t.Fatalf("Sidecars = %+v, want %+v", snapshot.Sidecars, want)
-	}
+	require.Equal(t, want, snapshot.Sidecars)
 	// UIDs resolves an identifier to one path, so the duplicate above leaves
 	// a single entry. Sidecars is where both claimants survive.
-	if len(snapshot.UIDs) != 2 {
-		t.Errorf("UIDs = %v, want two entries", snapshot.UIDs)
-	}
+	assert.Len(t, snapshot.UIDs, 2)
 }
 
 func TestLoadSkipsSidecarsOfIgnoredFiles(t *testing.T) {
@@ -697,13 +560,9 @@ func TestLoadSkipsSidecarsOfIgnoredFiles(t *testing.T) {
 	})
 
 	snapshot, err := Load(Config{Root: root, HonorIgnoreFile: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := []Sidecar{{Path: "player.gd.uid", Owner: "player.gd", Text: "uid://abc123"}}
-	if !slices.Equal(snapshot.Sidecars, want) {
-		t.Fatalf("Sidecars = %+v, want %+v", snapshot.Sidecars, want)
-	}
+	require.Equal(t, want, snapshot.Sidecars)
 }
 
 func TestLoadIndexesIdentifiersDeclaredInsideResources(t *testing.T) {
@@ -717,21 +576,15 @@ func TestLoadIndexesIdentifiersDeclaredInsideResources(t *testing.T) {
 	})
 
 	snapshot, err := Load(Config{Root: root})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := map[string]string{
 		"uid://dscene": "ui/panel.tscn",
 		"uid://ctheme": "ui/theme.tres",
 		"uid://bicon":  "art/icon.svg",
 		"uid://bpanel": "ui/panel.gd",
 	}
-	if !maps.Equal(snapshot.UIDs, want) {
-		t.Fatalf("UIDs = %v, want %v", snapshot.UIDs, want)
-	}
-	if len(snapshot.Sidecars) != 1 {
-		t.Errorf("Sidecars = %#v, want only the .uid file", snapshot.Sidecars)
-	}
+	require.Equal(t, want, snapshot.UIDs)
+	assert.Len(t, snapshot.Sidecars, 1)
 }
 
 func TestLoadPrefersSidecarOverResourceHeaderForTheSameIdentifier(t *testing.T) {
@@ -743,12 +596,8 @@ func TestLoadPrefersSidecarOverResourceHeaderForTheSameIdentifier(t *testing.T) 
 	})
 
 	snapshot, err := Load(Config{Root: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.UIDs["uid://bshared"] != "ui/panel.gd" {
-		t.Fatalf("UIDs = %v, want the sidecar owner to win", snapshot.UIDs)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "ui/panel.gd", snapshot.UIDs["uid://bshared"])
 }
 
 func TestLoadSelectionNarrowsSelectedButNotPaths(t *testing.T) {
@@ -761,30 +610,18 @@ func TestLoadSelectionNarrowsSelectedButNotPaths(t *testing.T) {
 		Root:      root,
 		Selection: &Selection{SourceRoots: []string{"."}, Exclude: []string{"addons/**"}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(snapshot.Paths) != 2 {
-		t.Fatalf("Paths = %v, want both scripts", snapshot.Paths)
-	}
-	if !slices.Equal(snapshot.Selected, []string{"keep.gd"}) {
-		t.Errorf("Selected = %v, want [keep.gd]", snapshot.Selected)
-	}
-	if snapshot.Scripts["addons/vendor.gd"] == nil {
-		t.Error("an unselected script must still be parsed and indexed")
-	}
+	require.NoError(t, err)
+	require.Len(t, snapshot.Paths, 2)
+	assert.Equal(t, []string{"keep.gd"}, snapshot.Selected)
+	assert.NotNil(t, snapshot.Scripts["addons/vendor.gd"])
 }
 
 func TestLoadWithNoSelectionSelectsEverything(t *testing.T) {
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{"a.gd": "class_name A\n"})
 	snapshot, err := Load(Config{Root: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(snapshot.Selected, snapshot.Paths) {
-		t.Errorf("Selected = %v, want Paths %v", snapshot.Selected, snapshot.Paths)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, snapshot.Paths, snapshot.Selected)
 }
 
 func TestLoadSelectionHonorsTheIgnoreFile(t *testing.T) {
@@ -798,15 +635,9 @@ func TestLoadSelectionHonorsTheIgnoreFile(t *testing.T) {
 		Root:      root,
 		Selection: &Selection{SourceRoots: []string{"."}, HonorIgnoreFile: true},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(snapshot.Selected, []string{"keep.gd"}) {
-		t.Errorf("Selected = %v, want [keep.gd]", snapshot.Selected)
-	}
-	if snapshot.Scripts["hidden.gd"] == nil {
-		t.Error("an ignored script must still be in the snapshot so its class_name stays indexed")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, []string{"keep.gd"}, snapshot.Selected)
+	assert.NotNil(t, snapshot.Scripts["hidden.gd"])
 }
 
 func TestLoadSelectionNarrowsBySourceRoot(t *testing.T) {
@@ -819,15 +650,9 @@ func TestLoadSelectionNarrowsBySourceRoot(t *testing.T) {
 		Root:      root,
 		Selection: &Selection{SourceRoots: []string{"src"}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(snapshot.Selected, []string{"src/a.gd"}) {
-		t.Errorf("Selected = %v, want [src/a.gd]", snapshot.Selected)
-	}
-	if len(snapshot.Paths) != 2 {
-		t.Errorf("Paths = %v, want both", snapshot.Paths)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, []string{"src/a.gd"}, snapshot.Selected)
+	assert.Len(t, snapshot.Paths, 2)
 }
 
 func TestLoadReadsScriptBackedAutoloads(t *testing.T) {
@@ -844,36 +669,24 @@ func TestLoadReadsScriptBackedAutoloads(t *testing.T) {
 			"[rendering]\nquality=1\n",
 	})
 	snapshot, err := Load(Config{Root: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := snapshot.Autoloads["GameState"]; got != "game_state.gd" {
-		t.Errorf("GameState = %q, want game_state.gd", got)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "game_state.gd", snapshot.Autoloads["GameState"])
 	// The "*" prefix only marks the singleton enabled; it is not part of the path.
-	if got := snapshot.Autoloads["Plain"]; got != "game_state.gd" {
-		t.Errorf("Plain = %q, want game_state.gd", got)
-	}
+	assert.Equal(t, "game_state.gd", snapshot.Autoloads["Plain"])
 	// A scene declares no class, so it cannot be extended.
-	if _, ok := snapshot.Autoloads["Menu"]; ok {
-		t.Error("a scene-backed autoload was recorded")
-	}
+	_, ok := snapshot.Autoloads["Menu"]
+	assert.False(t, ok)
 	// Keys outside [autoload] must not leak in.
-	if _, ok := snapshot.Autoloads["quality"]; ok {
-		t.Error("a key from another section was recorded")
-	}
+	_, ok = snapshot.Autoloads["quality"]
+	assert.False(t, ok)
 }
 
 func TestLoadWithNoManifestHasNoAutoloads(t *testing.T) {
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{"a.gd": "class_name A\n"})
 	snapshot, err := Load(Config{Root: root})
-	if err != nil {
-		t.Fatalf("a project without a manifest must still load: %v", err)
-	}
-	if len(snapshot.Autoloads) != 0 {
-		t.Errorf("Autoloads = %v, want empty", snapshot.Autoloads)
-	}
+	require.NoError(t, err)
+	assert.Len(t, snapshot.Autoloads, 0)
 }
 
 // TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks pins the equality lint
@@ -1000,26 +813,16 @@ func TestSelectionAdmitsExactlyWhatFilteredDiscoveryWalks(t *testing.T) {
 				},
 			})
 			if test.wantError {
-				if filteredErr == nil || broadErr == nil {
-					t.Fatalf("filtered err = %v, broad err = %v, want both to fail", filteredErr, broadErr)
-				}
-				if filteredErr.Error() != broadErr.Error() {
-					t.Fatalf("broad err = %q, want the filtered err %q", broadErr, filteredErr)
-				}
+				require.Error(t, filteredErr)
+				require.Error(t, broadErr)
+				require.Equal(t, filteredErr.Error(), broadErr.Error())
 				return
 			}
-			if filteredErr != nil || broadErr != nil {
-				t.Fatalf("filtered err = %v, broad err = %v", filteredErr, broadErr)
-			}
-			if !slices.Equal(filtered.Paths, test.wantPaths) {
-				t.Fatalf("filtered Paths = %v, want %v", filtered.Paths, test.wantPaths)
-			}
-			if !slices.Equal(broad.Selected, filtered.Paths) {
-				t.Fatalf("broad Selected = %v, want filtered Paths %v", broad.Selected, filtered.Paths)
-			}
-			if !slices.Equal(broad.Paths, universe) {
-				t.Fatalf("broad Paths = %v, want the whole universe %v", broad.Paths, universe)
-			}
+			require.NoError(t, filteredErr)
+			require.NoError(t, broadErr)
+			require.Equal(t, test.wantPaths, filtered.Paths)
+			require.Equal(t, filtered.Paths, broad.Selected)
+			require.Equal(t, universe, broad.Paths)
 		})
 	}
 }
@@ -1041,9 +844,7 @@ func TestSelectionDoesNotExcludeAboveTheSourceRoot(t *testing.T) {
 		Exclude:         exclude,
 		HonorIgnoreFile: true,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	broad, err := Load(Config{
 		Root: root,
 		Selection: &Selection{
@@ -1052,15 +853,9 @@ func TestSelectionDoesNotExcludeAboveTheSourceRoot(t *testing.T) {
 			HonorIgnoreFile: true,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(filtered.Paths, []string{"addons/mine/src/a.gd"}) {
-		t.Fatalf("filtered Paths = %v, want the script under the source root", filtered.Paths)
-	}
-	if !slices.Equal(broad.Selected, filtered.Paths) {
-		t.Fatalf("broad Selected = %v, want filtered Paths %v", broad.Selected, filtered.Paths)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"addons/mine/src/a.gd"}, filtered.Paths)
+	require.Equal(t, filtered.Paths, broad.Selected)
 }
 
 // mountExternal builds the layout Uzir uses to share a Godot addon: a
@@ -1071,9 +866,7 @@ func mountExternal(t *testing.T, root, logicalMount string, files map[string]str
 	external := t.TempDir()
 	writeFiles(t, external, files)
 	absolute := filepath.Join(root, filepath.FromSlash(logicalMount))
-	if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
 	if err := os.Symlink(external, absolute); err != nil {
 		t.Skipf("this platform cannot create a directory symlink: %v", err)
 	}
@@ -1095,54 +888,34 @@ func TestFollowDirectorySymlinksIndexesTheMountUnderItsLogicalPath(t *testing.T)
 	})
 
 	off, err := Load(Config{Root: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if slices.Contains(off.Paths, "addons/worldmap_runtime/pack_manifest.gd") {
-		t.Fatalf("the capability is off but the mount was walked: %v", off.Paths)
-	}
+	require.NoError(t, err)
+	require.NotContains(t, off.Paths, "addons/worldmap_runtime/pack_manifest.gd")
 
 	snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := []string{
 		"addons/worldmap_runtime/nested/helper.gd",
 		"addons/worldmap_runtime/pack_manifest.gd",
 		"features/pack_view.gd",
 	}
-	if !slices.Equal(snapshot.Paths, want) {
-		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
-	}
+	require.Equal(t, want, snapshot.Paths)
 	script := snapshot.Scripts["addons/worldmap_runtime/pack_manifest.gd"]
-	if script == nil || script.ParseError != nil || script.Path != "addons/worldmap_runtime/pack_manifest.gd" {
-		t.Fatalf("mounted script = %#v", script)
-	}
-	if string(script.Source) != "class_name PackManifest\n" {
-		t.Errorf("Source = %q", script.Source)
-	}
-	if snapshot.UIDs["uid://mount01"] != "addons/worldmap_runtime/worldmap.tscn" {
-		t.Errorf("scene identity = %v", snapshot.UIDs)
-	}
-	if snapshot.UIDs["uid://mount02"] != "addons/worldmap_runtime/pack_manifest.gd" {
-		t.Errorf("sidecar identity = %v", snapshot.UIDs)
-	}
+	require.NotNil(t, script)
+	require.NoError(t, script.ParseError)
+	require.Equal(t, "addons/worldmap_runtime/pack_manifest.gd", script.Path)
+	assert.Equal(t, "class_name PackManifest\n", string(script.Source))
+	assert.Equal(t, "addons/worldmap_runtime/worldmap.tscn", snapshot.UIDs["uid://mount01"])
+	assert.Equal(t, "addons/worldmap_runtime/pack_manifest.gd", snapshot.UIDs["uid://mount02"])
 	// Logical paths are the only public identity. The external directory is
 	// validation evidence and must appear nowhere.
 	for _, path := range snapshot.Paths {
-		if strings.Contains(path, external) {
-			t.Fatalf("Paths leaked the canonical host path: %q", path)
-		}
+		require.NotContains(t, path, external)
 	}
 	for _, resource := range snapshot.Resources {
-		if strings.Contains(resource.Path, external) {
-			t.Fatalf("Resources leaked the canonical host path: %q", resource.Path)
-		}
+		require.NotContains(t, resource.Path, external)
 	}
-	for identifier, owner := range snapshot.UIDs {
-		if strings.Contains(owner, external) {
-			t.Fatalf("UIDs[%q] leaked the canonical host path: %q", identifier, owner)
-		}
+	for _, owner := range snapshot.UIDs {
+		require.NotContains(t, owner, external)
 	}
 }
 
@@ -1156,17 +929,12 @@ func TestFollowDirectorySymlinksFollowsNestedMounts(t *testing.T) {
 	inner := mountExternal(t, outer, "inner", map[string]string{"deep/inner.gd": "class_name Inner\n"})
 
 	snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := []string{"addons/outer/inner/deep/inner.gd", "addons/outer/outer.gd"}
-	if !slices.Equal(snapshot.Paths, want) {
-		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
-	}
+	require.Equal(t, want, snapshot.Paths)
 	for _, path := range snapshot.Paths {
-		if strings.Contains(path, outer) || strings.Contains(path, inner) {
-			t.Fatalf("Paths leaked a canonical host path: %q", path)
-		}
+		require.NotContains(t, path, outer)
+		require.NotContains(t, path, inner)
 	}
 }
 
@@ -1184,29 +952,21 @@ func TestFollowDirectorySymlinksKeepsTwoLogicalMountsOfOneTarget(t *testing.T) {
 	})
 	for _, mount := range []string{"addons/first", "addons/second"} {
 		absolute := filepath.Join(root, filepath.FromSlash(mount))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
 		if err := os.Symlink(external, absolute); err != nil {
 			t.Skipf("this platform cannot create a directory symlink: %v", err)
 		}
 	}
 
 	snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := []string{"addons/first/shared.gd", "addons/second/shared.gd"}
-	if !slices.Equal(snapshot.Paths, want) {
-		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
-	}
+	require.Equal(t, want, snapshot.Paths)
 	owners := []string{}
 	for _, sidecar := range snapshot.Sidecars {
 		owners = append(owners, sidecar.Owner)
 	}
-	if !slices.Equal(owners, want) {
-		t.Fatalf("Sidecars owners = %v, want both logical claimants %v", owners, want)
-	}
+	require.Equal(t, want, owners)
 }
 
 // TestFollowDirectorySymlinksFailsClosedOnUnprovableTargets pins every row of
@@ -1250,9 +1010,7 @@ func TestFollowDirectorySymlinksFailsClosedOnUnprovableTargets(t *testing.T) {
 				if err := os.Symlink(filepath.Join(vault, "hidden"), filepath.Join(root, "mount")); err != nil {
 					t.Skipf("this platform cannot create a symlink: %v", err)
 				}
-				if err := os.Chmod(vault, 0o000); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.Chmod(vault, 0o000))
 				t.Cleanup(func() { _ = os.Chmod(vault, 0o755) })
 			},
 			want: "resolve symlink mount",
@@ -1266,9 +1024,7 @@ func TestFollowDirectorySymlinksFailsClosedOnUnprovableTargets(t *testing.T) {
 				if err := os.Symlink(sealed, filepath.Join(root, "mount")); err != nil {
 					t.Skipf("this platform cannot create a symlink: %v", err)
 				}
-				if err := os.Chmod(sealed, 0o000); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, os.Chmod(sealed, 0o000))
 				t.Cleanup(func() { _ = os.Chmod(sealed, 0o755) })
 			},
 			want: "read directory mount",
@@ -1310,25 +1066,15 @@ func TestFollowDirectorySymlinksFailsClosedOnUnprovableTargets(t *testing.T) {
 			testCase.build(t, root)
 
 			off, err := Load(Config{Root: root})
-			if err != nil {
-				t.Fatalf("the capability is off, so the load must be unaffected: %v", err)
-			}
-			if !slices.Equal(off.Paths, []string{"own.gd"}) {
-				t.Fatalf("capability-off Paths = %v", off.Paths)
-			}
+			require.NoError(t, err)
+			require.Equal(t, []string{"own.gd"}, off.Paths)
 
 			snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true})
-			if snapshot != nil {
-				t.Fatalf("a failed load published a snapshot with Paths = %v", snapshot.Paths)
-			}
-			if err == nil {
-				t.Fatal("want a project-load error")
-			}
-			if !strings.Contains(err.Error(), testCase.want) {
-				t.Fatalf("error = %q, want it to name %q", err, testCase.want)
-			}
-			if testCase.composed && strings.Contains(err.Error(), root) {
-				t.Fatalf("a composed error leaked an absolute path: %q", err)
+			require.Nil(t, snapshot)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), testCase.want)
+			if testCase.composed {
+				require.NotContains(t, err.Error(), root)
 			}
 		})
 	}
@@ -1352,14 +1098,10 @@ func TestFollowDirectorySymlinksLeavesProvenNonDirectoriesAlone(t *testing.T) {
 
 	for _, identities := range []bool{false, true} {
 		snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true, Identities: identities})
-		if err != nil {
-			t.Fatalf("Identities=%v: %v", identities, err)
-		}
-		if !slices.Equal(snapshot.Paths, []string{"own.gd"}) {
-			t.Fatalf("Identities=%v: Paths = %v, want only the project's own script", identities, snapshot.Paths)
-		}
-		if identities && !snapshot.IdentityIncomplete {
-			t.Error("a skipped symlink must keep identity evidence from calling itself exhaustive")
+		require.NoError(t, err)
+		require.Equal(t, []string{"own.gd"}, snapshot.Paths)
+		if identities {
+			assert.True(t, snapshot.IdentityIncomplete)
 		}
 	}
 }
@@ -1392,9 +1134,7 @@ func TestFollowDirectorySymlinksRespectsPruningBeforeResolution(t *testing.T) {
 		"addons/worldmap_runtime", "ignored_mount",
 	} {
 		absolute := filepath.Join(root, filepath.FromSlash(mount))
-		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(absolute), 0o755))
 		if err := os.Symlink(filepath.Join(root, "absent"), absolute); err != nil {
 			t.Skipf("this platform cannot create a symlink: %v", err)
 		}
@@ -1406,13 +1146,9 @@ func TestFollowDirectorySymlinksRespectsPruningBeforeResolution(t *testing.T) {
 		HonorIgnoreFile:         true,
 		Exclude:                 []string{"vendor/**", "addons/worldmap_runtime/**"},
 	})
-	if err != nil {
-		t.Fatalf("a pruned broken link must not fail the load: %v", err)
-	}
+	require.NoError(t, err)
 	want := []string{"own.gd", "present/here.gd"}
-	if !slices.Equal(snapshot.Paths, want) {
-		t.Fatalf("Paths = %v, want %v", snapshot.Paths, want)
-	}
+	require.Equal(t, want, snapshot.Paths)
 }
 
 // TestFollowDirectorySymlinksDiscoversASourceRootReachedThroughALink closes
@@ -1435,34 +1171,18 @@ func TestFollowDirectorySymlinksDiscoversASourceRootReachedThroughALink(t *testi
 		SourceRoots: selection.SourceRoots,
 		Exclude:     selection.Exclude,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(filtered.Paths, []string{"mounted/src/player.gd"}) {
-		t.Fatalf("the filtered walk through the mount discovered %v", filtered.Paths)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"mounted/src/player.gd"}, filtered.Paths)
 
 	off, err := Load(Config{Root: root, Selection: selection})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(off.Selected) != 0 {
-		t.Fatalf("capability-off Selected = %v, want the documented pre-change emptiness", off.Selected)
-	}
+	require.NoError(t, err)
+	require.Len(t, off.Selected, 0)
 
 	broad, err := Load(Config{Root: root, FollowDirectorySymlinks: true, Selection: selection})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(broad.Selected, filtered.Paths) {
-		t.Fatalf("Selected = %v, want the filtered walk's Paths %v", broad.Selected, filtered.Paths)
-	}
-	if !slices.Contains(broad.Paths, "mounted/src/skip/other.gd") {
-		t.Errorf("the excluded dependency left the universe: %v", broad.Paths)
-	}
-	if slices.Contains(broad.Selected, "mounted/src/skip/other.gd") {
-		t.Errorf("an excluded path entered Selected: %v", broad.Selected)
-	}
+	require.NoError(t, err)
+	require.Equal(t, filtered.Paths, broad.Selected)
+	assert.Contains(t, broad.Paths, "mounted/src/skip/other.gd")
+	assert.NotContains(t, broad.Selected, "mounted/src/skip/other.gd")
 }
 
 // TestFollowDirectorySymlinksWalksASourceRootThatIsItselfALink records a second
@@ -1475,20 +1195,12 @@ func TestFollowDirectorySymlinksWalksASourceRootThatIsItselfALink(t *testing.T) 
 	mountExternal(t, root, "src", map[string]string{"player.gd": "class_name Player\n"})
 
 	off, err := Load(Config{Root: root, SourceRoots: []string{"src"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(off.Paths) != 0 {
-		t.Fatalf("capability-off Paths = %v, want the documented pre-change emptiness", off.Paths)
-	}
+	require.NoError(t, err)
+	require.Len(t, off.Paths, 0)
 
 	snapshot, err := Load(Config{Root: root, SourceRoots: []string{"src"}, FollowDirectorySymlinks: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(snapshot.Paths, []string{"src/player.gd"}) {
-		t.Fatalf("Paths = %v", snapshot.Paths)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"src/player.gd"}, snapshot.Paths)
 	// A nil Selection selects everything discovered, which is what the other
 	// four tools pass. Under a Selection naming the same root, the link is a
 	// mount the filtered walk could not have entered, so what it holds is a
@@ -1498,15 +1210,9 @@ func TestFollowDirectorySymlinksWalksASourceRootThatIsItselfALink(t *testing.T) 
 		FollowDirectorySymlinks: true,
 		Selection:               &Selection{SourceRoots: []string{"src"}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(selected.Selected) != 0 {
-		t.Fatalf("Selected = %v, want nothing the filtered walk could not reach", selected.Selected)
-	}
-	if !slices.Equal(selected.Paths, []string{"src/player.gd"}) {
-		t.Fatalf("Paths = %v, want the mount as a dependency", selected.Paths)
-	}
+	require.NoError(t, err)
+	require.Len(t, selected.Selected, 0)
+	require.Equal(t, []string{"src/player.gd"}, selected.Paths)
 }
 
 // TestFollowDirectorySymlinksIsDeterministic pins the idempotency the snapshot
@@ -1529,26 +1235,14 @@ func TestFollowDirectorySymlinksIsDeterministic(t *testing.T) {
 	config := Config{Root: root, FollowDirectorySymlinks: true, Identities: true}
 
 	first, err := Load(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for range 3 {
 		again, err := Load(config)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !slices.Equal(first.Paths, again.Paths) {
-			t.Fatalf("Paths differed between loads: %v vs %v", first.Paths, again.Paths)
-		}
-		if !maps.Equal(first.UIDs, again.UIDs) {
-			t.Fatalf("UIDs differed between loads: %v vs %v", first.UIDs, again.UIDs)
-		}
-		if !slices.Equal(first.Resources, again.Resources) {
-			t.Fatalf("Resources differed between loads")
-		}
-		if !slices.Equal(first.Claims, again.Claims) {
-			t.Fatalf("Claims differed between loads")
-		}
+		require.NoError(t, err)
+		require.Equal(t, first.Paths, again.Paths)
+		require.Equal(t, first.UIDs, again.UIDs)
+		require.Equal(t, first.Resources, again.Resources)
+		require.Equal(t, first.Claims, again.Claims)
 	}
 
 	results := make([][]string, 4)
@@ -1568,12 +1262,8 @@ func TestFollowDirectorySymlinksIsDeterministic(t *testing.T) {
 		<-done
 	}
 	for index := range results {
-		if errs[index] != nil {
-			t.Fatalf("concurrent load %d: %v", index, errs[index])
-		}
-		if !slices.Equal(results[index], first.Paths) {
-			t.Fatalf("concurrent load %d produced %v, want %v", index, results[index], first.Paths)
-		}
+		require.NoError(t, errs[index])
+		require.Equal(t, first.Paths, results[index])
 	}
 }
 
@@ -1724,15 +1414,9 @@ func TestLoadFailsClosedWhenAnAcceptedObjectChangesUnderTheWalk(t *testing.T) {
 				Config{Root: root, FollowDirectorySymlinks: true},
 				testCase.hooks(root, external),
 			)
-			if snapshot != nil {
-				t.Fatalf("a failed load published a snapshot with Paths = %v", snapshot.Paths)
-			}
-			if err == nil {
-				t.Fatal("want a project-load error")
-			}
-			if !strings.Contains(err.Error(), testCase.want) {
-				t.Fatalf("error = %q, want it to name %q", err, testCase.want)
-			}
+			require.Nil(t, snapshot)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), testCase.want)
 		})
 	}
 }
@@ -1751,22 +1435,12 @@ func TestLoadHooksDoNotAffectAnUnaffectedLoad(t *testing.T) {
 		afterDirectoryAccepted: func(logical string) { directories = append(directories, logical) },
 		beforeFileRead:         func(logical string) { files = append(files, logical) },
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	plain, err := Load(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(seamed.Paths, plain.Paths) {
-		t.Fatalf("Paths = %v, want %v", seamed.Paths, plain.Paths)
-	}
-	if !slices.Contains(directories, "addons/mount") {
-		t.Errorf("the directory boundary did not report the mount: %v", directories)
-	}
-	if !slices.Equal(files, plain.Paths) {
-		t.Errorf("the file boundary reported %v, want every published path %v", files, plain.Paths)
-	}
+	require.NoError(t, err)
+	require.Equal(t, plain.Paths, seamed.Paths)
+	assert.Contains(t, directories, "addons/mount")
+	assert.Equal(t, plain.Paths, files)
 }
 
 // TestFollowDirectorySymlinksKeepsANestedMountOutOfSelected is the bound the
@@ -1791,24 +1465,14 @@ func TestFollowDirectorySymlinksKeepsANestedMountOutOfSelected(t *testing.T) {
 	selection := &Selection{SourceRoots: []string{"."}}
 
 	filtered, err := Load(Config{Root: root, SourceRoots: selection.SourceRoots})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(filtered.Paths, []string{"features/pack_view.gd"}) {
-		t.Fatalf("the filtered walk discovered %v", filtered.Paths)
-	}
+	require.NoError(t, err)
+	require.Equal(t, []string{"features/pack_view.gd"}, filtered.Paths)
 
 	broad, err := Load(Config{Root: root, FollowDirectorySymlinks: true, Selection: selection})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	mounted := "features/shared_runtime/pack_manifest.gd"
-	if !slices.Contains(broad.Paths, mounted) {
-		t.Fatalf("the mount did not enter the universe: %v", broad.Paths)
-	}
-	if !slices.Equal(broad.Selected, filtered.Paths) {
-		t.Fatalf("Selected = %v, want exactly the filtered walk's Paths %v", broad.Selected, filtered.Paths)
-	}
+	require.Contains(t, broad.Paths, mounted)
+	require.Equal(t, filtered.Paths, broad.Selected)
 }
 
 // TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForEveryMountShape
@@ -1848,14 +1512,14 @@ func TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForEveryMountShap
 			name:         "a mount that is itself the source root is reached by neither",
 			mount:        "src",
 			sourceRoots:  []string{"src"},
-			wantSelected: nil,
+			wantSelected: []string{},
 		},
 		{
 			name:         "an excluded mount above the source root is excluded by both",
 			mount:        "mounted",
 			sourceRoots:  []string{"mounted/src"},
 			exclude:      []string{"mounted/src/**"},
-			wantSelected: nil,
+			wantSelected: []string{},
 		},
 	}
 	for _, testCase := range cases {
@@ -1872,12 +1536,8 @@ func TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForEveryMountShap
 				SourceRoots: testCase.sourceRoots,
 				Exclude:     testCase.exclude,
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !slices.Equal(filtered.Paths, testCase.wantSelected) {
-				t.Fatalf("the filtered walk discovered %v, want %v", filtered.Paths, testCase.wantSelected)
-			}
+			require.NoError(t, err)
+			require.Equal(t, testCase.wantSelected, filtered.Paths)
 
 			broad, err := Load(Config{
 				Root:                    root,
@@ -1887,12 +1547,8 @@ func TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForEveryMountShap
 					Exclude:     testCase.exclude,
 				},
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !slices.Equal(broad.Selected, filtered.Paths) {
-				t.Fatalf("Selected = %v, want the filtered walk's Paths %v", broad.Selected, filtered.Paths)
-			}
+			require.NoError(t, err)
+			require.Equal(t, filtered.Paths, broad.Selected)
 		})
 	}
 }
@@ -1922,19 +1578,11 @@ func TestFollowDirectorySymlinksDecidesCyclesOnFileIdentity(t *testing.T) {
 	}
 
 	snapshot, err := Load(Config{Root: root, FollowDirectorySymlinks: true})
-	if snapshot != nil {
-		t.Fatalf("a failed load published a snapshot with Paths = %v", snapshot.Paths)
-	}
-	if err == nil {
-		t.Fatal("want a cycle error")
-	}
+	require.Nil(t, snapshot)
+	require.Error(t, err)
 	want := "symlink features/deep/back closes a directory cycle back to features"
-	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("error = %q, want it to contain %q", err, want)
-	}
-	if strings.Contains(err.Error(), root) {
-		t.Fatalf("the cycle error named a host path: %q", err)
-	}
+	require.Contains(t, err.Error(), want)
+	require.NotContains(t, err.Error(), root)
 }
 
 // TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForASymlinkedRoot
@@ -1958,7 +1606,7 @@ func TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForASymlinkedRoot
 		{
 			name:         "the source root is the symlinked project root",
 			sourceRoots:  []string{"."},
-			wantSelected: nil,
+			wantSelected: []string{},
 		},
 		{
 			name:         "the source root is inside the symlinked project root",
@@ -1980,30 +1628,21 @@ func TestFollowDirectorySymlinksSelectionMatchesTheFilteredWalkForASymlinkedRoot
 			}
 
 			filtered, err := Load(Config{Root: linked, SourceRoots: testCase.sourceRoots})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !slices.Equal(filtered.Paths, testCase.wantSelected) {
-				t.Fatalf("the filtered walk discovered %v, want %v", filtered.Paths, testCase.wantSelected)
-			}
+			require.NoError(t, err)
+			require.Equal(t, testCase.wantSelected, filtered.Paths)
 
 			broad, err := Load(Config{
 				Root:                    linked,
 				FollowDirectorySymlinks: true,
 				Selection:               &Selection{SourceRoots: testCase.sourceRoots},
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !slices.Equal(broad.Selected, filtered.Paths) {
-				t.Fatalf("Selected = %v, want the filtered walk's Paths %v", broad.Selected, filtered.Paths)
-			}
+			require.NoError(t, err)
+			require.Equal(t, filtered.Paths, broad.Selected)
 			// The universe is still the whole resolved tree, which is the
 			// point: a dependency stays resolvable even when nothing under the
 			// mounted root may be acted on.
-			if !slices.Contains(broad.Paths, "features/own.gd") || !slices.Contains(broad.Paths, "top.gd") {
-				t.Fatalf("the resolved root did not enter the universe: %v", broad.Paths)
-			}
+			require.Contains(t, broad.Paths, "features/own.gd")
+			require.Contains(t, broad.Paths, "top.gd")
 		})
 	}
 }

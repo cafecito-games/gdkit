@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // writeGeneratedDeepEquals opts a class with the given field count into
@@ -23,9 +26,8 @@ func writeGeneratedDeepEquals(t *testing.T, fieldCount int) string {
 	}
 	writeCLIFile(t, root, "wide.gd", source.String())
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"gen", "write", root}, &stdout, &stderr); code != 0 {
-		t.Fatalf("gen write exit %d: %s %s", code, stdout.String(), stderr.String())
-	}
+	code := run([]string{"gen", "write", root}, &stdout, &stderr)
+	require.Equal(t, 0, code)
 	return root
 }
 
@@ -36,10 +38,8 @@ func TestGeneratedDeepEqualsIsCleanUnderDefaultLintFormatAndGen(t *testing.T) {
 	root := writeGeneratedDeepEquals(t, 10)
 	for _, command := range []string{"lint", "format", "gen"} {
 		var stdout, stderr bytes.Buffer
-		if code := run([]string{command, "check", root}, &stdout, &stderr); code != 0 {
-			t.Errorf("%s check exit %d after gen write: %s %s\n%s", command, code,
-				stdout.String(), stderr.String(), readCLIFile(t, root, "wide.gd"))
-		}
+		code := run([]string{command, "check", root}, &stdout, &stderr)
+		assert.Equal(t, 0, code, command)
 	}
 }
 
@@ -55,10 +55,8 @@ func TestGeneratedSuppressionDoesNotHideAHandWrittenFunction(t *testing.T) {
 	source.WriteString("\treturn 0\n")
 	writeCLIFile(t, root, "wide.gd", source.String())
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"lint", "check", root}, &stdout, &stderr); code != 1 {
-		t.Fatalf("lint exit %d, want 1: %s %s", code, stdout.String(), stderr.String())
-	}
-	if !strings.Contains(stdout.String(), `Function "sprawl"`) || strings.Contains(stdout.String(), `"deep_equals"`) {
-		t.Errorf("lint output = %q, want only sprawl reported", stdout.String())
-	}
+	code := run([]string{"lint", "check", root}, &stdout, &stderr)
+	require.Equal(t, 1, code)
+	assert.Contains(t, stdout.String(), `Function "sprawl"`)
+	assert.NotContains(t, stdout.String(), `"deep_equals"`)
 }

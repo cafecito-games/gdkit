@@ -1,13 +1,14 @@
 package generate
 
 import (
-	"maps"
 	"testing"
 
 	"github.com/cafecito-games/gdkit/format"
 	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdparser"
 	gdformat "github.com/cafecito-games/gdparser/format"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fixtures is every source the invariants run over. Each must opt in, so a
@@ -68,9 +69,7 @@ func TestWriteIsIdempotent(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			once := applyOnce(t, DefaultConfig(), files)
 			twice := applyOnce(t, DefaultConfig(), once)
-			if !maps.Equal(once, twice) {
-				t.Errorf("a second write changed the files:\nfirst:\n%v\nsecond:\n%v", once, twice)
-			}
+			assert.Equal(t, once, twice, "a second write changed the files")
 		})
 	}
 }
@@ -80,9 +79,8 @@ func TestWriteThenCheckIsClean(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			written := applyOnce(t, DefaultConfig(), files)
 			report := checkProject(t, DefaultConfig(), written)
-			if report.HasChanges() || report.HasDiagnostics() {
-				t.Errorf("check after write: %+v %+v", report.Results, report.Diagnostics)
-			}
+			assert.False(t, report.HasChanges(), "check after write is not clean")
+			assert.False(t, report.HasDiagnostics(), "check after write is not clean")
 		})
 	}
 }
@@ -91,20 +89,15 @@ func TestWriteThenCheckIsClean(t *testing.T) {
 // generated file must be canonical whenever its source was.
 func TestGeneratedFilesAreFormatClean(t *testing.T) {
 	options, err := format.DefaultConfig().Options()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for name, files := range fixtures {
 		t.Run(name, func(t *testing.T) {
 			written := applyOnce(t, DefaultConfig(), files)
 			for path, contents := range written {
 				file, err := gdparser.ParseFile(path, []byte(contents))
-				if err != nil {
-					t.Fatalf("%s does not parse after generation: %v\n%s", path, err, contents)
-				}
-				if formatted := gdformat.FileWithOptions(file, options); formatted != contents {
-					t.Errorf("%s is not formatted after generation:\ngot:\n%s\nwant:\n%s", path, contents, formatted)
-				}
+				require.NoError(t, err, path+" does not parse after generation")
+				formatted := gdformat.FileWithOptions(file, options)
+				assert.Equal(t, contents, formatted, path+" is not formatted after generation")
 			}
 		})
 	}
@@ -117,9 +110,7 @@ func TestRemovingTheRegionRegeneratesTheSameBytes(t *testing.T) {
 			stripped := map[string]string{}
 			for path, contents := range written {
 				span, found, err := FindRegion([]byte(contents))
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				if !found {
 					stripped[path] = contents
 					continue
@@ -127,9 +118,7 @@ func TestRemovingTheRegionRegeneratesTheSameBytes(t *testing.T) {
 				stripped[path] = contents[:span.Start] + contents[span.End:]
 			}
 			again := applyOnce(t, DefaultConfig(), stripped)
-			if !maps.Equal(written, again) {
-				t.Errorf("regeneration differed:\nbefore:\n%v\nafter:\n%v", written, again)
-			}
+			assert.Equal(t, written, again, "regeneration differed")
 		})
 	}
 }
@@ -139,9 +128,8 @@ func TestGeneratedFilesReparse(t *testing.T) {
 	for name, files := range fixtures {
 		t.Run(name, func(t *testing.T) {
 			for path, contents := range applyOnce(t, DefaultConfig(), files) {
-				if _, err := gdparser.ParseFile(path, []byte(contents)); err != nil {
-					t.Errorf("%s does not parse: %v\n%s", path, err, contents)
-				}
+				_, err := gdparser.ParseFile(path, []byte(contents))
+				assert.NoError(t, err, path+" does not parse")
 			}
 		})
 	}
@@ -154,9 +142,7 @@ func TestAProjectThatOptedIntoNothingIsUntouched(t *testing.T) {
 		"b.gd": "extends Node\n\nfunc _ready() -> void:\n\tpass\n",
 	}
 	written := applyOnce(t, DefaultConfig(), files)
-	if !maps.Equal(written, files) {
-		t.Errorf("files were modified without opting in:\n%v", written)
-	}
+	assert.Equal(t, files, written, "files were modified without opting in")
 }
 
 // Snapshot the emitted region for the headline fixture, so a change to the
@@ -188,9 +174,8 @@ func TestGeneratedRegionForTheHeadlineFixture(t *testing.T) {
 		"\n" +
 		"\n" +
 		"# gdkit:generated:end\n"
-	if got := written["a.gd"]; got != want {
-		t.Errorf("generated file =\n%q\nwant\n%q", got, want)
-	}
+	got := written["a.gd"]
+	assert.Equal(t, want, got)
 }
 
 // Apply must not touch a file that changed under the run, and must not lose
@@ -203,25 +188,16 @@ func TestApplyRefusesAFileThatChangedOnDisk(t *testing.T) {
 		Root:      root,
 		Selection: &project.Selection{SourceRoots: []string{"."}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	generator, err := New(DefaultConfig(), format.DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	plan := generator.Check(snapshot)
 	writeInto(t, root, map[string]string{"a.gd": source + "var late: int\n"})
-	if _, err := Apply(snapshot, plan, false); err == nil {
-		t.Error("Apply overwrote a file that changed under it")
-	}
+	_, err = Apply(snapshot, plan, false)
+	assert.Error(t, err, "Apply overwrote a file that changed under it")
 	contents, err := osReadFile(root, "a.gd")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !contains(contents, "var late: int") {
-		t.Error("the concurrent edit was lost")
-	}
+	require.NoError(t, err)
+	assert.Contains(t, contents, "var late: int", "the concurrent edit was lost")
 }
 
 func TestApplyPrunesAnOrphanedRegionWithItsLeadingGap(t *testing.T) {
@@ -233,24 +209,15 @@ func TestApplyPrunesAnOrphanedRegionWithItsLeadingGap(t *testing.T) {
 		Root:      root,
 		Selection: &project.Selection{SourceRoots: []string{"."}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	generator, err := New(DefaultConfig(), format.DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Apply(snapshot, generator.Check(snapshot), true); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	_, err = Apply(snapshot, generator.Check(snapshot), true)
+	require.NoError(t, err)
 	contents, err := osReadFile(root, "a.gd")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := "class_name Hex\nextends RefCounted\n\nvar q: int\n"
-	if contents != want {
-		t.Errorf("pruned = %q, want %q", contents, want)
-	}
+	assert.Equal(t, want, contents)
 }
 
 // Without --prune an orphan is reported and left exactly as it was.
@@ -258,7 +225,5 @@ func TestApplyLeavesAnOrphanAloneWithoutPrune(t *testing.T) {
 	source := "class_name Hex\nextends RefCounted\n\nvar q: int\n\n\n" +
 		"# gdkit:generated:begin\nfunc _to_string() -> String:\n\treturn \"Hex()\"\n\n\n# gdkit:generated:end\n"
 	written := applyOnce(t, DefaultConfig(), map[string]string{"a.gd": source})
-	if written["a.gd"] != source {
-		t.Errorf("an orphan was modified without --prune:\n%s", written["a.gd"])
-	}
+	assert.Equal(t, source, written["a.gd"], "an orphan was modified without --prune")
 }

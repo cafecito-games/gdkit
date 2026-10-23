@@ -4,56 +4,39 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
-	"strings"
 	"testing"
 
 	gdformat "github.com/cafecito-games/gdparser/format"
+	"github.com/stretchr/testify/require"
 )
 
 func writeConfig(t *testing.T, root, name, contents string) {
 	t.Helper()
 	absolute := filepath.Join(root, filepath.FromSlash(name))
-	if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(absolute, []byte(contents), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	err := os.MkdirAll(filepath.Dir(absolute), 0o755)
+	require.NoError(t, err)
+	err = os.WriteFile(absolute, []byte(contents), 0o644)
+	require.NoError(t, err)
 }
 
 func TestDefaultConfigIsGodotStyle(t *testing.T) {
 	config := DefaultConfig()
-	if err := config.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	err := config.Validate()
+	require.NoError(t, err)
 	options, err := config.options()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if options != gdformat.GodotStyle() {
-		t.Fatalf("options = %+v, want %+v", options, gdformat.GodotStyle())
-	}
-	if !reflect.DeepEqual(config.SourceRoots, []string{"."}) {
-		t.Fatalf("source roots = %v", config.SourceRoots)
-	}
-	if !reflect.DeepEqual(config.Exclude, []string{".git/**", ".godot/**", ".gdkit/**", "addons/**"}) {
-		t.Fatalf("exclude = %v", config.Exclude)
-	}
+	require.NoError(t, err)
+	require.Equal(t, gdformat.GodotStyle(), options)
+	require.Equal(t, []string{"."}, config.SourceRoots)
+	require.Equal(t, []string{".git/**", ".godot/**", ".gdkit/**", "addons/**"}, config.Exclude)
 }
 
 func TestDefaultConfigRoundTripsThroughJSON(t *testing.T) {
 	data, err := json.Marshal(DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	var decoded Config
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(decoded, DefaultConfig()) {
-		t.Fatalf("round trip = %+v, want %+v", decoded, DefaultConfig())
-	}
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
+	require.Equal(t, DefaultConfig(), decoded)
 }
 
 func TestConfigOptionsMapsEveryField(t *testing.T) {
@@ -68,9 +51,7 @@ func TestConfigOptionsMapsEveryField(t *testing.T) {
 	config.TrailingCommas = "never"
 	config.BlankLines = BlankLines{TopLevel: 3, Nested: 2}
 	options, err := config.options()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := gdformat.Options{
 		LineWidth:      80,
 		TabWidth:       2,
@@ -82,70 +63,47 @@ func TestConfigOptionsMapsEveryField(t *testing.T) {
 		TrailingCommas: gdformat.NoTrailingCommas,
 		BlankLines:     gdformat.BlankLineLimits{TopLevel: 3, Nested: 2},
 	}
-	if options != want {
-		t.Fatalf("options = %+v, want %+v", options, want)
-	}
+	require.Equal(t, want, options)
 
 	config.QuoteStyle = "preserve"
 	options, err = config.options()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if options.QuoteStyle != gdformat.PreserveQuotes {
-		t.Fatalf("quote style = %v, want preserve", options.QuoteStyle)
-	}
+	require.NoError(t, err)
+	require.Equal(t, gdformat.PreserveQuotes, options.QuoteStyle)
 }
 
 func TestLoadConfigReturnsDefaultsWhenDefaultFileIsMissing(t *testing.T) {
 	config, err := LoadConfig(t.TempDir(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(config, DefaultConfig()) {
-		t.Fatalf("config = %+v, want defaults", config)
-	}
+	require.NoError(t, err)
+	require.Equal(t, DefaultConfig(), config)
 }
 
 func TestLoadConfigFailsWhenNamedFileIsMissing(t *testing.T) {
 	_, err := LoadConfig(t.TempDir(), "missing.json")
-	if err == nil || !strings.HasPrefix(err.Error(), "read format config:") {
-		t.Fatalf("error = %v, want a read format config error", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "read format config:")
 }
 
 func TestLoadConfigInheritsOmittedFields(t *testing.T) {
 	root := t.TempDir()
 	writeConfig(t, root, DefaultConfigPath, `{"line_width": 80, "quote_style": "single", "blank_lines": {"nested": 2}}`)
 	config, err := LoadConfig(root, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	want := DefaultConfig()
 	want.LineWidth = 80
 	want.QuoteStyle = "single"
 	want.BlankLines.Nested = 2
-	if !reflect.DeepEqual(config, want) {
-		t.Fatalf("config = %+v, want %+v", config, want)
-	}
+	require.Equal(t, want, config)
 }
 
 func TestLoadConfigReadsNamedFileRelativeToRoot(t *testing.T) {
 	root := t.TempDir()
 	writeConfig(t, root, "style/format.json", `{"indent": "spaces"}`)
 	config, err := LoadConfig(root, "style/format.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if config.Indent != "spaces" {
-		t.Fatalf("indent = %q, want spaces", config.Indent)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "spaces", config.Indent)
 	absolute, err := LoadConfig(t.TempDir(), filepath.Join(root, "style", "format.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if absolute.Indent != "spaces" {
-		t.Fatalf("indent = %q, want spaces", absolute.Indent)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "spaces", absolute.Indent)
 }
 
 func TestLoadConfigRejectsInvalidFiles(t *testing.T) {
@@ -176,9 +134,8 @@ func TestLoadConfigRejectsInvalidFiles(t *testing.T) {
 			root := t.TempDir()
 			writeConfig(t, root, DefaultConfigPath, testCase.contents)
 			_, err := LoadConfig(root, "")
-			if err == nil || !strings.Contains(err.Error(), testCase.want) {
-				t.Fatalf("error = %v, want it to contain %q", err, testCase.want)
-			}
+			require.Error(t, err)
+			require.ErrorContains(t, err, testCase.want)
 		})
 	}
 }
@@ -186,7 +143,6 @@ func TestLoadConfigRejectsInvalidFiles(t *testing.T) {
 func TestOptionsRejectsUnknownEnumeration(t *testing.T) {
 	config := DefaultConfig()
 	config.Operators = "symbols"
-	if _, err := config.options(); err == nil {
-		t.Fatal("options accepted an unknown operators value")
-	}
+	_, err := config.options()
+	require.Error(t, err)
 }

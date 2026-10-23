@@ -4,6 +4,8 @@ import (
 	"errors"
 	"io"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestGeneratorStaysInGodotsRange(t *testing.T) {
@@ -11,12 +13,8 @@ func TestGeneratorStaysInGodotsRange(t *testing.T) {
 	// generator must clear the sign bit, as Godot's create_id does.
 	generator := NewGenerator(onesReader{})
 	id, err := generator.Next()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id != MaxID {
-		t.Fatalf("id = %x, want %x", id, MaxID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, MaxID, id)
 }
 
 func TestGeneratorSkipsReservedIdentifiers(t *testing.T) {
@@ -24,12 +22,8 @@ func TestGeneratorSkipsReservedIdentifiers(t *testing.T) {
 	generator.Reserve(1)
 	generator.Reserve(2)
 	id, err := generator.Next()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id != 3 {
-		t.Fatalf("id = %d, want 3", id)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint64(3), id)
 }
 
 func TestGeneratorNeverRepeatsItself(t *testing.T) {
@@ -37,24 +31,17 @@ func TestGeneratorNeverRepeatsItself(t *testing.T) {
 	seen := make(map[uint64]struct{}, 1000)
 	for range 1000 {
 		id, err := generator.Next()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, repeated := seen[id]; repeated {
-			t.Fatalf("id %d was issued twice", id)
-		}
+		require.NoError(t, err)
+		_, repeated := seen[id]
+		require.False(t, repeated)
 		seen[id] = struct{}{}
 	}
 }
 
 func TestGeneratorReportsAFailedDraw(t *testing.T) {
 	_, err := NewGenerator(failingReader{}).Next()
-	if err == nil {
-		t.Fatal("Next succeeded, want the reader's failure")
-	}
-	if !errors.Is(err, errNoRandomness) {
-		t.Fatalf("error = %v, want it to wrap the reader's", err)
-	}
+	require.Error(t, err)
+	require.ErrorIs(t, err, errNoRandomness)
 }
 
 type onesReader struct{}

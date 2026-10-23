@@ -1,10 +1,11 @@
 package format
 
 import (
-	"strings"
 	"testing"
 
 	gdformat "github.com/cafecito-games/gdparser/format"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDelimiterNeutralBody(t *testing.T) {
@@ -22,9 +23,8 @@ func TestDelimiterNeutralBody(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := delimiterNeutralBody(testCase.body); got != testCase.want {
-				t.Fatalf("delimiterNeutralBody(%q) = %q, want %q", testCase.body, got, testCase.want)
-			}
+			got := delimiterNeutralBody(testCase.body)
+			require.Equal(t, testCase.want, got)
 		})
 	}
 }
@@ -44,9 +44,8 @@ func TestNormalizedNumber(t *testing.T) {
 		"0B101":       "0b101",
 		"0x1E":        "0x1e",
 	} {
-		if got := normalizedNumber(raw); got != want {
-			t.Errorf("normalizedNumber(%q) = %q, want %q", raw, got, want)
-		}
+		got := normalizedNumber(raw)
+		assert.Equal(t, want, got)
 	}
 }
 
@@ -66,9 +65,8 @@ func TestNormalizedComment(t *testing.T) {
 		"###x":          "## #x",
 		"#!x":           "# !x",
 	} {
-		if got := normalizedComment(text); got != want {
-			t.Errorf("normalizedComment(%q) = %q, want %q", text, got, want)
-		}
+		got := normalizedComment(text)
+		assert.Equal(t, want, got)
 	}
 }
 
@@ -129,12 +127,9 @@ func TestFormatAcceptsItsOwnOutputForTrickyLiterals(t *testing.T) {
 				configure(&config)
 				source := "var a=" + literal + "\nfunc f(x=" + literal + "):\n\treturn [" + literal + ",{" + literal + ":x}]\n"
 				report, _ := formatProject(t, config, map[string]string{"a.gd": source})
-				if report.HasDiagnostics() {
-					t.Fatalf("diagnostic for real formatter output: %s", report.Diagnostics[0])
-				}
-				if len(report.Results) != 1 || !report.Results[0].Changed {
-					t.Fatalf("results = %+v, want one changed result", report.Results)
-				}
+				require.False(t, report.HasDiagnostics())
+				require.Len(t, report.Results, 1)
+				require.True(t, report.Results[0].Changed)
 			})
 		}
 	}
@@ -159,9 +154,8 @@ func TestFormatSpellsTrickyLiterals(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := DefaultConfig()
 			testCase.configure(&config)
-			if got := formatSource(t, config, testCase.source); got != testCase.want {
-				t.Fatalf("formatted = %q, want %q", got, testCase.want)
-			}
+			got := formatSource(t, config, testCase.source)
+			require.Equal(t, testCase.want, got)
 		})
 	}
 }
@@ -176,9 +170,8 @@ func TestFormatAcceptsACommentThatLosesTrailingWhitespace(t *testing.T) {
 			config.CommentSpacing = style
 			source := "# note \t \nvar a = 1  # why  \nvar b = [\n\t1,  # one \n]\n"
 			want := "# note\nvar a = 1  # why\nvar b = [\n\t1,  # one\n]\n"
-			if got := formatSource(t, config, source); got != want {
-				t.Fatalf("formatted = %q, want %q", got, want)
-			}
+			got := formatSource(t, config, source)
+			require.Equal(t, want, got)
 		})
 	}
 }
@@ -193,9 +186,8 @@ func TestFormatKeepsWhitespaceInsideAString(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := formatSource(t, DefaultConfig(), testCase.source); got != testCase.want {
-				t.Fatalf("formatted = %q, want %q", got, testCase.want)
-			}
+			got := formatSource(t, DefaultConfig(), testCase.source)
+			require.Equal(t, testCase.want, got)
 		})
 	}
 }
@@ -262,11 +254,12 @@ func TestVerifyComparesLiteralValues(t *testing.T) {
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
 			err := verify("a.gd", []byte(testCase.source+"\n"), []byte(testCase.formatted+"\n"), testCase.options)
-			if testCase.accepted && err != nil {
-				t.Fatalf("verify rejected an equal value: %v", err)
+			if testCase.accepted {
+				require.NoError(t, err, "verify rejected an equal value")
 			}
-			if !testCase.accepted && (err == nil || !strings.HasPrefix(err.Error(), "formatting changed the syntax tree")) {
-				t.Fatalf("error = %v, want a changed syntax tree", err)
+			if !testCase.accepted {
+				require.Error(t, err)
+				require.ErrorContains(t, err, "formatting changed the syntax tree")
 			}
 		})
 	}

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	gdformat "github.com/cafecito-games/gdparser/format"
+	"github.com/stretchr/testify/require"
 )
 
 const suppressionMovedMessage = "formatting would change the code a lint suppression comment applies to"
@@ -31,9 +32,8 @@ var headerSuppressions = map[string]struct {
 func TestFormatKeepsASuppressionCommentOnItsHeaderLine(t *testing.T) {
 	for name, testCase := range headerSuppressions {
 		t.Run(name, func(t *testing.T) {
-			if got := formatSource(t, DefaultConfig(), testCase.source); got != testCase.source {
-				t.Fatalf("formatted = %q, want the source kept", got)
-			}
+			got := formatSource(t, DefaultConfig(), testCase.source)
+			require.Equal(t, testCase.source, got)
 		})
 	}
 	respaced := map[string]struct{ source, want string }{
@@ -45,9 +45,8 @@ func TestFormatKeepsASuppressionCommentOnItsHeaderLine(t *testing.T) {
 	}
 	for name, testCase := range respaced {
 		t.Run(name, func(t *testing.T) {
-			if got := formatSource(t, DefaultConfig(), testCase.source); got != testCase.want {
-				t.Fatalf("formatted = %q, want %q", got, testCase.want)
-			}
+			got := formatSource(t, DefaultConfig(), testCase.source)
+			require.Equal(t, testCase.want, got)
 		})
 	}
 }
@@ -57,15 +56,13 @@ func TestMovedSuppressionCatchesACommentMovedOffItsHeader(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			source, moved := []byte(testCase.source), []byte(testCase.moved)
 			line, column, refused := movedSuppression(source, moved, gdformat.GodotStyle())
-			if !refused || line != testCase.line || column != testCase.column {
-				t.Fatalf("movedSuppression = %d:%d %v, want %d:%d true", line, column, refused, testCase.line, testCase.column)
-			}
-			if _, _, refused := movedSuppression(source, source, gdformat.GodotStyle()); refused {
-				t.Fatal("an unchanged file was refused")
-			}
-			if _, _, changed := changedToken(source, moved, gdformat.GodotStyle()); changed {
-				t.Fatal("the token check caught the move, so this case does not exercise the suppression check")
-			}
+			require.True(t, refused)
+			require.Equal(t, testCase.line, line)
+			require.Equal(t, testCase.column, column)
+			_, _, refused = movedSuppression(source, source, gdformat.GodotStyle())
+			require.False(t, refused, "an unchanged file was refused")
+			_, _, changed := changedToken(source, moved, gdformat.GodotStyle())
+			require.False(t, changed, "the token check caught the move, so this case does not exercise the suppression check")
 		})
 	}
 }
@@ -100,9 +97,8 @@ func TestFormatKeepsASuppressionCommentThatStaysOnItsLine(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := formatSource(t, DefaultConfig(), testCase.source); got != testCase.want {
-				t.Fatalf("formatted = %q, want %q", got, testCase.want)
-			}
+			got := formatSource(t, DefaultConfig(), testCase.source)
+			require.Equal(t, testCase.want, got)
 		})
 	}
 }
@@ -129,13 +125,10 @@ func TestFormatRefusesToChangeTheCodeASuppressionCommentCovers(t *testing.T) {
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
 			report, _ := formatProject(t, DefaultConfig(), map[string]string{"a.gd": testCase.source})
-			if len(report.Results) != 0 {
-				t.Fatalf("results = %+v (%q), want none", report.Results, report.Results[0].Formatted)
-			}
+			require.Empty(t, report.Results)
 			want := Diagnostic{Rule: "format.unsafe", Message: suppressionMovedMessage, Path: "a.gd", Line: testCase.line, Column: testCase.column}
-			if len(report.Diagnostics) != 1 || report.Diagnostics[0] != want {
-				t.Fatalf("diagnostics = %+v, want %+v", report.Diagnostics, want)
-			}
+			require.Len(t, report.Diagnostics, 1)
+			require.Equal(t, want, report.Diagnostics[0])
 		})
 	}
 }
@@ -190,9 +183,8 @@ func TestFormatKeepsASuppressionCommentThatCoversTheSameCode(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := formatSource(t, testCase.config, testCase.source); got != testCase.want {
-				t.Fatalf("formatted = %q, want %q", got, testCase.want)
-			}
+			got := formatSource(t, testCase.config, testCase.source)
+			require.Equal(t, testCase.want, got)
 		})
 	}
 }

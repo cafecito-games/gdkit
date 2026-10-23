@@ -1,25 +1,24 @@
 package lint
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/cafecito-games/gdkit/internal/versiongate"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDefaultConfigTargetsTheNewestGodot(t *testing.T) {
-	if got := DefaultConfig().GodotVersion; got != "4.7" {
-		t.Fatalf("GodotVersion = %q, want \"4.7\"", got)
-	}
+	got := DefaultConfig().GodotVersion
+	require.Equal(t, "4.7", got)
 }
 
 func TestValidateRejectsAMalformedGodotVersion(t *testing.T) {
 	config := DefaultConfig()
 	config.GodotVersion = "v4.7"
 	err := config.Validate()
-	if err == nil || !strings.Contains(err.Error(), "godot_version") {
-		t.Fatalf("Validate() = %v, want an error naming godot_version", err)
-	}
+	require.Error(t, err)
+	require.ErrorContains(t, err, "godot_version")
 }
 
 // supports is what a version-gated rule asks before reporting, so a project is
@@ -41,13 +40,10 @@ func TestContextSupportsComparesTheConfiguredVersion(t *testing.T) {
 		config := DefaultConfig()
 		config.GodotVersion = test.configured
 		compiled, err := config.validate()
-		if err != nil {
-			t.Fatalf("validate() = %v", err)
-		}
+		require.NoError(t, err)
 		context := Context{Config: config, compiled: compiled}
-		if got := context.supports(test.floor); got != test.want {
-			t.Errorf("godot_version %q supports(%v) = %t, want %t", test.configured, test.floor, got, test.want)
-		}
+		got := context.supports(test.floor)
+		assert.Equal(t, test.want, got)
 	}
 }
 
@@ -55,9 +51,7 @@ func TestContextSupportsComparesTheConfiguredVersion(t *testing.T) {
 // than dereferencing a nil pointer.
 func TestContextSupportsNothingWithoutACompiledConfig(t *testing.T) {
 	context := Context{}
-	if context.supports(versiongate.Version{Major: 4}) {
-		t.Error("a zero Context reported support")
-	}
+	assert.False(t, context.supports(versiongate.Version{Major: 4}), "a zero Context reported support")
 }
 
 // An empty exempt list means "no exemptions". This is the opposite of
@@ -67,9 +61,7 @@ func TestContextExemptMatchesGlobPatterns(t *testing.T) {
 	config := DefaultConfig()
 	config.RequireReturnType = []string{"_ready", "_on_*"}
 	compiled, err := config.validate()
-	if err != nil {
-		t.Fatalf("validate() = %v", err)
-	}
+	require.NoError(t, err)
 	context := Context{Config: config, compiled: compiled}
 
 	tests := []struct {
@@ -89,9 +81,8 @@ func TestContextExemptMatchesGlobPatterns(t *testing.T) {
 		{rule: "no-such-rule", name: "_ready", want: false},
 	}
 	for _, test := range tests {
-		if got := context.exempt(test.rule, test.name); got != test.want {
-			t.Errorf("exempt(%q, %q) = %t, want %t", test.rule, test.name, got, test.want)
-		}
+		got := context.exempt(test.rule, test.name)
+		assert.Equal(t, test.want, got)
 	}
 }
 
@@ -99,9 +90,7 @@ func TestContextExemptMatchesGlobPatterns(t *testing.T) {
 // than dereferencing a nil pointer.
 func TestContextExemptsNothingWithoutACompiledConfig(t *testing.T) {
 	context := Context{}
-	if context.exempt("require-return-type", "_ready") {
-		t.Error("a zero Context reported an exemption")
-	}
+	assert.False(t, context.exempt("require-return-type", "_ready"), "a zero Context reported an exemption")
 }
 
 // The six JSON names are public contract: they appear in config files, in JSON
@@ -125,13 +114,10 @@ func TestExemptListsDecodeFromTheirRuleNames(t *testing.T) {
 			root := t.TempDir()
 			writeConfigFile(t, root, DefaultConfigPath, `{"`+test.name+`": ["_ready"]}`)
 			config, err := LoadConfig(root, "")
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			got := test.field(config)
-			if len(got) != 1 || got[0] != "_ready" {
-				t.Errorf("field = %q, want [\"_ready\"]", got)
-			}
+			require.Len(t, got, 1)
+			assert.Equal(t, "_ready", got[0])
 		})
 	}
 }
@@ -140,12 +126,8 @@ func TestExemptListsAreNilWhenNoConfigFileNamesThem(t *testing.T) {
 	root := t.TempDir()
 	writeConfigFile(t, root, DefaultConfigPath, `{"max-line-length": 80}`)
 	config, err := LoadConfig(root, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, patterns := range config.exemptPatterns() {
-		if patterns != nil {
-			t.Errorf("%s = %q, want nil", name, patterns)
-		}
+	require.NoError(t, err)
+	for _, patterns := range config.exemptPatterns() {
+		assert.Nil(t, patterns)
 	}
 }

@@ -1,8 +1,10 @@
 package uid
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCheckPassesAProjectWhereEveryScriptHasASidecar(t *testing.T) {
@@ -12,12 +14,8 @@ func TestCheckPassesAProjectWhereEveryScriptHasASidecar(t *testing.T) {
 		"world/enemy.gd":     "extends Node\n",
 		"world/enemy.gd.uid": "uid://c\n",
 	})
-	if report.HasDiagnostics() {
-		t.Fatalf("diagnostics = %v, want none", report.Diagnostics)
-	}
-	if report.Scripts != 2 {
-		t.Errorf("Scripts = %d, want 2", report.Scripts)
-	}
+	require.False(t, report.HasDiagnostics())
+	assert.Equal(t, 2, report.Scripts)
 }
 
 func TestCheckReportsAScriptWithNoSidecar(t *testing.T) {
@@ -26,16 +24,10 @@ func TestCheckReportsAScriptWithNoSidecar(t *testing.T) {
 		"world/enemy.gd":     "extends Node\n",
 		"world/enemy.gd.uid": "uid://c\n",
 	})
-	if got := rules(report); !reflect.DeepEqual(got, []string{RuleMissing}) {
-		t.Fatalf("rules = %v, want one %s", got, RuleMissing)
-	}
+	require.Equal(t, []string{RuleMissing}, rules(report))
 	diagnostic := report.Diagnostics[0]
-	if diagnostic.Path != "player.gd" {
-		t.Errorf("Path = %q, want player.gd", diagnostic.Path)
-	}
-	if diagnostic.UID != "" {
-		t.Errorf("UID = %q, want empty", diagnostic.UID)
-	}
+	assert.Equal(t, "player.gd", diagnostic.Path)
+	assert.Empty(t, diagnostic.UID)
 }
 
 func TestCheckReportsMalformedSidecars(t *testing.T) {
@@ -50,13 +42,9 @@ func TestCheckReportsMalformedSidecars(t *testing.T) {
 		"overflow.gd.uid": "uid://d4n4ub6itg401\n",
 	})
 	want := []string{"blank.gd", "overflow.gd", "path.gd", "zed.gd"}
-	if got := paths(report); !reflect.DeepEqual(got, want) {
-		t.Fatalf("paths = %v, want %v", got, want)
-	}
+	require.Equal(t, want, paths(report))
 	for _, diagnostic := range report.Diagnostics {
-		if diagnostic.Rule != RuleMalformed {
-			t.Errorf("%s: rule = %s, want %s", diagnostic.Path, diagnostic.Rule, RuleMalformed)
-		}
+		assert.Equal(t, RuleMalformed, diagnostic.Rule, diagnostic.Path)
 	}
 }
 
@@ -72,16 +60,10 @@ func TestCheckReportsDuplicatesAgainstTheFirstClaimant(t *testing.T) {
 	// a.gd sorts first, so it keeps the identifier and the other two are
 	// reported against it.
 	want := []string{"b.gd", "c.gd"}
-	if got := paths(report); !reflect.DeepEqual(got, want) {
-		t.Fatalf("paths = %v, want %v", got, want)
-	}
+	require.Equal(t, want, paths(report))
 	for _, diagnostic := range report.Diagnostics {
-		if diagnostic.Rule != RuleDuplicate {
-			t.Errorf("%s: rule = %s, want %s", diagnostic.Path, diagnostic.Rule, RuleDuplicate)
-		}
-		if diagnostic.UID != "uid://bb" {
-			t.Errorf("%s: UID = %q, want uid://bb", diagnostic.Path, diagnostic.UID)
-		}
+		assert.Equal(t, RuleDuplicate, diagnostic.Rule, diagnostic.Path)
+		assert.Equal(t, "uid://bb", diagnostic.UID, diagnostic.Path)
 	}
 }
 
@@ -93,9 +75,7 @@ func TestCheckReportsDuplicatesThroughPaddedText(t *testing.T) {
 		"b.gd":     "extends Node\n",
 		"b.gd.uid": "uid://aab\n",
 	})
-	if got := rules(report); !reflect.DeepEqual(got, []string{RuleDuplicate}) {
-		t.Fatalf("rules = %v, want one %s", got, RuleDuplicate)
-	}
+	require.Equal(t, []string{RuleDuplicate}, rules(report))
 }
 
 // A sidecar carrying no identifier cannot duplicate anything, so it is only
@@ -107,9 +87,7 @@ func TestCheckDoesNotCallMalformedSidecarsDuplicates(t *testing.T) {
 		"b.gd":     "extends Node\n",
 		"b.gd.uid": "nonsense\n",
 	})
-	if got := rules(report); !reflect.DeepEqual(got, []string{RuleMalformed, RuleMalformed}) {
-		t.Fatalf("rules = %v, want two %s", got, RuleMalformed)
-	}
+	require.Equal(t, []string{RuleMalformed, RuleMalformed}, rules(report))
 }
 
 // A file that is not a script is never reported for *having* no identity:
@@ -124,9 +102,7 @@ func TestCheckDoesNotAskForASidecarBesideAFileThatIsNotAScript(t *testing.T) {
 		"water.gdshader.uid": "uid://c\n",
 		"plain.gdshader":     "shader_type canvas_item;\n",
 	})
-	if report.HasDiagnostics() {
-		t.Fatalf("diagnostics = %v, want none", report.Diagnostics)
-	}
+	require.False(t, report.HasDiagnostics())
 }
 
 func TestCheckReportsAMalformedSidecarBesideAFileThatIsNotAScript(t *testing.T) {
@@ -134,12 +110,8 @@ func TestCheckReportsAMalformedSidecarBesideAFileThatIsNotAScript(t *testing.T) 
 		"broken.gdshader":     "shader_type canvas_item;\n",
 		"broken.gdshader.uid": "nonsense\n",
 	})
-	if got := rules(report); !reflect.DeepEqual(got, []string{RuleMalformed}) {
-		t.Fatalf("rules = %v, want one %s", got, RuleMalformed)
-	}
-	if got := report.Diagnostics[0].Path; got != "broken.gdshader" {
-		t.Errorf("Path = %q, want broken.gdshader", got)
-	}
+	require.Equal(t, []string{RuleMalformed}, rules(report))
+	assert.Equal(t, "broken.gdshader", report.Diagnostics[0].Path)
 }
 
 func TestCheckSkipsScriptsHiddenByTheIgnoreFile(t *testing.T) {
@@ -149,21 +121,15 @@ func TestCheckSkipsScriptsHiddenByTheIgnoreFile(t *testing.T) {
 		"player.gd.uid":    "uid://b\n",
 		"addons/vendor.gd": "extends Node\n",
 	})
-	if report.HasDiagnostics() {
-		t.Fatalf("diagnostics = %v, want none", report.Diagnostics)
-	}
-	if report.Scripts != 1 {
-		t.Errorf("Scripts = %d, want 1", report.Scripts)
-	}
+	require.False(t, report.HasDiagnostics())
+	assert.Equal(t, 1, report.Scripts)
 }
 
 // A script that does not parse still needs an identity; nothing here reads the
 // syntax tree.
 func TestCheckReportsAScriptThatDoesNotParse(t *testing.T) {
 	report := checkProject(t, map[string]string{"broken.gd": "func (((\n"})
-	if got := rules(report); !reflect.DeepEqual(got, []string{RuleMissing}) {
-		t.Fatalf("rules = %v, want one %s", got, RuleMissing)
-	}
+	require.Equal(t, []string{RuleMissing}, rules(report))
 }
 
 func TestReportPartitionsItsDiagnostics(t *testing.T) {
@@ -176,10 +142,6 @@ func TestReportPartitionsItsDiagnostics(t *testing.T) {
 		"c.gd.uid": "nonsense\n",
 		"d.gd":     "extends Node\n",
 	})
-	if got := len(report.Missing()); got != 1 {
-		t.Errorf("Missing() has %d diagnostics, want 1", got)
-	}
-	if got := len(report.Repairs()); got != 2 {
-		t.Errorf("Repairs() has %d diagnostics, want 2", got)
-	}
+	assert.Len(t, report.Missing(), 1)
+	assert.Len(t, report.Repairs(), 2)
 }

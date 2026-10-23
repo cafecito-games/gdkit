@@ -1,6 +1,11 @@
 package lint
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 // Each expectation in this file was observed from gdlint itself on the same
 // source, with function-name as the probe rule.
@@ -111,12 +116,10 @@ func TestUnknownRuleDoesNotSpoilKnownRulesInTheSameList(t *testing.T) {
 
 func TestUnknownIgnoreReportsPositionOfTheComment(t *testing.T) {
 	found := lintSource(t, "unknown-ignore", "func good(): # gdlint:ignore = nonsense\n\tpass\n")
-	if len(found) != 1 || found[0].Line != 1 || found[0].Column != 14 {
-		t.Fatalf("got %+v, want one finding at 1:14", found)
-	}
-	if found[0].Severity != SeverityError {
-		t.Errorf("Severity = %q, want error", found[0].Severity)
-	}
+	require.Len(t, found, 1)
+	require.Equal(t, 1, found[0].Line)
+	require.Equal(t, 14, found[0].Column)
+	assert.Equal(t, SeverityError, found[0].Severity)
 }
 
 func TestEmptyRuleNameIsUnknown(t *testing.T) {
@@ -133,9 +136,8 @@ func TestUnknownIgnoreCanBeConfigured(t *testing.T) {
 	lenient := DefaultConfig()
 	lenient.Severity = map[string]Severity{"unknown-ignore": SeverityWarning}
 	found := lintSourceWithConfig(t, lenient, "unknown-ignore", source)
-	if len(found) != 1 || found[0].Severity != SeverityWarning {
-		t.Errorf("got %+v, want one warning", found)
-	}
+	require.Len(t, found, 1)
+	assert.Equal(t, SeverityWarning, found[0].Severity)
 }
 
 func TestUnknownIgnoreCanItselfBeIgnored(t *testing.T) {
@@ -153,22 +155,18 @@ func TestSuppressionCoversEveryRule(t *testing.T) {
 func TestParseFailureCannotBeIgnored(t *testing.T) {
 	source := "# gdlint:ignore = source-parse\nfunc (\n"
 	report := lintProject(t, DefaultConfig(), map[string]string{"a.gd": source})
-	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Rule != "source-parse" {
-		t.Errorf("got %+v, want only source-parse", report.Diagnostics)
-	}
+	require.Len(t, report.Diagnostics, 1)
+	assert.Equal(t, "source-parse", report.Diagnostics[0].Rule)
 }
 
 func TestReservedRulesAreNameable(t *testing.T) {
 	for _, name := range []string{"source-parse", "unknown-ignore"} {
-		if !IsRule(name) {
-			t.Errorf("IsRule(%q) = false", name)
-		}
+		assert.True(t, IsRule(name))
 	}
 	found := map[string]bool{}
 	for _, name := range RuleNames() {
 		found[name] = true
 	}
-	if !found["unknown-ignore"] || !found["source-parse"] {
-		t.Errorf("RuleNames() = %v", RuleNames())
-	}
+	assert.True(t, found["unknown-ignore"])
+	assert.True(t, found["source-parse"])
 }

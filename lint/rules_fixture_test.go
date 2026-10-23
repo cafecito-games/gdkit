@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fixtureFinding is one expected diagnostic, identified by the position and rule
@@ -193,9 +196,7 @@ func docstringFixtureConfig() Config {
 func lintFixtures(t *testing.T, directory string, config Config) map[string][]fixtureFinding {
 	t.Helper()
 	linter, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	snapshot := loadCorpus(t, filepath.Join("testdata", directory), config)
 	found := make(map[string][]fixtureFinding)
 	for _, diagnostic := range linter.Lint(snapshot).Diagnostics {
@@ -340,24 +341,17 @@ func checkFixtures(t *testing.T, found map[string][]fixtureFinding, expectations
 	for path, want := range expectations {
 		sortFindings(want)
 		got := found[path]
-		if len(got) != len(want) {
-			t.Errorf("%s produced %d diagnostics, want %d\ngot:%s\nwant:%s",
-				path, len(got), len(want), formatFindings(got), formatFindings(want))
-			continue
+		if got == nil {
+			got = []fixtureFinding{}
 		}
-		for index := range want {
-			if got[index] != want[index] {
-				t.Errorf("%s diagnostics differ\ngot:%s\nwant:%s",
-					path, formatFindings(got), formatFindings(want))
-				break
-			}
+		if want == nil {
+			want = []fixtureFinding{}
 		}
+		assert.Equal(t, want, got, "%s\ngot:%s\nwant:%s", path, formatFindings(got), formatFindings(want))
 	}
 
 	for path := range found {
-		if _, expected := expectations[path]; !expected {
-			t.Errorf("%s produced diagnostics but has no expectations:%s", path, formatFindings(found[path]))
-		}
+		assert.Contains(t, expectations, path, "%s produced diagnostics but has no expectations:%s", path, formatFindings(found[path]))
 	}
 }
 
@@ -391,14 +385,10 @@ func TestFixturesExerciseEveryRule(t *testing.T) {
 			missing = append(missing, name)
 		}
 	}
-	if len(missing) > 0 {
-		sort.Strings(missing)
-		t.Errorf("no fixture exercises these rules: %v", missing)
-	}
+	sort.Strings(missing)
+	assert.Empty(t, missing, "no fixture exercises these rules")
 
 	for rule := range exercised {
-		if !IsRule(rule) {
-			t.Errorf("fixture expects %q, which is not a registered rule", rule)
-		}
+		assert.True(t, IsRule(rule), "fixture expects %q, which is not a registered rule", rule)
 	}
 }
