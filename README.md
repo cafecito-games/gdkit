@@ -211,6 +211,12 @@ Basic correctness rules:
   chain in the engine schema, so `_toggled` is exempt on a `Button` subclass but
   reported on a `RefCounted` — and an `_on_...` editor signal handler are never
   reported, because the engine or a scene reaches them from outside the file.
+  The rule also consults the project's class hierarchy, the one cross-file
+  question it can answer statically: a private member declared on a class counts
+  as used when any project descendant references its name (a protected helper a
+  base class declares for its subclasses), and a private function counts as used
+  when any project ancestor declares or references its name (an override of a
+  project-defined virtual). A reference from an unrelated script stays invisible.
 
 Structure rules:
 
@@ -495,7 +501,8 @@ at startup; otherwise the bundled table is decompressed once, lazily, only if
 an enabled semantic-aware rule requests engine facts. Today that is the enabled
 `require-typed-collection` populated-literal path and the enabled
 `unused-private-member` rule, which resolves a private function's virtual
-exemption up its `extends` chain; default lint, a disabled collection rule, and
+exemption up its `extends` chain and walks the project class hierarchy; default
+lint, a disabled collection rule, and
 the other typing rules do not select an engine or perform whole-project semantic
 analysis.
 

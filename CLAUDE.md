@@ -374,6 +374,13 @@ property accessors — are absent from Godot's extension API dump because the
 engine dispatches them directly rather than through ClassDB's virtual-method
 table, so the rule keeps a small fixed `objectVirtuals` set for them; do not fold
 that set into the schema-driven path, which cannot see those names.
+It is also a `semanticRule`, the one narrow cross-file question it answers: the
+project class hierarchy. A private member on a class is used when any project
+descendant references its name (a protected helper a base class declares for its
+subclasses), and a private function is used when any project ancestor declares or
+references its name (an override of a project-defined virtual). This follows the
+`extends` graph only, never a general cross-file reference search, and it hides
+nothing in a leaf class, where most dead code lives.
 
 ### Analysis pipeline
 
