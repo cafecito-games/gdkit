@@ -124,6 +124,32 @@ func TestIndexResolvesEveryInheritanceForm(t *testing.T) {
 	}
 }
 
+func TestIndexResolvesInnerClassPathExtends(t *testing.T) {
+	s := sources(t, map[string]string{
+		"base.gd":     "extends RefCounted\nclass Inner:\n\tpass\n",
+		"holder.gd":   "extends RefCounted\nclass Child extends \"res://base.gd\":\n\tpass\n",
+		"deep.gd":     "extends RefCounted\nclass Child extends \"res://base.gd\".Inner:\n\tpass\n",
+		"relative.gd": "extends RefCounted\nclass Child extends \"base.gd\":\n\tpass\n",
+	})
+	s.resolved["holder.gd\x00res://base.gd"] = "base.gd"
+	s.resolved["deep.gd\x00res://base.gd"] = "base.gd"
+	s.resolved["relative.gd\x00base.gd"] = "base.gd"
+	index := BuildIndex(s)
+	wantParents := map[string]string{
+		"holder.gd#Child":   "base.gd",
+		"deep.gd#Child":     "base.gd#Inner",
+		"relative.gd#Child": "base.gd",
+	}
+	for id, want := range wantParents {
+		if got := index.Classes[id].ParentID; got != want {
+			t.Errorf("%s ParentID = %q, want %q", id, got, want)
+		}
+	}
+	if got := index.Descendants("base.gd"); !slices.Equal(got, []string{"holder.gd#Child", "relative.gd#Child"}) {
+		t.Errorf("Descendants(base.gd) = %v", got)
+	}
+}
+
 func TestIndexFailsClosedForAmbiguityAndMissingProjectReferences(t *testing.T) {
 	s := sources(t, map[string]string{
 		"one.gd":              "class_name Dup\n",
@@ -135,7 +161,7 @@ func TestIndexFailsClosedForAmbiguityAndMissingProjectReferences(t *testing.T) {
 		"missing_inner.gd":    "extends Unique.Nope\n",
 		"unique.gd":           "class_name Unique\n",
 		"engine.gd":           "extends Control\n",
-		"outer.gd":            "class Bad extends \"res://one.gd\":\n\tpass\n",
+		"outer.gd":            "class Bad extends \"res://gone.gd\":\n\tpass\n",
 	})
 	s.autoloads["MissingAuto"] = "gone.gd"
 	index := BuildIndex(s)

@@ -299,6 +299,13 @@ func parseExtendsText(text string) (extendsTarget, bool) {
 	if text == "" {
 		return extendsTarget{}, false
 	}
+	if path, rest, ok := unquotePathPrefix(text); ok {
+		chain, ok := dottedChain(rest)
+		if !ok {
+			return extendsTarget{}, false
+		}
+		return extendsTarget{Path: path, Chain: chain}, true
+	}
 	parts := strings.Split(text, ".")
 	for _, part := range parts {
 		if !isIdentifier(part) {
@@ -306,6 +313,50 @@ func parseExtendsText(text string) (extendsTarget, bool) {
 		}
 	}
 	return extendsTarget{Name: parts[0], Chain: parts[1:]}, true
+}
+
+// unquotePathPrefix reads a leading quoted script path from text and returns the
+// unquoted path plus the remainder after the closing quote. It accepts a
+// double- or single-quoted string, optionally r-prefixed, which is how
+// gdparser's parseBaseClass renders a path literal into a class's Extends
+// string. The second result is false when text does not begin with one.
+func unquotePathPrefix(text string) (path, rest string, ok bool) {
+	at := 0
+	if at < len(text) && text[at] == 'r' {
+		at++
+	}
+	if at >= len(text) || (text[at] != '"' && text[at] != '\'') {
+		return "", "", false
+	}
+	quote := text[at]
+	at++
+	start := at
+	for at < len(text) && text[at] != quote {
+		at++
+	}
+	if at >= len(text) {
+		return "", "", false
+	}
+	return text[start:at], text[at+1:], true
+}
+
+// dottedChain parses a trailing ".Name.Name" inner-class chain. It accepts the
+// empty string and rejects a non-empty string that does not begin with a dot or
+// contains a non-identifier segment.
+func dottedChain(rest string) ([]string, bool) {
+	if rest == "" {
+		return nil, true
+	}
+	if rest[0] != '.' {
+		return nil, false
+	}
+	segments := strings.Split(rest[1:], ".")
+	for _, segment := range segments {
+		if !isIdentifier(segment) {
+			return nil, false
+		}
+	}
+	return segments, true
 }
 
 func isIdentifier(text string) bool {

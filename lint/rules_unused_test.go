@@ -169,6 +169,18 @@ func TestUnusedPrivateMemberStaysSilentWhenADescendantDispatchesByString(t *test
 	}
 }
 
+// An inner class that extends the base by script path is a descendant too, so
+// its reference to the base helper keeps the helper alive.
+func TestUnusedPrivateMemberStaysSilentWhenAnInnerClassDescendantReferencesIt(t *testing.T) {
+	report := lintProject(t, unusedConfig(), map[string]string{
+		"base.gd":   "extends RefCounted\n\nfunc _wire():\n\tpass\n",
+		"holder.gd": "extends RefCounted\n\nclass Child extends \"res://base.gd\":\n\tfunc run():\n\t\t_wire()\n",
+	})
+	if found := unusedDiagnostics(report); len(found) != 0 {
+		t.Fatalf("inner-class descendant's helper use reported as dead: %v", found)
+	}
+}
+
 // The widening must not hide dead code in a leaf class: a private member with
 // no descendants and no project ancestors is still reported.
 func TestUnusedPrivateMemberStillReportsDeadCodeInALeafClass(t *testing.T) {
