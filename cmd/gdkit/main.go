@@ -29,6 +29,8 @@ Usage:
   gdkit format check [flags] [project-root]
   gdkit format write [flags] [project-root]
   gdkit format init  [flags] [project-root]
+  gdkit assets check [flags] [project-root]
+  gdkit assets init  [flags] [project-root]
   gdkit uid check    [flags] [project-root]
   gdkit uid write    [flags] [project-root]
   gdkit gen check    [flags] [project-root]
@@ -45,6 +47,8 @@ Commands:
   format check   report GDScript files that are not formatted
   format write   rewrite GDScript files in the configured style
   format init    write the default .gdkit/format.json configuration
+  assets check   report files no longer reachable from the project's roots
+  assets init    write the default .gdkit/assets.json configuration
   uid check      report uid:// identities that are missing or unusable, and
                  references that resolve to nothing or to the wrong file
   uid write      create the missing .uid sidecars Godot would have written and
@@ -75,6 +79,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runLint(args[1:], stdout, stderr)
 	case "format":
 		return runFormat(args[1:], stdout, stderr)
+	case "assets":
+		return runAssets(args[1:], stdout, stderr)
 	case "uid":
 		return runUID(args[1:], stdout, stderr)
 	case "gen":

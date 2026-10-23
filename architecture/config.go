@@ -418,10 +418,6 @@ func featureMatches(allowed []string, actual, source string) bool {
 // the running binary. It reads the key with a non-strict decode of its own so
 // the floor is reported ahead of any other configuration problem; malformed
 // JSON is left to the decode in LoadConfig, which reports it with an offset.
-//
-// The development-build bypass is read from the environment here rather than
-// passed in by the caller because the check has to run at this point in
-// LoadConfig to order correctly, so the bypass has to as well.
 func checkMinimumVersion(data []byte, configPath string) error {
 	var document struct {
 		MinimumGDKitVersion string `json:"minimum_gdkit_version"`
@@ -429,27 +425,5 @@ func checkMinimumVersion(data []byte, configPath string) error {
 	if err := json.Unmarshal(data, &document); err != nil {
 		return nil
 	}
-	if document.MinimumGDKitVersion == "" {
-		return nil
-	}
-	minimum, err := versiongate.ParseRequirement(document.MinimumGDKitVersion)
-	if err != nil {
-		return fmt.Errorf("minimum_gdkit_version %w", err)
-	}
-	reported := detectedVersion()
-	if versiongate.IsDevelopment(reported) {
-		if os.Getenv(versiongate.AllowDevelopmentEnvironmentVariable) != "" {
-			return nil
-		}
-		return fmt.Errorf("%s requires gdkit %s or newer, which is not satisfied by a development build; set %s=1 to bypass",
-			configPath, minimum, versiongate.AllowDevelopmentEnvironmentVariable)
-	}
-	current, err := versiongate.Parse(reported)
-	if err != nil {
-		return fmt.Errorf("%s requires gdkit %s or newer, but this binary reports an unrecognized version %q", configPath, minimum, reported)
-	}
-	if current.Less(minimum) {
-		return fmt.Errorf("%s requires gdkit %s or newer, but this binary is %s", configPath, minimum, reported)
-	}
-	return nil
+	return versiongate.CheckFloor(configPath, document.MinimumGDKitVersion, detectedVersion())
 }

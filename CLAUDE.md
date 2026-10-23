@@ -34,6 +34,8 @@ go run ./cmd/gdkit format check --diff /path/to/godot-project
 go run ./cmd/gdkit format write /path/to/godot-project
 go run ./cmd/gdkit uid check /path/to/godot-project
 go run ./cmd/gdkit uid write --repair /path/to/godot-project
+go run ./cmd/gdkit assets check /path/to/godot-project
+go run ./cmd/gdkit assets check --format json .
 
 # Release packaging (same commands CI runs)
 goreleaser check
@@ -137,6 +139,47 @@ the default branch.
   which a duplicated value always is, so a pathless reference to a reissued
   duplicate keeps resolving to the first claimant, which is what it already
   did.
+- `assets/` — the unused-asset analysis behind `gdkit assets`: a whole-project
+  reachability mark over every file, with `project.godot` and
+  `export_presets.cfg` as the roots. `Check` is pure and there is no `Apply`,
+  because the safety net the other writers have — verify the rewrite before
+  offering it — has no equivalent for deleting a file: the property would have
+  to be "the analysis was right", which cannot hold while a path can be
+  assembled at runtime. `asset.unreferenced`, `asset.unreachable`,
+  `asset.dynamic`, and `asset.missing` are its public diagnostic names, and
+  only the first is an error by default.
+  The two tiers are the design, not a convenience. `asset.unreferenced` means
+  no edge points at the file; `asset.unreachable` means the only things
+  pointing at it are dead too, which is a weaker claim and so a warning. The
+  same instinct makes `asset.dynamic` a finding rather than silence:
+  `architecture`'s `resolveResource` drops a non-literal path with no
+  diagnostic, which is right there because no boundary is crossed and fatal
+  here because silence is how a live file gets condemned.
+  `classEdges` is load-bearing and its omission is not a small bug: without
+  `class_name` references between scripts a typed project reports 2419 of its
+  2553 files as dead, because a script is reached by its global class name and
+  not by a path. It deliberately does **not** resolve shadowing, unlike
+  `architecture` — a local named like a class keeps that class alive, which is
+  a file this tool fails to mention, and the opposite error is telling someone
+  to delete a file their code uses. Every asymmetry in this package points the
+  same way, including reading every `res://` literal rather than only those in
+  a load position, and reading every value in `project.godot` rather than an
+  enumerated list of keys that cannot be complete and rots when the engine adds
+  one.
+  Three resolutions are not missing files and must stay that way: a reference
+  to a directory keeps everything under it, a glob is a search that names no
+  file, and a bare `res://` is recorded as a dynamic site rather than keeping
+  the project — a test runner that scans the root would otherwise make every
+  answer "still in use" and the analysis vacuous.
+  `exclude` and `.gdkitignore` go into `project.Config.Selection`, never onto
+  the `Config`, for the reason `lint` discovered: narrowing the walk deletes
+  the outgoing references of everything it hid, and every asset those files
+  were the only user of reports as unused. `asset_extensions` narrows only what
+  may be *reported*; an unlisted file still carries its references, which is
+  why a `.cfg` keeps a texture alive while never being named itself. The
+  default list omits `.json` because a repository holds more tooling JSON than
+  game data, and the default `exclude` is wider than every other tool's because
+  this is the only one that inventories a repository rather than its scripts.
 - `project/` — discovery and parsing. The only package that reads a project from
   disk, so every tool agrees on scope and parses once. `Config.HonorIgnoreFile`
   is how lint, format, and uid share the root `.gdkitignore`; `architecture`
@@ -235,6 +278,20 @@ the default branch.
   still indexed, carrying `Claim.Ignored`, since dropping a claimant is what
   would make every reference to it look dangling. A reference inside an ignored
   path is not collected at all, because nothing reports or rewrites one.
+  `Config.Inventory` is the sixth option, and only `assets` sets it:
+  `Snapshot.Files` is every file the project holds with `.uid` and `.import`
+  sidecars attributed to their owner, `Snapshot.Links` is every outgoing
+  resource reference however it was written, `Snapshot.DynamicLinks` is every
+  load whose path could not be read, and `Snapshot.SelectedFiles` is the subset
+  of `Files` the `Selection` admits. `Links` stays separate from `References`
+  rather than widening it: `References` is every use of a `uid://` *identity*,
+  which is what `uid` reports on and repairs, and a path-only `[ext_resource]`
+  added to it would read as a dangling one. Scenes, shaders, and config files
+  are read with gdparser's own `textresource`, `shader`, and `configfile`
+  parsers; the identity path keeps its line scanner because it reads one line
+  of a file that can be megabytes and must keep yielding a complete header
+  claim when the body cannot be read, which a document parse cannot do —
+  `TestLoadKeepsHeaderClaimEvidenceCompleteAfterReferenceScanFailure` pins it.
 - `generate/` — the code generator behind `gdkit gen`: writes `_to_string`,
   `equals`, and `deep_equals` into a class that opted in, inside a
   sentinel-delimited region it owns. Unlike `lint` it is a whole-project analysis, because `equals` composes
@@ -280,13 +337,24 @@ the default branch.
 - `internal/atomicwrite/` — the write-beside-and-rename replacement shared by
   `format`, `generate`, and `uid`, including the re-read before the rename that
   keeps a concurrent edit from being lost.
-- `internal/glob/` — the shared glob engine.
+- `internal/glob/` — the shared glob engine. `Compile` quote-escapes every
+  character it does not interpret, so it cannot fail; a test asserting that a
+  malformed pattern is rejected is asserting nothing.
+- `internal/respath/` — resolves a `uid://`, `res://`, or file-relative
+  reference to a project path, shared by `architecture` and `assets` so the two
+  cannot drift about what `res://` means. It reports a named `Kind` rather than
+  a bool because the two callers disagree about an unresolvable identifier:
+  `architecture` has no dependency, `assets` has a hole in a proof.
 - `internal/versiongate/` — the `major.minor.patch` comparison behind
   `--minimum-version` and `minimum_gdkit_version`. Comparison is on the numeric
   triple only; prerelease and build metadata are ignored, so a GoReleaser snapshot
   of `0.2.1` satisfies a floor of `0.2.1`. `ParseRequirement` is deliberately
   stricter than `Parse`: a floor is hand-written, so a leading `v` or a prerelease
   suffix is an error, while a version a binary reports about itself is tolerated.
+  `CheckFloor` is the shared `minimum_gdkit_version` check, used by
+  `architecture` and `assets`. It takes the reported version as a parameter
+  rather than reading it, so each config package keeps its own override point
+  and a test substitutes its own package's variable.
   `ParseEngineVersion` is `ParseRequirement` with an optional patch, and it exists
   because `lint.json`'s `godot_version` is hand-written too and wants that same
   strictness — but nobody writes `4.7.0`, so `4.7` has to be accepted.
@@ -508,6 +576,10 @@ Rule names (`dependency.direction`, `dependency.cycle`, `classification.missing`
 `engine.tree`, `engine.signal`, `test.scene_load`, `test.node_inspection`,
 `allowlist.adr`) are the public contract: they appear in JSON output and are what
 allowlist exceptions match on. Renaming one breaks existing project allowlists.
+
+`assets` has its own rule names (`asset.unreferenced`, `asset.unreachable`,
+`asset.dynamic`, `asset.missing`) under the same contract, and its own severity
+map in the shape `lint` uses.
 
 Exit codes: `0` clean, `1` architecture violations, `2` configuration/usage/IO
 failure. `cmd/gdkit` returns `2` from every error path before analysis completes.

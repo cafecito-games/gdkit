@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cafecito-games/gdkit/internal/respath"
 	"github.com/cafecito-games/gdkit/project"
 	"github.com/cafecito-games/gdparser/ast"
 	"github.com/cafecito-games/gdparser/token"
@@ -442,28 +443,18 @@ func decodeString(raw string) (string, error) {
 	return strconv.Unquote(raw)
 }
 
+// resolveResource places a reference against the project and reports whether
+// it is one the project ships. An unresolvable uid:// is deliberately a
+// project resource: it is a reference that was meant to name a project file
+// and no longer does, which is exactly what resource.missing reports.
 func (a *Analyzer) resolveResource(from, resource string, uidPaths map[string]string) (string, bool) {
-	if strings.HasPrefix(resource, "uid://") {
-		target, ok := uidPaths[resource]
-		if !ok {
-			return resource, true
-		}
-		return target, true
+	resolution := respath.Resolve(from, resource, uidPaths)
+	switch resolution.Kind {
+	case respath.Project, respath.Unresolved:
+		return resolution.Path, true
+	default:
+		return resolution.Path, false
 	}
-	if strings.HasPrefix(resource, "user://") || strings.Contains(resource, "://") && !strings.HasPrefix(resource, "res://") {
-		return "", false
-	}
-	var target string
-	if strings.HasPrefix(resource, "res://") {
-		target = strings.TrimPrefix(resource, "res://")
-	} else {
-		target = path.Join(path.Dir(from), resource)
-	}
-	target = path.Clean(strings.TrimPrefix(target, "/"))
-	if target == ".." || strings.HasPrefix(target, "../") {
-		return target, false
-	}
-	return target, true
 }
 
 func isScene(name string) bool {

@@ -86,6 +86,19 @@ type Config struct {
 	// every mode. A reference inside an ignored path is not recorded at all,
 	// because nothing reports or rewrites one.
 	Identities bool
+	// Inventory populates Snapshot.Files and Snapshot.Links: every file the
+	// project holds, and every outgoing resource reference any of them makes.
+	// It is what a reachability analysis needs and what nothing else does, so
+	// it is opt-in: it records the whole tree rather than the parseable part
+	// of it, and it reads every scene, resource, shader, and config file
+	// through for the references inside.
+	//
+	// Unlike Identities it collects references by path as well as by
+	// identity, because a file is kept alive by being named at all. The two
+	// collections stay separate for that reason: Snapshot.References is every
+	// use of a uid:// identity, which is what uid reports on and repairs,
+	// while Snapshot.Links is every dependency however it was written.
+	Inventory bool
 	// FollowDirectorySymlinks enters a directory symlink found under a source
 	// root and indexes what it names under the link's own project-logical
 	// path. It is read-only discovery and its zero value is the behavior every
@@ -291,6 +304,26 @@ type Snapshot struct {
 	// at a scene rather than a script is not recorded, since it declares no
 	// class.
 	Autoloads map[string]string
+
+	// Files is every file the project holds, project-relative and sorted,
+	// populated only under Config.Inventory. A .uid or .import sidecar is
+	// attributed to the file beside it rather than listed, so one asset is
+	// one entry however many sidecars it carries.
+	Files []string
+	// Links is every outgoing resource reference in the project, populated
+	// only under Config.Inventory and sorted by path and line. References
+	// are recorded unresolved; see Link.
+	Links []Link
+	// SelectedFiles is the subset of Files that Config.Selection admits, and
+	// is Files itself when no Selection narrows it. It is what a tool may
+	// report on, while Files stays the universe the references are read from.
+	SelectedFiles []string
+	// DynamicLinks is every load whose path could not be read as a literal,
+	// populated only under Config.Inventory. Link.Reference holds the
+	// directory prefix the expression does name, and is empty when it names
+	// none. These are not references; they are the places a reachability
+	// analysis has to admit it cannot see.
+	DynamicLinks []Link
 }
 
 // Load walks the configured source roots and parses every .gd file it finds.
@@ -328,6 +361,9 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 	// reports on.
 	declared := make(map[string]string)
 	var sidecars []Sidecar
+	var files []string
+	var links []Link
+	var dynamic []Link
 	table := identities{}
 	// prunesDirectory is the one decision about whether the walk enters a
 	// logical directory. The callback below asks it, and so does the
@@ -413,6 +449,10 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 					identityIncomplete = true
 				}
 				return nil
+			}
+			if config.Inventory && !inventorySidecar(relative) && !ignored.Ignored(relative, false) {
+				files = append(files, relative)
+				links = append(links, inventoryLinks(name, relative)...)
 			}
 			switch {
 			case strings.HasSuffix(relative, ".gd"):
@@ -588,6 +628,16 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 		}
 		table.sort()
 	}
+	if config.Inventory {
+		for _, name := range paths {
+			links = append(links, scriptLinks(scripts[name])...)
+			dynamic = append(dynamic, scriptDynamicLoads(scripts[name])...)
+		}
+		sortLinks(dynamic)
+		links = append(links, manifestLinks(root)...)
+		sortLinks(links)
+		sort.Strings(files)
+	}
 	if walk != nil {
 		if err := walk.verifyMounts(root); err != nil {
 			return nil, err
@@ -600,6 +650,17 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 	selected, err := selectPaths(root, config.Selection, mounts, paths)
 	if err != nil {
 		return nil, err
+	}
+	var selectedFiles []string
+	if config.Inventory {
+		// The same three filters decide what a tool may act on, whatever kind
+		// of file it is. Scripts and assets cannot be selected by different
+		// rules: an exclusion that hid a scene from reporting but not its
+		// script would report half a dead cluster.
+		selectedFiles, err = selectPaths(root, config.Selection, mounts, files)
+		if err != nil {
+			return nil, err
+		}
 	}
 	autoloads, err := loadAutoloads(root)
 	if err != nil {
@@ -618,6 +679,10 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 		IdentityIncomplete: identityIncomplete,
 		Selected:           selected,
 		Autoloads:          autoloads,
+		Files:              files,
+		Links:              links,
+		SelectedFiles:      selectedFiles,
+		DynamicLinks:       dynamic,
 	}, nil
 }
 
