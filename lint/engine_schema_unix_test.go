@@ -14,6 +14,11 @@ import (
 )
 
 func TestExtensionAPIRejectsUnixSocketAsInvalid(t *testing.T) {
+	// macOS rejects unix socket paths longer than 104 bytes, and the per-user
+	// temp directory under /var/folders can push t.TempDir past that limit.
+	// GOTMPDIR is what t.TempDir reads to choose its parent, so point it at a
+	// short location that keeps the socket path under the limit.
+	t.Setenv("GOTMPDIR", "/tmp")
 	root := t.TempDir()
 	path := "extension_api.json"
 	listener, err := net.Listen("unix", filepath.Join(root, path))
