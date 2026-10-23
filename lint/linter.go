@@ -77,6 +77,10 @@ type Context struct {
 	names      map[*project.Script][]namedDeclaration
 	typing     map[*project.Script][]typingSite
 	references map[string]referenceFacts
+	// memberReferences caches the whole-project direct-member-reference map:
+	// each project class ID to the set of member names referenced through a
+	// statically resolved receiver of that class. It is computed once per run.
+	memberReferences map[string]map[string]bool
 }
 
 // Engine returns the selected immutable engine schema, or nil for a run whose
