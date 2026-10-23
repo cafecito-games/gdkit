@@ -1,6 +1,7 @@
 package project
 
 import (
+	"encoding/json"
 	"os"
 	"path"
 	"path/filepath"
@@ -50,10 +51,11 @@ func scriptLinks(script *Script) []Link {
 	if script.File == nil {
 		return nil
 	}
+	fragments := pathFragments(script.File)
 	var links []Link
 	ast.Inspect(script.File, func(node ast.Node) bool {
 		literal, ok := node.(*ast.Literal)
-		if !ok || literal.Kind != ast.StringLiteral {
+		if !ok || literal.Kind != ast.StringLiteral || fragments[literal] {
 			return true
 		}
 		text := literalText(literal)
@@ -67,6 +69,29 @@ func scriptLinks(script *Script) []Link {
 		return true
 	})
 	return links
+}
+
+// pathFragments returns the string literals that are operands of a
+// concatenation or a format expression. Each is a piece of a path the program
+// computes, not a path of its own: the head of "res://data/" + id names a
+// directory and no file, and reading it as a reference reports every file in
+// the project as missing. scriptDynamicLoads is what turns the whole
+// expression into the one thing it does prove.
+func pathFragments(file *ast.File) map[*ast.Literal]bool {
+	fragments := map[*ast.Literal]bool{}
+	ast.Inspect(file, func(node ast.Node) bool {
+		binary, ok := node.(*ast.BinaryExpression)
+		if !ok || (binary.Operator != "+" && binary.Operator != "%") {
+			return true
+		}
+		for _, operand := range []ast.Expression{binary.Left, binary.Right} {
+			if literal, isLiteral := operand.(*ast.Literal); isLiteral {
+				fragments[literal] = true
+			}
+		}
+		return true
+	})
+	return fragments
 }
 
 // shaderLinks returns the targets of a shader's #include directives. An
@@ -193,6 +218,8 @@ func inventoryLinks(name, relative string) []Link {
 		return shaderLinks(name, relative)
 	case hasAnySuffix(relative, ".cfg"):
 		return configLinks(name, relative)
+	case hasAnySuffix(relative, ".json"):
+		return jsonLinks(name, relative)
 	default:
 		return nil
 	}
@@ -233,4 +260,139 @@ func sortLinks(links []Link) {
 		}
 		return x.Reference < y.Reference
 	})
+}
+
+// scriptDynamicLoads returns every load whose path this analysis cannot read.
+//
+// Reference carries the project-relative directory prefix the expression
+// does name, when it names one, and is empty when the expression is opaque.
+// Both are recorded: a prefix is real evidence that everything under a
+// directory may be loaded, and an opaque load is the evidence that no
+// reachability claim about this project is complete.
+//
+// Only a load call is examined, not every expression that could produce a
+// path. A string built and stored is not yet a load, and a reachability
+// analysis that treated it as one would keep most of a project alive.
+func scriptDynamicLoads(script *Script) []Link {
+	if script.File == nil {
+		return nil
+	}
+	var links []Link
+	ast.Inspect(script.File, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpression)
+		if !ok || !isResourceLoad(call.Callee) || len(call.Arguments) == 0 {
+			return true
+		}
+		argument := call.Arguments[0]
+		if literal, isLiteral := argument.(*ast.Literal); isLiteral && literal.Kind == ast.StringLiteral {
+			return true
+		}
+		links = append(links, Link{
+			Path:      script.Path,
+			Line:      argument.Span().Start.Line,
+			Reference: literalPrefix(argument),
+		})
+		return true
+	})
+	return links
+}
+
+// literalPrefix returns the project-relative directory an expression names
+// before the part it computes, or "" when it names none.
+//
+// Two shapes carry one. A concatenation keeps its leftmost operand, so
+// "res://art/" + name names res://art/. A format expression keeps everything
+// before its first verb, so "res://data/%s.tres" % id names res://data/. In
+// both cases the prefix is cut back to the last directory separator, because
+// a partial file name is not a directory and matching on one would keep a
+// file whose name merely starts the same way.
+func literalPrefix(expression ast.Expression) string {
+	binary, ok := expression.(*ast.BinaryExpression)
+	if !ok || (binary.Operator != "+" && binary.Operator != "%") {
+		return ""
+	}
+	return directoryPrefix(leftmostLiteral(binary))
+}
+
+// directoryPrefix cuts a res:// literal back to the directory it names.
+func directoryPrefix(text string) string {
+	if !strings.HasPrefix(text, respath.ResourceScheme) {
+		return ""
+	}
+	text = strings.TrimPrefix(text, respath.ResourceScheme)
+	if verb := strings.IndexByte(text, '%'); verb >= 0 {
+		text = text[:verb]
+	}
+	separator := strings.LastIndexByte(text, '/')
+	if separator < 0 {
+		return ""
+	}
+	return text[:separator+1]
+}
+
+// leftmostLiteral returns the text of the leftmost string literal in a chain
+// of binary expressions, which is where a built path's fixed head sits.
+func leftmostLiteral(expression ast.Expression) string {
+	for {
+		switch value := expression.(type) {
+		case *ast.BinaryExpression:
+			expression = value.Left
+		case *ast.Literal:
+			if value.Kind != ast.StringLiteral {
+				return ""
+			}
+			return literalText(value)
+		default:
+			return ""
+		}
+	}
+}
+
+// jsonLinks returns the resource references a JSON data file makes. A project
+// that drives content from a table writes res:// paths in it, and without
+// this every file such a table is the only user of reports as unused.
+//
+// The document is decoded rather than searched, so a path inside a comment or
+// a key name cannot create one. Decoding loses line numbers, which is
+// acceptable here: these links keep files alive and never report a site.
+func jsonLinks(name, relative string) []Link {
+	source, err := os.ReadFile(name)
+	if err != nil {
+		return nil
+	}
+	var document any
+	if json.Unmarshal(source, &document) != nil {
+		return nil
+	}
+	var links []Link
+	var walk func(value any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case string:
+			if respath.IsReference(typed) {
+				links = append(links, Link{Path: relative, Line: 1, Reference: typed, Explicit: true})
+			}
+		case []any:
+			for _, element := range typed {
+				walk(element)
+			}
+		case map[string]any:
+			for _, key := range sortedJSONKeys(typed) {
+				walk(typed[key])
+			}
+		}
+	}
+	walk(document)
+	return links
+}
+
+// sortedJSONKeys orders an object's keys so two runs over the same file
+// produce the same links in the same order.
+func sortedJSONKeys(object map[string]any) []string {
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

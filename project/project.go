@@ -314,6 +314,16 @@ type Snapshot struct {
 	// only under Config.Inventory and sorted by path and line. References
 	// are recorded unresolved; see Link.
 	Links []Link
+	// SelectedFiles is the subset of Files that Config.Selection admits, and
+	// is Files itself when no Selection narrows it. It is what a tool may
+	// report on, while Files stays the universe the references are read from.
+	SelectedFiles []string
+	// DynamicLinks is every load whose path could not be read as a literal,
+	// populated only under Config.Inventory. Link.Reference holds the
+	// directory prefix the expression does name, and is empty when it names
+	// none. These are not references; they are the places a reachability
+	// analysis has to admit it cannot see.
+	DynamicLinks []Link
 }
 
 // Load walks the configured source roots and parses every .gd file it finds.
@@ -353,6 +363,7 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 	var sidecars []Sidecar
 	var files []string
 	var links []Link
+	var dynamic []Link
 	table := identities{}
 	// prunesDirectory is the one decision about whether the walk enters a
 	// logical directory. The callback below asks it, and so does the
@@ -620,7 +631,9 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 	if config.Inventory {
 		for _, name := range paths {
 			links = append(links, scriptLinks(scripts[name])...)
+			dynamic = append(dynamic, scriptDynamicLoads(scripts[name])...)
 		}
+		sortLinks(dynamic)
 		links = append(links, manifestLinks(root)...)
 		sortLinks(links)
 		sort.Strings(files)
@@ -637,6 +650,17 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 	selected, err := selectPaths(root, config.Selection, mounts, paths)
 	if err != nil {
 		return nil, err
+	}
+	var selectedFiles []string
+	if config.Inventory {
+		// The same three filters decide what a tool may act on, whatever kind
+		// of file it is. Scripts and assets cannot be selected by different
+		// rules: an exclusion that hid a scene from reporting but not its
+		// script would report half a dead cluster.
+		selectedFiles, err = selectPaths(root, config.Selection, mounts, files)
+		if err != nil {
+			return nil, err
+		}
 	}
 	autoloads, err := loadAutoloads(root)
 	if err != nil {
@@ -657,6 +681,8 @@ func load(config Config, hooks loaderHooks) (*Snapshot, error) {
 		Autoloads:          autoloads,
 		Files:              files,
 		Links:              links,
+		SelectedFiles:      selectedFiles,
+		DynamicLinks:       dynamic,
 	}, nil
 }
 
