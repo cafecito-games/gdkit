@@ -69,8 +69,8 @@ type Config struct {
 	HonorIgnoreFile bool
 	// Selection, when non-nil, narrows what the caller acts on without
 	// narrowing the universe that is walked and parsed. generate always passes
-	// one and lint passes one in a semantic run; a nil Selection, which the
-	// other three tools pass, selects everything discovered.
+	// one and lint passes one in a semantic run; a nil Selection selects
+	// everything discovered.
 	Selection *Selection
 	// Identities populates Snapshot.Claims and Snapshot.References: every
 	// declaration of a uid:// identity and every use of one. It reads every
@@ -119,8 +119,9 @@ type Config struct {
 	// explicit capability and the only authority for it. There is no
 	// environment variable, no global switch, and no suffix heuristic. Only a
 	// read-only caller sets it: a semantic lint run needs the mounted
-	// dependency in its universe, while format, generate, and uid stay on the
-	// zero value so no write can reach an external checkout through a mount.
+	// dependency in its universe, while format, generate, licenseheader, and uid
+	// stay on the zero value so no write can reach an external checkout through
+	// a mount.
 	//
 	// It belongs here rather than on Selection because it governs what the
 	// universe walk enters, and Selection narrows actions without narrowing

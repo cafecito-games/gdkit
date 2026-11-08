@@ -104,12 +104,14 @@ func TestMinimumVersionGatesBeforeConfigErrors(t *testing.T) {
 
 func TestMinimumVersionIsAcceptedByEveryCheckCommand(t *testing.T) {
 	commands := map[string][]string{
-		"arch check":   {"arch", "check"},
-		"lint check":   {"lint", "check"},
-		"format check": {"format", "check"},
-		"format write": {"format", "write"},
-		"uid check":    {"uid", "check"},
-		"uid write":    {"uid", "write"},
+		"arch check":    {"arch", "check"},
+		"lint check":    {"lint", "check"},
+		"format check":  {"format", "check"},
+		"format write":  {"format", "write"},
+		"license check": {"license", "check"},
+		"license write": {"license", "write"},
+		"uid check":     {"uid", "check"},
+		"uid write":     {"uid", "write"},
 	}
 	for name, command := range commands {
 		t.Run(name, func(t *testing.T) {
