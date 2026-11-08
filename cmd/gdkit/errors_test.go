@@ -75,6 +75,8 @@ func TestJSONFailureEnvelopeOnEveryCommand(t *testing.T) {
 		{"lint", "check"},
 		{"format", "check"},
 		{"format", "write"},
+		{"license", "check"},
+		{"license", "write"},
 		{"uid", "check"},
 		{"uid", "write"},
 	} {

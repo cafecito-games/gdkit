@@ -1,8 +1,9 @@
 // Package atomicwrite replaces a file's contents in place, without losing an
 // edit made while the caller was computing them.
 //
-// It is shared by every gdkit tool that writes: format, uid, and generate all
-// need the same two guarantees, and a second copy of this would drift.
+// It is shared by every gdkit tool that rewrites existing files: format,
+// generate, licenseheader, and uid all need the same two guarantees, and a
+// second copy of this would drift.
 package atomicwrite
 
 import (

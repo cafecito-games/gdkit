@@ -169,7 +169,7 @@ func TestLoadSkipsReferencesInIgnoredFiles(t *testing.T) {
 	require.Len(t, snapshot.References, 0)
 }
 
-// The other four tools read a resource's header and nothing else, so leaving
+// The other tools read a resource's header and nothing else, so leaving
 // Identities off must not start collecting the rest of it.
 func TestLoadWithoutIdentitiesCollectsNothing(t *testing.T) {
 	root := t.TempDir()

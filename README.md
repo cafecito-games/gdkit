@@ -1,7 +1,8 @@
 # gdkit
 
 **Static analysis and source processing for Godot 4 GDScript — architecture
-boundaries, linting, formatting, and `uid://` identities in one binary.**
+boundaries, linting, formatting, license headers, and `uid://` identities in
+one binary.**
 
 [![CI](https://img.shields.io/github/actions/workflow/status/cafecito-games/gdkit/ci.yml?branch=main&label=CI&logo=github)](https://github.com/cafecito-games/gdkit/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/cafecito-games/gdkit?label=release&logo=github)](https://github.com/cafecito-games/gdkit/releases/latest)
@@ -10,14 +11,16 @@ boundaries, linting, formatting, and `uid://` identities in one binary.**
 [![Godot 4](https://img.shields.io/badge/godot-4.x-478cbf?logo=godotengine&logoColor=white)](https://godotengine.org)
 [![License](https://img.shields.io/github/license/cafecito-games/gdkit)](LICENSE)
 
-`gdkit` is four tools over one project model. They share project discovery and
-parse the same way, so every tool agrees on which files are in scope.
+`gdkit` is a suite of tools over one project model. They share project
+discovery and parse the same way, so every tool agrees on which files are in
+scope.
 
 | Tool | What it does |
 | --- | --- |
 | [`gdkit arch`](#architecture-checks) | Enforces layer, feature, and engine-purity boundaries, and finds dependency cycles |
 | [`gdkit lint`](#linting) | Reports 30 naming, structural, design, documentation, and formatting problems, and 9 more a project can opt in to |
 | [`gdkit format`](#formatting) | Rewrites GDScript into one canonical style, verifying every rewrite first |
+| [`gdkit license`](#license-headers) | Adds and updates project-owned license headers in GDScript files |
 | [`gdkit uid`](#uid-identities) | Creates the `uid://` sidecars Godot would have created, and finds and repairs broken `uid://` references |
 | [`gdkit gen`](#code-generation) | Generates `_to_string`, `equals`, and `deep_equals` into the classes that opt in |
 | [`gdkit assets`](#unused-assets) | Reports the files nothing in the project still reaches |
@@ -37,6 +40,7 @@ cd /path/to/godot-project
 gdkit arch check .      # layer, feature, and engine-purity boundaries
 gdkit lint check .      # GDScript style and correctness
 gdkit format check .    # canonical formatting; writes nothing
+gdkit license check .   # missing or stale managed license headers
 gdkit uid check .       # missing, unusable, and unresolvable uid:// identities
 gdkit gen check .       # generated methods that are missing or out of date
 gdkit assets check .    # files nothing in the project still reaches
@@ -79,6 +83,7 @@ SHA-256 manifest.
 - [Architecture checks](#architecture-checks) — `gdkit arch`
 - [Linting](#linting) — `gdkit lint`
 - [Formatting](#formatting) — `gdkit format`
+- [License headers](#license-headers) — `gdkit license`
 - [UID identities](#uid-identities) — `gdkit uid`
 - [Code generation](#code-generation) — `gdkit gen`
 - [Unused assets](#unused-assets) — `gdkit assets`
@@ -855,6 +860,65 @@ default:
   `gdkit format check` and `gdkit format write` also skip the paths listed in
   [`.gdkitignore`](#ignoring-files-with-gdkitignore).
 
+## License headers
+
+`gdkit license` adds and updates one explicitly managed comment block at the
+top of every selected GDScript file. The markers make updates exact: gdkit never
+guesses that an ordinary leading comment or `##` documentation block is an old
+license header.
+
+```sh
+gdkit license init .
+# Edit .gdkit/license.json and fill in header.
+gdkit license check --diff .
+gdkit license write .
+```
+
+The generated form is:
+
+```gdscript
+# gdkit:license:begin
+# Copyright (c) 2026 Example Studio
+#
+# SPDX-License-Identifier: MIT
+# gdkit:license:end
+
+extends Node
+```
+
+`license init` writes an inert configuration whose `header` is empty, because
+gdkit cannot safely invent a copyright holder or license. Each configured line
+is written after `# `; an empty string writes a bare `#` line:
+
+```json
+{
+  "version": 1,
+  "source_roots": ["."],
+  "exclude": [".git/**", ".godot/**", ".gdkit/**", "addons/**"],
+  "header": [
+    "Copyright (c) 2026 Example Studio",
+    "",
+    "SPDX-License-Identifier: MIT"
+  ]
+}
+```
+
+- `gdkit license check [--config path] [--format text|json] [--diff] [project-root]`
+  reports missing or stale blocks without writing. `--diff` cannot be combined
+  with JSON output.
+- `gdkit license write [--config path] [--format text|json] [project-root]`
+  inserts or replaces the block atomically, preserving the file mode and
+  refusing to overwrite a concurrent edit.
+- `gdkit license init [--force] [project-root]` writes
+  `.gdkit/license.json`. Running `gdkit license` with no subcommand runs
+  `check`.
+
+Line endings are preserved, as are a leading UTF-8 byte order mark and a
+shebang. A missing, repeated, misplaced, or unmatched marker is reported as
+`license.marker` and left untouched. The command honors `source_roots`,
+`exclude`, and [`.gdkitignore`](#ignoring-files-with-gdkitignore); its default
+exclusions match the formatter's.
+
 ## UID identities
 
 Godot 4 gives every script a `uid://` identity and keeps it in a `.uid` file
@@ -1455,8 +1519,8 @@ assets check passed (2503 of 4138 files eligible)
 ## Ignoring files with .gdkitignore
 
 A file named `.gdkitignore` at the project root lists paths that `gdkit lint`,
-`gdkit format`, `gdkit uid`, `gdkit gen`, and `gdkit assets` skip, so
-third-party and generated code is named once for every tool:
+`gdkit format`, `gdkit license`, `gdkit uid`, `gdkit gen`, and `gdkit assets`
+skip, so third-party and generated code is named once for every tool:
 
 ```gitignore
 # Vendored plugins, wherever they sit in the tree
@@ -1557,6 +1621,8 @@ jobs:
         if: ${{ !cancelled() }}
       - run: gdkit format check --diff .
         if: ${{ !cancelled() }}
+      - run: gdkit license check --diff .
+        if: ${{ !cancelled() }}
       - run: gdkit uid check .
         if: ${{ !cancelled() }}
       - run: gdkit assets check .
@@ -1588,9 +1654,9 @@ before the report is a single [error envelope on
 stderr](#machine-readable-failures) while stdout stays empty — so a consumer can
 tell "no report" from "an empty report".
 
-`gdkit format write` and `gdkit uid write` are the two commands meant to run
-outside CI, on a developer machine or in a job that opens a pull request. In a
-gate, use their `check` form.
+`gdkit format write`, `gdkit license write`, and `gdkit uid write` are commands
+meant to run outside CI, on a developer machine or in a job that opens a pull
+request. In a gate, use their `check` form.
 
 ## Version information
 
@@ -1663,7 +1729,7 @@ promised for every exit-`2` path:
   before `--format` has been read at all.
 - **The `init` commands**, which have no `--format`.
 
-`format write` and `uid write` are one further exception in the other
+`format write`, `license write`, and `uid write` are one further exception in the other
 direction: a write that fails part-way still reports on stdout which files it
 changed before failing, alongside the envelope on stderr, because that list is
 what tells you the state the project is now in.

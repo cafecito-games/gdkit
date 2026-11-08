@@ -109,6 +109,13 @@ the default branch.
   performs no I/O.
   `format.unsafe` and `source-parse` are its public diagnostic names and appear in
   JSON output.
+- `licenseheader/` — the managed GDScript license-header producer behind
+  `gdkit license`. Its config supplies exact comment lines; an empty default is
+  inert because gdkit cannot invent a project's holder or license. `Check` is
+  pure and `Apply` is the only writer. It owns only the block between
+  `# gdkit:license:begin` and `# gdkit:license:end`, preserves BOMs, shebangs,
+  and line endings, and reports `license.marker` rather than guessing when the
+  markers are malformed or are not at the top of the script.
 - `uid/` — the `uid://` identifier codec and generator behind `gdkit uid`. It
   reproduces Godot's `ResourceUID` exactly, including the base-34 alphabet that
   omits `z` and `9` because Godot's own encoder is off by one and cannot be
@@ -335,8 +342,8 @@ the default branch.
   rather than a version check, because the generated call depends on one
   signature and not on a release number.
 - `internal/atomicwrite/` — the write-beside-and-rename replacement shared by
-  `format`, `generate`, and `uid`, including the re-read before the rename that
-  keeps a concurrent edit from being lost.
+  `format`, `generate`, `licenseheader`, and `uid`, including the re-read before
+  the rename that keeps a concurrent edit from being lost.
 - `internal/glob/` — the shared glob engine. `Compile` quote-escapes every
   character it does not interpret, so it cannot fail; a test asserting that a
   malformed pattern is rejected is asserting nothing.
@@ -591,9 +598,9 @@ can fail, because its value decides how every later failure is reported; an
 unknown value is itself reported as text, since a caller who misspelled the
 format cannot be assumed to parse an envelope. Unknown commands and flag parse
 errors precede `--format` entirely and stay prose, as do the `init` commands,
-which have no `--format`. `format write` and `uid write` still print the list of
-files they changed on stdout when a write fails part-way, because that list is
-what tells the caller the state the project is in.
+which have no `--format`. `format write`, `license write`, and `uid write` still
+print the list of files they changed on stdout when a write fails part-way,
+because that list is what tells the caller the state the project is in.
 
 ## Conventions
 
