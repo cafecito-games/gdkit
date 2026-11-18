@@ -85,12 +85,13 @@ the default branch.
   `Dictionary` is not reported below `4.4` and `require-typed-loop-variable`
   reports nothing below `4.2`, and a maintainer asking why a bare `Dictionary`
   is quiet is asking about this key. `Context` carries a `compiledConfig` —
-  every name pattern, every exempt glob, and the parsed engine version, compiled
-  once by `validate` — so no rule compiles or parses anything per file. An
-  enabled rule that implements `EngineSchemaRule` receives the immutable
-  selected engine through `Context`. An enabled `semanticRule` whose
-  `NeedsSemanticAnalysis` is true also selects that engine and constructs one
-  run-local analyzer; today only `require-typed-collection` has that capability.
+  every name pattern, every exempt glob, every restricted-API pattern, and the
+  parsed engine version, compiled once by `validate` — so no rule compiles or
+  parses anything per file. An enabled rule that implements `EngineSchemaRule`
+  receives the immutable selected engine through `Context`. An enabled
+  `semanticRule` whose `NeedsSemanticAnalysis` is true also selects that engine
+  and constructs one run-local analyzer (`require-typed-collection`,
+  `unused-private-member`, and `restricted-api`).
   With no explicit `extension_api`, either enabled capability triggers lazy
   loading of a bundled table. The semantic consumer is supported only for 4.7.x
   or a numerically matching override: enabling it on an unsupported minor fails
@@ -413,9 +414,9 @@ stricter" promise safe. `disable` wins over `enable`, and `enable` deliberately
 accepts any known rule name rather than only an inert one, so a config that
 opted in keeps working after the rule graduates to running by default.
 Pending-ness is an optional interface rather than a parallel registry map so a
-test can inject one through `newLinter`. Nine rules ship inert —
-`inconsistent-return-statements`, `no-engine-logging`,
-`unused-private-member` and the six `require-*`
+test can inject one through `newLinter`. Ten rules ship inert —
+`inconsistent-return-statements`, `no-engine-logging`, `restricted-api`,
+`unused-private-member`, and the six `require-*`
 typing rules — and `TestPendingRulesAreExactlyTheInertOnes` pins that set so a
 rule cannot start or stop shipping inert unnoticed. `missing-docstring` predates the
 mechanism and is inert through its own empty list, which only worked because
@@ -456,6 +457,16 @@ subclasses), and a private function is used when any project ancestor declares o
 references its name (an override of a project-defined virtual). This follows the
 `extends` graph only, never a general cross-file reference search, and it hides
 nothing in a leaf class, where most dead code lives.
+
+`restricted-api` is also an `EngineSchemaRule` and `semanticRule`. Its symbol
+and `allow` globs are compiled once by `validate`, and it resolves identifiers,
+member receivers, constructors (`.new` matches only the constructed class, never
+an ancestor like `RefCounted`), inherited and overridden members, type
+annotations, `extends` clauses, and static script `preload`/`load` targets
+against the semantic analyzer. Unresolved or `Variant` receivers and file-local
+inner classes inside unnamed scripts stay silent rather than guessing by name,
+and Lua-style dictionary keys (`{key = value}`) are skipped because GDScript
+treats them as string literals.
 
 ### Analysis pipeline
 
