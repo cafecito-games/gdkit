@@ -74,12 +74,10 @@ func identityClaims(snapshot *project.Snapshot) []project.Claim {
 // identifier resolves to.
 //
 // Two claims can name one file and two files can claim one identifier, and
-// both are decided the same way: a sidecar wins over a resource header, which
-// wins over a .import file, and the lowest path wins a tie. That mirrors how
-// project.Snapshot.UIDs prefers a sidecar, and it agrees with the duplicate
-// diagnostic, which leaves the identifier with the first claimant in path
-// order. A claim .gdkitignore hides takes part in both: Godot has never heard
-// of the ignore file, so a hidden file still owns its identity.
+// both are decided the same way: a visible claim wins over one .gdkitignore
+// hides, then a sidecar wins over a resource header, which wins over a .import
+// file, and the lowest path wins a tie. A hidden claim still takes part so an
+// identity only hidden files declare resolves instead of becoming dangling.
 func resolveClaims(claims []project.Claim) (map[string]project.Claim, map[uint64]string) {
 	declarations := make(map[string]project.Claim, len(claims))
 	for _, claim := range claims {
@@ -115,9 +113,12 @@ type position struct {
 	line int
 }
 
-// preferred reports whether claim beats existing: by mechanism first, then by
-// the path the declaration lives in.
+// preferred reports whether claim beats existing: by visibility, mechanism,
+// then the path the declaration lives in.
 func preferred(claim, existing project.Claim) bool {
+	if claim.Ignored != existing.Ignored {
+		return !claim.Ignored
+	}
 	if rank(claim.Kind) != rank(existing.Kind) {
 		return rank(claim.Kind) < rank(existing.Kind)
 	}

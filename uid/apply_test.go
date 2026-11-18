@@ -178,6 +178,26 @@ func TestApplyRepointsABrokenReferenceAtThePathItNames(t *testing.T) {
 	assert.Equal(t, want, readFile(t, root, "main.tscn"))
 }
 
+func TestApplyRepointsAReferenceAtAVisibleDuplicateClaimant(t *testing.T) {
+	main := scene("uid://ddd", external("uid://xxx", "real/thing.gd", "1_a"))
+	snapshot, root := loadProject(t, map[string]string{
+		".gdkitignore":                     "android/\n",
+		"android/staged/real/thing.gd":     "extends Node\n",
+		"android/staged/real/thing.gd.uid": "uid://bbb\n",
+		"real/thing.gd":                    "extends Node\n",
+		"real/thing.gd.uid":                "uid://bbb\n",
+		"main.tscn":                        main,
+	})
+	report := Check(snapshot)
+	require.Equal(t, []string{RuleDangling}, rules(report))
+	require.Equal(t, []string{"main.tscn"}, pathsOf(report.Rewritable()))
+	written, err := Apply(snapshot, report, seeded(1), false)
+	require.NoError(t, err)
+	require.Equal(t, []string{"main.tscn"}, written)
+	assert.Equal(t, strings.Replace(main, "uid://xxx", "uid://bbb", 1), readFile(t, root, "main.tscn"))
+	assertClean(t, root)
+}
+
 func TestApplyRepointsACrossedReference(t *testing.T) {
 	snapshot, root := loadProject(t, map[string]string{
 		"player.gd":     "extends Node\n",

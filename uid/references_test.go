@@ -163,6 +163,58 @@ func TestCheckResolvesAgainstAnIgnoredClaimant(t *testing.T) {
 	require.False(t, report.HasDiagnostics())
 }
 
+func TestCheckPrefersAVisibleClaimantRegardlessOfPathOrder(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		ignore      string
+		ignoredPath string
+	}{
+		{name: "ignored first", ignore: "android/\n", ignoredPath: "android/staged/real/thing.gd"},
+		{name: "visible first", ignore: "staged/\n", ignoredPath: "staged/real/thing.gd"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report := checkProject(t, map[string]string{
+				".gdkitignore":            test.ignore,
+				test.ignoredPath:          "extends Node\n",
+				test.ignoredPath + ".uid": "uid://bbb\n",
+				"real/thing.gd":           "extends Node\n",
+				"real/thing.gd.uid":       "uid://bbb\n",
+				"main.tscn": scene("uid://ddd",
+					external("uid://bbb", "real/thing.gd", "1_a")),
+			})
+			require.False(t, report.HasDiagnostics())
+		})
+	}
+}
+
+func TestCheckPrefersVisibilityBeforeClaimKind(t *testing.T) {
+	report := checkProject(t, map[string]string{
+		".gdkitignore":                "addons/\n",
+		"addons/vendor/plugin.gd":     "extends Node\n",
+		"addons/vendor/plugin.gd.uid": "uid://bbb\n",
+		"icon.png":                    "",
+		"icon.png.import":             "[remap]\n\nuid=\"uid://bbb\"\n",
+		"main.tscn": scene("uid://ddd",
+			"[ext_resource type=\"Texture2D\" uid=\"uid://bbb\" path=\"res://icon.png\" id=\"1_a\"]"),
+	})
+	require.False(t, report.HasDiagnostics())
+}
+
+func TestCheckReportsAReferenceThatNamesTheIgnoredClaimant(t *testing.T) {
+	report := checkProject(t, map[string]string{
+		".gdkitignore":                     "android/\n",
+		"android/staged/real/thing.gd":     "extends Node\n",
+		"android/staged/real/thing.gd.uid": "uid://bbb\n",
+		"real/thing.gd":                    "extends Node\n",
+		"real/thing.gd.uid":                "uid://bbb\n",
+		"main.tscn": scene("uid://ddd",
+			external("uid://bbb", "android/staged/real/thing.gd", "1_a")),
+	})
+	require.Equal(t, []string{RuleCrossed}, rules(report))
+	assert.Equal(t, []string{"main.tscn"}, pathsOf(report.Reported()))
+	assert.Empty(t, report.Rewritable())
+}
+
 // withRule narrows a group to one rule, so a test can speak about the dangling
 // half of a mixed list.
 func withRule(diagnostics []Diagnostic, rule string) []Diagnostic {
