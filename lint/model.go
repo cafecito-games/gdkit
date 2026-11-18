@@ -30,6 +30,13 @@ type Diagnostic struct {
 	Column    int      `json:"column"`
 	EndLine   int      `json:"end_line,omitempty"`
 	EndColumn int      `json:"end_column,omitempty"`
+	// Suppressible is nil for the usual suppressible diagnostic. False marks a
+	// policy finding that inline ignore and disable comments cannot silence.
+	Suppressible *bool `json:"suppressible,omitempty"`
+}
+
+func (d Diagnostic) canBeSuppressed() bool {
+	return d.Suppressible == nil || *d.Suppressible
 }
 
 // String renders the diagnostic in gdlint's text form, so output handling

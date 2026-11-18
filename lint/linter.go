@@ -403,7 +403,7 @@ func (l *Linter) Lint(snapshot *project.Snapshot) Report {
 			}
 		}
 		for _, diagnostic := range found {
-			if suppressions.silences(diagnostic.Rule, diagnostic.Line) {
+			if diagnostic.canBeSuppressed() && suppressions.silences(diagnostic.Rule, diagnostic.Line) {
 				continue
 			}
 			diagnostic.Path = script.Path
