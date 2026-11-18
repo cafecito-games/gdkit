@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/cafecito-games/gdparser/ast"
 	"github.com/cafecito-games/gdparser/token"
@@ -97,6 +98,9 @@ func compileRestrictions(restrictions []Restriction) ([]compiledRestriction, err
 			}
 			allowPatterns = append(allowPatterns, parsed)
 		}
+		if err := validateRestrictionMessage(entry.Symbol, entry.Message); err != nil {
+			return nil, err
+		}
 		compiled = append(compiled, compiledRestriction{
 			exact:   exact,
 			pattern: pattern,
@@ -108,6 +112,22 @@ func compileRestrictions(restrictions []Restriction) ([]compiledRestriction, err
 	return compiled, nil
 }
 
+func validateRestrictionMessage(symbol, message string) error {
+	if containsControlOrLineBreak(message) {
+		return fmt.Errorf("restricted-api message for %q must be a single line without control characters", symbol)
+	}
+	return nil
+}
+
+func containsControlOrLineBreak(text string) bool {
+	for _, character := range text {
+		if unicode.IsControl(character) || character == '\u2028' || character == '\u2029' {
+			return true
+		}
+	}
+	return false
+}
+
 func validateRestrictionAllowPattern(symbol, allow string) error {
 	if allow == "" {
 		return fmt.Errorf("restricted-api allow pattern for %q must not be empty", symbol)
@@ -115,8 +135,8 @@ func validateRestrictionAllowPattern(symbol, allow string) error {
 	if strings.Contains(allow, `\`) {
 		return fmt.Errorf("restricted-api allow pattern %q must be slash-separated", allow)
 	}
-	if strings.ContainsRune(allow, '\x00') {
-		return errors.New("restricted-api allow pattern must not contain a NUL byte")
+	if containsControlOrLineBreak(allow) {
+		return fmt.Errorf("restricted-api allow pattern %q must not contain line breaks or control characters", allow)
 	}
 	if strings.HasPrefix(allow, "res://") || strings.HasPrefix(allow, "uid://") {
 		return fmt.Errorf("restricted-api allow pattern %q must be a project-relative path, not a Godot URI", allow)

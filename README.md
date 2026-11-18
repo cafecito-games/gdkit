@@ -645,7 +645,9 @@ script class. Setting `"kind": "call"` narrows reporting to call sites, and
 `"kind": "assignment"` narrows it to assignment targets (so reading
 `request.use_threads` in an assertion stays allowed while setting it is
 reported). Omitting `allow` (or leaving it empty) forbids the symbol across
-every selected file. Receiver types and inherited members are resolved through
+every selected file. `message`, when provided, must be a single line so text
+output preserves its one-diagnostic-per-line format. Receiver types and
+inherited members are resolved through
 the semantic analyzer, so an unrelated class declaring a same-named member and
 an untyped `Variant` receiver stay silent. A single line inside an unallowed
 file can still be exempted with `# gdkit:ignore = restricted-api` without

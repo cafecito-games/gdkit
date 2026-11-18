@@ -365,11 +365,28 @@ func TestRestrictedAPIDecodesAndValidatesConfiguration(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorContains(t, err, "restricted-api")
 
-	for _, badAllow := range []string{"", "res://core/client_http.gd", "uid://abc", "/core/client_http.gd", "../outside.gd", "core/../../outside.gd", `core\client_http.gd`, "bad\x00path", "C:/core/client_http.gd"} {
+	for _, badAllow := range []string{"", "res://core/client_http.gd", "uid://abc", "/core/client_http.gd", "../outside.gd", "core/../../outside.gd", `core\client_http.gd`, "bad\x00path", "bad\npath.gd", "C:/core/client_http.gd"} {
 		invalidAllow := DefaultConfig()
 		invalidAllow.RestrictedAPI.Restrictions = []Restriction{{Symbol: "HTTPRequest.new", Allow: []string{badAllow}}}
 		err = invalidAllow.Validate()
 		require.Error(t, err, "accepted invalid allow pattern %q", badAllow)
+		require.ErrorContains(t, err, "restricted-api")
+	}
+
+	for _, badMessage := range []string{
+		"Use ClientHttp.\nSee the networking ADR.",
+		"Use ClientHttp.\r\nSee the networking ADR.",
+		"Use ClientHttp.\rSee the networking ADR.",
+		"Use ClientHttp.\n",
+		"Use\tClientHttp.",
+		"Use\x00ClientHttp.",
+		"Use\u2028ClientHttp.",
+		"Use\u2029ClientHttp.",
+	} {
+		invalidMessage := DefaultConfig()
+		invalidMessage.RestrictedAPI.Restrictions = []Restriction{{Symbol: "HTTPRequest.new", Message: badMessage}}
+		err = invalidMessage.Validate()
+		require.Error(t, err, "accepted multiline or control-character message %q", badMessage)
 		require.ErrorContains(t, err, "restricted-api")
 	}
 
