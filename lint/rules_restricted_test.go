@@ -1,6 +1,7 @@
 package lint
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -112,6 +113,61 @@ func test_completion_handler() -> void:
 	assert.Equal(t, "tests/client_http_test.gd", found[3].Path)
 	assert.Equal(t, 6, found[3].Line)
 	assert.Equal(t, `"HTTPRequest.new" is restricted: Use ClientHttp.begin(host[, timeout_seconds]).`, found[3].Message)
+}
+
+func TestRestrictedAPICanRefuseIgnoreAndDisableSuppressions(t *testing.T) {
+	root := t.TempDir()
+	writeConfigFile(t, root, DefaultConfigPath, `{
+  "enable": ["restricted-api"],
+  "restricted-api": {
+    "restrictions": [
+      {
+        "symbol": "HTTPRequest.new"
+      },
+      {
+        "symbol": "HTTPRequest.use_threads",
+        "kind": "assignment",
+        "suppressible": false
+      }
+    ]
+  }
+}`)
+	config, err := LoadConfig(root, "")
+	require.NoError(t, err)
+
+	report := lintProject(t, config, map[string]string{
+		"disabled.gd": `extends Node
+
+# gdkit:disable = restricted-api
+func run(request: HTTPRequest) -> void:
+	var stub := HTTPRequest.new()
+	request.use_threads = true
+	print(stub)
+`,
+		"ignored.gd": `extends Node
+
+func run(request: HTTPRequest) -> void:
+	# gdkit:ignore = restricted-api
+	var stub := HTTPRequest.new()
+	# gdkit:ignore = restricted-api
+	request.use_threads = true
+	print(stub)
+`,
+	})
+
+	found := restrictedDiagnostics(report)
+	require.Len(t, found, 2)
+	assert.Equal(t, "disabled.gd", found[0].Path)
+	assert.Equal(t, 6, found[0].Line)
+	assert.Equal(t, "ignored.gd", found[1].Path)
+	assert.Equal(t, 7, found[1].Line)
+	for _, diagnostic := range found {
+		require.NotNil(t, diagnostic.Suppressible)
+		assert.False(t, *diagnostic.Suppressible)
+		encoded, marshalErr := json.Marshal(diagnostic)
+		require.NoError(t, marshalErr)
+		assert.Contains(t, string(encoded), `"suppressible":false`)
+	}
 }
 
 func TestRestrictedAPIEnforcesProtoClassIsolationAcrossExcludedGeneratedUniverse(t *testing.T) {

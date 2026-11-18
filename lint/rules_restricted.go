@@ -30,11 +30,12 @@ const (
 )
 
 type compiledRestriction struct {
-	exact   string
-	pattern *regexp.Regexp
-	kind    restrictionUseKind
-	allow   []glob.Pattern
-	message string
+	exact        string
+	pattern      *regexp.Regexp
+	kind         restrictionUseKind
+	allow        []glob.Pattern
+	message      string
+	suppressible bool
 }
 
 func (r compiledRestriction) allowsFile(path string) bool {
@@ -73,6 +74,15 @@ func (r compiledRestriction) formatMessage(matchedSymbol string) string {
 	return fmt.Sprintf("%q is restricted: %s", matchedSymbol, r.message)
 }
 
+func (r compiledRestriction) diagnostic(script *project.Script, matchedSymbol string, span token.Span) Diagnostic {
+	diagnostic := spanDiagnostic(script, r.formatMessage(matchedSymbol), span)
+	if !r.suppressible {
+		suppressible := false
+		diagnostic.Suppressible = &suppressible
+	}
+	return diagnostic
+}
+
 func compileRestrictions(restrictions []Restriction) ([]compiledRestriction, error) {
 	if len(restrictions) == 0 {
 		return nil, nil
@@ -102,11 +112,12 @@ func compileRestrictions(restrictions []Restriction) ([]compiledRestriction, err
 			return nil, err
 		}
 		compiled = append(compiled, compiledRestriction{
-			exact:   exact,
-			pattern: pattern,
-			kind:    kind,
-			allow:   allowPatterns,
-			message: strings.TrimSpace(entry.Message),
+			exact:        exact,
+			pattern:      pattern,
+			kind:         kind,
+			allow:        allowPatterns,
+			message:      strings.TrimSpace(entry.Message),
+			suppressible: entry.Suppressible == nil || *entry.Suppressible,
 		})
 	}
 	return compiled, nil
@@ -281,7 +292,7 @@ func (w *restrictedWalker) emit(candidates []string, use restrictionUseKind, spa
 		}
 		for _, candidate := range candidates {
 			if restriction.matchesSymbol(candidate) {
-				w.found = append(w.found, spanDiagnostic(w.script, restriction.formatMessage(candidate), span))
+				w.found = append(w.found, restriction.diagnostic(w.script, candidate, span))
 				break
 			}
 		}
@@ -316,7 +327,7 @@ func (w *restrictedWalker) emitAnnotation(classID, spelling string, allowVoid bo
 						seen = make(map[emittedKey]bool)
 					}
 					seen[key] = true
-					w.found = append(w.found, spanDiagnostic(w.script, restriction.formatMessage(candidate), span))
+					w.found = append(w.found, restriction.diagnostic(w.script, candidate, span))
 					break
 				}
 			}

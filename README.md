@@ -610,8 +610,8 @@ diagnostic; with it unset the message says "use a logger abstraction instead".
 
 `restricted-api` holds a list of symbol policies, each pairing a symbol (or
 `.`-segmented wildcard pattern using `*` and `?`) with an optional use `kind`,
-an optional `allow` list of project-relative file globs, and an optional
-guidance `message`:
+an optional `allow` list of project-relative file globs, an optional guidance
+`message`, and an optional `suppressible` policy:
 
 ```json
 {
@@ -626,6 +626,7 @@ guidance `message`:
       {
         "symbol": "HTTPRequest.use_threads",
         "kind": "assignment",
+        "suppressible": false,
         "message": "Cancelling a threaded request joins its worker and can never return."
       },
       {
@@ -651,7 +652,10 @@ inherited members are resolved through
 the semantic analyzer, so an unrelated class declaring a same-named member and
 an untyped `Variant` receiver stay silent. A single line inside an unallowed
 file can still be exempted with `# gdkit:ignore = restricted-api` without
-opening the rest of the file.
+opening the rest of the file. `suppressible` defaults to `true`; setting it to
+`false` makes findings from that restriction survive both `ignore` and
+`disable` comments, while other restrictions under the same rule remain
+suppressible.
 
 `class-definitions-order` is a list of slot names that defaults to `tools`,
 `classnames`, `extends`, `docstrings`, `signals`, `enums`, `consts`,

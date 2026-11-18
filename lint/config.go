@@ -168,6 +168,10 @@ type Restriction struct {
 	// Message is optional guidance appended to the diagnostic, such as what to
 	// call instead or why the symbol is forbidden.
 	Message string `json:"message,omitempty"`
+	// Suppressible controls whether inline ignore and disable comments may
+	// silence this restriction. It defaults to true when omitted. A pointer
+	// preserves that default while still allowing an explicit false value.
+	Suppressible *bool `json:"suppressible,omitempty"`
 }
 
 // DefaultConfig is gdlint's default policy, expressed in gdkit's config shape.
