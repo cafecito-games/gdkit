@@ -130,6 +130,7 @@ type Config struct {
 	MissingDocstring []string `json:"missing-docstring"`
 
 	NoEngineLogging NoEngineLoggingConfig `json:"no-engine-logging"`
+	RestrictedAPI   RestrictedAPIConfig   `json:"restricted-api"`
 }
 
 // NoEngineLoggingConfig configures the no-engine-logging rule.
@@ -142,6 +143,31 @@ type NoEngineLoggingConfig struct {
 	// Logger names the abstraction the diagnostic points at. When it is empty
 	// the message says "a logger abstraction" instead.
 	Logger string `json:"logger,omitempty"`
+}
+
+// RestrictedAPIConfig configures the restricted-api rule.
+type RestrictedAPIConfig struct {
+	// Restrictions lists the symbol policies the rule enforces. An empty list
+	// silences the rule.
+	Restrictions []Restriction `json:"restrictions"`
+}
+
+// Restriction restricts references to a symbol (or glob of symbols) to an
+// optional set of allowed project-relative file globs.
+type Restriction struct {
+	// Symbol names the restricted API, such as "HTTPRequest.new",
+	// "HTTPRequest.use_threads", "str_to_var", or "Uzir*Proto". Segments are
+	// separated by "." and may use "*" and "?" wildcards within one segment.
+	Symbol string `json:"symbol"`
+	// Kind narrows which uses of Symbol are reported: "reference" (the default
+	// when omitted), "call", or "assignment".
+	Kind string `json:"kind,omitempty"`
+	// Allow lists project-relative file globs where Symbol may be used. An
+	// omitted or empty list forbids Symbol in every selected file.
+	Allow []string `json:"allow,omitempty"`
+	// Message is optional guidance appended to the diagnostic, such as what to
+	// call instead or why the symbol is forbidden.
+	Message string `json:"message,omitempty"`
 }
 
 // DefaultConfig is gdlint's default policy, expressed in gdkit's config shape.
@@ -187,6 +213,10 @@ func DefaultConfig() Config {
 		// writes through the slice it finds here.
 		NoEngineLogging: NoEngineLoggingConfig{
 			Functions: append([]string(nil), defaultEngineLoggingFunctions...),
+		},
+
+		RestrictedAPI: RestrictedAPIConfig{
+			Restrictions: []Restriction{},
 		},
 	}
 }
@@ -311,6 +341,7 @@ type compiledConfig struct {
 	godotVersion           versiongate.Version
 	godotVersionExactPatch bool
 	exempt                 map[string][]glob.Pattern
+	restrictions           []compiledRestriction
 }
 
 // validate is Validate, also returning the compiled configuration so a caller
@@ -402,11 +433,16 @@ func (c Config) validate() (*compiledConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	restrictions, err := compileRestrictions(c.RestrictedAPI.Restrictions)
+	if err != nil {
+		return nil, err
+	}
 	return &compiledConfig{
 		patterns:               patterns,
 		godotVersion:           godotVersion,
 		godotVersionExactPatch: strings.Count(c.GodotVersion, ".") == 2,
 		exempt:                 exempt,
+		restrictions:           restrictions,
 	}, nil
 }
 

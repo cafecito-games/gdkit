@@ -259,12 +259,17 @@ Documentation:
   It reports nothing until `missing-docstring` in the configuration lists the
   member kinds to check.
 
-Logging:
+Logging and API boundaries:
 
 - `no-engine-logging` reports a call that writes a diagnostic message straight
   to Godot's output — `push_warning`, `push_error`, the `print` family,
   `print_stack`, `OS.alert` — so a project can require its own logger instead.
   It [ships inert](#rules-that-ship-inert).
+- `restricted-api` reports a reference to a configured symbol — a constructor,
+  method, property, global utility, or class — outside the files allowed to
+  reach it. Receiver and scope resolution run through the semantic analyzer, so
+  comments, strings, shadowed bindings, and unrelated classes declaring a
+  same-named member are never reported. It [ships inert](#rules-that-ship-inert).
 
 Format rules:
 
@@ -379,6 +384,7 @@ default:
 | each [static typing rule](#static-typing-rules)'s key | `[]`; no function is exempt |
 | `missing-docstring` | `[]`; the rule is off |
 | `no-engine-logging` | every engine output call; no logger named |
+| `restricted-api` | `{"restrictions": []}`; no restricted symbols |
 
 `disable` lists rules to turn off, and `--disable` takes the same names as a
 comma-separated list in addition to the file. `exclude` uses the same glob
@@ -387,7 +393,8 @@ paths listed in [`.gdkitignore`](#ignoring-files-with-gdkitignore).
 
 `source_roots`, `exclude`, and `.gdkitignore` always decide which files lint
 reports on. When an enabled rule needs whole-project semantic analysis — today
-only `require-typed-collection` — they stop deciding what lint *reads*: the
+`require-typed-collection`, `unused-private-member`, and `restricted-api` —
+they stop deciding what lint *reads*: the
 whole project is walked and parsed as the dependency universe, and the three
 filters narrow only the set of files that may produce a diagnostic. A selected
 script can then resolve a `class_name`, an enum member, a method signature, or
@@ -507,9 +514,11 @@ that only use `godot_version` for syntax gating do not load an engine table and
 continue to work for older versions. An explicit dump is always validated once
 at startup; otherwise the bundled table is decompressed once, lazily, only if
 an enabled semantic-aware rule requests engine facts. Today that is the enabled
-`require-typed-collection` populated-literal path and the enabled
+`require-typed-collection` populated-literal path, the enabled
 `unused-private-member` rule, which resolves a private function's virtual
-exemption up its `extends` chain and walks the project class hierarchy; default
+exemption up its `extends` chain and walks the project class hierarchy, and the
+enabled `restricted-api` rule, which resolves receivers, scopes, and inheritance
+against the project and engine graphs; default
 lint, a disabled collection rule, and
 the other typing rules do not select an engine or perform whole-project semantic
 analysis.
@@ -599,6 +608,51 @@ own named `push_error` or `print` is never reported — the rule matches the
 function a call reaches, not the word. `logger` only changes the wording of the
 diagnostic; with it unset the message says "use a logger abstraction instead".
 
+`restricted-api` holds a list of symbol policies, each pairing a symbol (or
+`.`-segmented wildcard pattern using `*` and `?`) with an optional use `kind`,
+an optional `allow` list of project-relative file globs, and an optional
+guidance `message`:
+
+```json
+{
+  "enable": ["restricted-api"],
+  "restricted-api": {
+    "restrictions": [
+      {
+        "symbol": "HTTPRequest.new",
+        "allow": ["core/client_http.gd"],
+        "message": "Use ClientHttp.begin(host[, timeout_seconds])."
+      },
+      {
+        "symbol": "HTTPRequest.use_threads",
+        "kind": "assignment",
+        "message": "Cancelling a threaded request joins its worker and can never return."
+      },
+      {
+        "symbol": "Uzir*Proto",
+        "allow": ["features/game/net/codec/**"],
+        "message": "Protocol classes may only be referenced inside the codec layer."
+      }
+    ]
+  }
+}
+```
+
+`kind` defaults to `"reference"`, which matches any resolved reference to the
+symbol — calls, reads, assignments, type annotations, `is`/`as` checks,
+`extends` clauses, and static `preload`/`load` calls targeting a restricted
+script class. Setting `"kind": "call"` narrows reporting to call sites, and
+`"kind": "assignment"` narrows it to assignment targets (so reading
+`request.use_threads` in an assertion stays allowed while setting it is
+reported). Omitting `allow` (or leaving it empty) forbids the symbol across
+every selected file. `message`, when provided, must be a single line so text
+output preserves its one-diagnostic-per-line format. Receiver types and
+inherited members are resolved through
+the semantic analyzer, so an unrelated class declaring a same-named member and
+an untyped `Variant` receiver stay silent. A single line inside an unallowed
+file can still be exempted with `# gdkit:ignore = restricted-api` without
+opening the rest of the file.
+
 `class-definitions-order` is a list of slot names that defaults to `tools`,
 `classnames`, `extends`, `docstrings`, `signals`, `enums`, `consts`,
 `staticvars`, `exports`, `pubvars`, `prvvars`, `onreadypubvars`,
@@ -653,8 +707,8 @@ Widening what an existing rule reports is the same event as adding a rule, from
 a project's point of view, so it arrives the same way: as a new inert rule name
 rather than as a quiet change to the rule already running.
 
-Nine rules ship inert today: `inconsistent-return-statements`,
-`no-engine-logging`, `unused-private-member`, and the six
+Ten rules ship inert today: `inconsistent-return-statements`,
+`no-engine-logging`, `restricted-api`, `unused-private-member`, and the six
 [static typing rules](#static-typing-rules) — `require-return-type`,
 `require-argument-type`, `require-variable-type`, `require-typed-collection`,
 `require-signal-argument-type`, and `require-typed-loop-variable`.

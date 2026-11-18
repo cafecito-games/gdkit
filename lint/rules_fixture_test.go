@@ -319,12 +319,44 @@ var unusedFixtureExpectations = map[string][]fixtureFinding{
 	"used.gd": {},
 }
 
+// restrictedFixtureExpectations is the complete set of diagnostics the files in
+// testdata/restricted must produce once restricted-api is enabled and
+// configured.
+var restrictedFixtureExpectations = map[string][]fixtureFinding{
+	"client_http.gd": {},
+	"caller.gd": {
+		{15, "restricted-api"},
+		{16, "restricted-api"},
+	},
+}
+
+func restrictedFixtureConfig() Config {
+	return restrictedConfig(
+		Restriction{
+			Symbol:  "HTTPRequest.new",
+			Allow:   []string{"client_http.gd"},
+			Message: "Use FixtureHttpClient.begin(parent).",
+		},
+		Restriction{
+			Symbol:  "HTTPRequest.use_threads",
+			Kind:    "assignment",
+			Message: "Threaded HTTPRequest cancellation can block the main thread.",
+		},
+	)
+}
+
 // TestUnusedFixtureDiagnostics is TestFixtureDiagnostics for the fixtures that
 // only produce diagnostics once unused-private-member is enabled. It shares
 // unusedConfig with the per-rule test, so the two cannot drift into enabling
 // different sets.
 func TestUnusedFixtureDiagnostics(t *testing.T) {
 	checkFixtures(t, lintFixtures(t, "unused", unusedConfig()), unusedFixtureExpectations)
+}
+
+// TestRestrictedFixtureDiagnostics is TestFixtureDiagnostics for the fixtures
+// that only produce diagnostics once restricted-api is enabled and configured.
+func TestRestrictedFixtureDiagnostics(t *testing.T) {
+	checkFixtures(t, lintFixtures(t, "restricted", restrictedFixtureConfig()), restrictedFixtureExpectations)
 }
 
 // TestTypingFixtureDiagnostics is TestFixtureDiagnostics for the fixtures that
@@ -371,6 +403,7 @@ func TestFixturesExerciseEveryRule(t *testing.T) {
 		fixtureExpectations, docstringFixtureExpectations,
 		loggingFixtureExpectations, typingFixtureExpectations,
 		returnsFixtureExpectations, unusedFixtureExpectations,
+		restrictedFixtureExpectations,
 	} {
 		for _, findings := range group {
 			for _, finding := range findings {
