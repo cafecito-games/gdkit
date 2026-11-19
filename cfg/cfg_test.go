@@ -301,6 +301,8 @@ mixed={1: "numeric", "1": "text"}
 deduped_and_mixed={1: "old", 1: "new", "1": "text"}
 bool_and_string={true: "bool", "true": "string"}
 null_and_string={null: "nil", "null": "string"}
+nodepath_and_string={^"same": "node", "same": "string"}
+stringname_and_string={&"same": "name", "same": "string"}
 duplicate_same_key={"a": 1, "a": 2}
 non_colliding_ints={0: "zero", 1: "one"}
 `
@@ -336,6 +338,20 @@ non_colliding_ints={0: "zero", 1: "one"}
 			map[string]any{"key": "null", "value": "string"},
 		},
 	}, dicts["null_and_string"])
+	assert.Equal(t, map[string]any{
+		"$type": "Dictionary",
+		"entries": []any{
+			map[string]any{"key": "same", "value": "node"},
+			map[string]any{"key": "same", "value": "string"},
+		},
+	}, dicts["nodepath_and_string"])
+	assert.Equal(t, map[string]any{
+		"$type": "Dictionary",
+		"entries": []any{
+			map[string]any{"key": "same", "value": "name"},
+			map[string]any{"key": "same", "value": "string"},
+		},
+	}, dicts["stringname_and_string"])
 	assert.Equal(t, map[string]any{"a": 2}, dicts["duplicate_same_key"])
 	assert.Equal(t, map[string]any{"0": "zero", "1": "one"}, dicts["non_colliding_ints"])
 
@@ -344,6 +360,48 @@ non_colliding_ints={0: "zero", 1: "one"}
 	assert.Equal(t, `{1: "numeric", "1": "text"}`, formatted)
 	_, parseErr := configfile.ParseString("value=" + formatted + "\n")
 	require.NoError(t, parseErr)
+}
+
+func TestPreambleKeyCollidingWithSectionNameIsPreserved(t *testing.T) {
+	source := `config_version=5
+application=1
+application/sub=2
+
+[application]
+name="Game"
+`
+	document, err := cfg.Parse("collision.cfg", []byte(source), cfg.Options{})
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]any{
+		"config_version": 5,
+		"": map[string]any{
+			"application":     1,
+			"application/sub": 2,
+		},
+		"application": map[string]any{
+			"name": "Game",
+		},
+	}, document)
+}
+
+func TestQuerySupportsInputAndInputsAcrossDocuments(t *testing.T) {
+	first, err := cfg.Parse("a.cfg", []byte("[app]\nname=\"First\"\n"), cfg.Options{})
+	require.NoError(t, err)
+	second, err := cfg.Parse("b.cfg", []byte("[app]\nname=\"Second\"\n"), cfg.Options{})
+	require.NoError(t, err)
+
+	query, err := cfg.Compile(`[., inputs] | map(.app.name)`)
+	require.NoError(t, err)
+	results, err := query.RunInputs(context.Background(), []any{first, second})
+	require.NoError(t, err)
+	assert.Equal(t, []any{[]any{"First", "Second"}}, results)
+
+	singleQuery, err := cfg.Compile(`[.app.name, input.app.name]`)
+	require.NoError(t, err)
+	singleResults, err := singleQuery.RunInputs(context.Background(), []any{first, second})
+	require.NoError(t, err)
+	assert.Equal(t, []any{[]any{"First", "Second"}}, singleResults)
 }
 
 func TestEmptySlashSegmentsStayLiteral(t *testing.T) {

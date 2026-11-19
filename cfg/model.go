@@ -61,9 +61,12 @@ func Parse(name string, source []byte, options Options) (map[string]any, error) 
 //
 // Preamble assignments sit directly on the root object. Each [section] is a
 // top-level key using its literal section name (merging repeated headers of the
-// same name). Unless options.Flat is set, slash-separated assignment keys
-// within a section are nested into sub-objects, while preserving colliding
-// prefixes without losing either entry.
+// same name). If a preamble assignment's top-level key matches a section name,
+// that preamble assignment is preserved under root[""] (Godot's unnamed
+// preamble section) rather than being overwritten by the section. Unless
+// options.Flat is set, slash-separated assignment keys within a section are
+// nested into sub-objects, while preserving colliding prefixes without losing
+// either entry.
 func Build(file *configast.File, options Options) (map[string]any, error) {
 	root := make(map[string]any)
 	if file == nil {
@@ -88,19 +91,85 @@ func Build(file *configast.File, options Options) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	insertEntries(root, preambleEntries, options.Flat, sectionNames)
 
+	var directPreamble []configEntry
+	var collidingPreamble []configEntry
+	for _, entry := range preambleEntries {
+		rootKey := entryRootKey(entry.key, options.Flat)
+		if _, collidesWithSection := sectionNames[rootKey]; collidesWithSection {
+			collidingPreamble = append(collidingPreamble, entry)
+			continue
+		}
+		directPreamble = append(directPreamble, entry)
+	}
+	if len(collidingPreamble) > 0 {
+		filteredDirect := directPreamble[:0]
+		for _, entry := range directPreamble {
+			if entry.key == "" {
+				collidingPreamble = append(collidingPreamble, entry)
+				continue
+			}
+			filteredDirect = append(filteredDirect, entry)
+		}
+		directPreamble = filteredDirect
+	}
+
+	insertEntries(root, directPreamble, options.Flat, sectionNames)
+
+	hasUnnamedSection := false
 	for _, sectionName := range sectionOrder {
 		entries, err := collectEntries(sectionStatements[sectionName])
 		if err != nil {
 			return nil, err
+		}
+		if sectionName == "" {
+			hasUnnamedSection = true
+			if len(collidingPreamble) > 0 {
+				entries = mergeEntries(collidingPreamble, entries)
+			}
 		}
 		sectionObject := make(map[string]any)
 		insertEntries(sectionObject, entries, options.Flat, nil)
 		root[sectionName] = sectionObject
 	}
 
+	if len(collidingPreamble) > 0 && !hasUnnamedSection {
+		unnamedSection := make(map[string]any)
+		insertEntries(unnamedSection, collidingPreamble, options.Flat, nil)
+		root[""] = unnamedSection
+	}
+
 	return root, nil
+}
+
+func entryRootKey(key string, flat bool) string {
+	if flat || !canSplitKey(key) {
+		return key
+	}
+	first, _, _ := strings.Cut(key, "/")
+	return first
+}
+
+func mergeEntries(first, second []configEntry) []configEntry {
+	order := make([]string, 0, len(first)+len(second))
+	values := make(map[string]any, len(first)+len(second))
+	for _, entry := range first {
+		if _, exists := values[entry.key]; !exists {
+			order = append(order, entry.key)
+		}
+		values[entry.key] = entry.value
+	}
+	for _, entry := range second {
+		if _, exists := values[entry.key]; !exists {
+			order = append(order, entry.key)
+		}
+		values[entry.key] = entry.value
+	}
+	merged := make([]configEntry, 0, len(order))
+	for _, key := range order {
+		merged = append(merged, configEntry{key: key, value: values[key]})
+	}
+	return merged
 }
 
 type configEntry struct {
@@ -363,6 +432,7 @@ func convertArray(array *configast.ArrayLiteral) ([]any, error) {
 }
 
 type dictionaryEntry struct {
+	keyKind   string
 	rawKey    any
 	stringKey string
 	value     any
@@ -390,9 +460,10 @@ func convertDictionary(dictionary *configast.DictionaryLiteral) (map[string]any,
 		if err != nil {
 			return nil, err
 		}
+		keyKind := variantKeyKind(entry.Key)
 		replaced := false
 		for index := range entries {
-			if sameVariantKey(entries[index].rawKey, rawKey) {
+			if entries[index].keyKind == keyKind && sameVariantKey(entries[index].rawKey, rawKey) {
 				entries[index].value = value
 				replaced = true
 				break
@@ -400,6 +471,7 @@ func convertDictionary(dictionary *configast.DictionaryLiteral) (map[string]any,
 		}
 		if !replaced {
 			entries = append(entries, dictionaryEntry{
+				keyKind:   keyKind,
 				rawKey:    rawKey,
 				stringKey: stringKey,
 				value:     value,
@@ -436,6 +508,27 @@ func convertDictionary(dictionary *configast.DictionaryLiteral) (map[string]any,
 		result[entry.stringKey] = entry.value
 	}
 	return result, nil
+}
+
+// variantKeyKind distinguishes ConfigFile key spellings that erase to the same
+// JSON scalar (for example, String "a", StringName &"a", NodePath ^"a", and
+// Identifier a) so distinct Variant dictionary keys are not collapsed.
+func variantKeyKind(expression configast.Expression) string {
+	switch node := expression.(type) {
+	case *configast.StringLiteral:
+		switch node.Prefix {
+		case "&":
+			return "StringName"
+		case "^":
+			return "NodePath"
+		default:
+			return "String"
+		}
+	case *configast.Identifier:
+		return "Identifier"
+	default:
+		return ""
+	}
 }
 
 func stringifyKey(keyExpression configast.Expression, converted any) (string, error) {
@@ -667,6 +760,12 @@ func FormatRaw(value any, compact bool) ([]byte, error) {
 
 // FormatGodot formats a query result value as canonical Godot ConfigFile
 // Variant syntax.
+//
+// Because the query model represents Godot Variants using plain JSON-compatible
+// maps, objects matching the reserved tagged shapes ({"$type": "Object",
+// "class": ..., ...}, {"$type": "<Constructor>", "args": [...]}, or
+// {"$type": "Dictionary", "entries": [...]}) are formatted as those Godot
+// Variants rather than plain dictionaries.
 func FormatGodot(value any) (string, error) {
 	expression, err := toConfigExpression(value)
 	if err != nil {

@@ -146,6 +146,12 @@ func TestCfgQueryStdinAndMultipleFiles(t *testing.T) {
 		require.Equal(t, 0, code)
 		assert.Equal(t, "[\"First\",\"Second\"]\n", slurpOut.String())
 		assert.Empty(t, slurpErr.String())
+
+		var inputsOut, inputsErr bytes.Buffer
+		code = run([]string{"cfg", "query", "-c", `[., inputs] | map(.app.name)`, pathA, pathB}, &inputsOut, &inputsErr)
+		require.Equal(t, 0, code)
+		assert.Equal(t, "[\"First\",\"Second\"]\n", inputsOut.String())
+		assert.Empty(t, inputsErr.String())
 	})
 }
 

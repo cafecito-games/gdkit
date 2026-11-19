@@ -1591,12 +1591,16 @@ gdkit cfg query --format godot '.application.boot_splash.bg_color' project.godot
 ```
 
 When no file path is given (or when a path is `-`), `gdkit cfg query` reads from
-stdin. Multiple file paths are queried in sequence, or combined into a single
-array with `-s`/`--slurp`.
+stdin. Multiple file paths are queried in sequence (with full support for jq's
+`input` and `inputs`, e.g. `[., inputs]`), or combined into a single array with
+`-s`/`--slurp`.
 
 ### Data model
 
 - **Preamble keys** (such as `config_version=5`) sit directly on the root object.
+  If a preamble assignment's top-level key collides with a `[section]` name,
+  that preamble entry is preserved under `.[""]` (Godot's unnamed preamble
+  section) so neither value is lost.
 - **Sections** (`[animation]`, `[preset.0]`, `[preset.0.options]`) are top-level
   keys using their literal section names, so dotted section names never collide.
   Repeated headers for the same section are merged in source order.
@@ -1614,13 +1618,19 @@ array with `-s`/`--slurp`.
     JSON arrays.
   - Dictionaries and typed dictionaries (`Dictionary[K, V]({...})`) map to JSON
     objects. If a dictionary contains distinct Variant keys that stringify
-    identically (such as `{1: "numeric", "1": "text"}`), it falls back to
+    identically (such as `{1: "numeric", "1": "text"}` or
+    `{^"same": "node", "same": "string"}`), it falls back to
     `{"$type": "Dictionary", "entries": [{"key": ..., "value": ...}]}` so no
     entry is lost.
   - `Object(ClassName, "prop": value, ...)` maps to
     `{"$type": "Object", "class": "ClassName", "properties": {...}}`.
   - Other built-in constructors (such as `Color(...)` or `Vector2(...)`) map to
     `{"$type": "Color", "args": [...]}`.
+- **Godot output (`--format godot`)**: formats query results as canonical Godot
+  ConfigFile Variant syntax. Objects matching the reserved tagged shapes above
+  (`$type` with `args`, `class`, or `entries`) are emitted as those Godot
+  Variants rather than plain dictionaries, which also lets `jq` filters
+  construct Godot Variants for `--format godot` output.
 
 ### Flags and exit codes
 

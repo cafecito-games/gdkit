@@ -125,29 +125,22 @@ func runCfgQuery(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	emitted := false
 	var lastValue any
 
-	for _, input := range inputs {
-		iterator := compiled.Iterate(context.Background(), input)
-		halted := false
-		for {
-			value, hasValue, didHalt, evalErr := iterator.Next()
-			if evalErr != nil {
-				_ = writer.Flush()
-				return reportFailure(stderr, resolvedFormat, failure.QueryEval, evalErr)
-			}
-			if !hasValue {
-				halted = didHalt
-				break
-			}
-			if err := writeCfgValue(writer, resolvedFormat, compactOutput, value); err != nil {
-				_ = writer.Flush()
-				return reportFailure(stderr, resolvedFormat, failure.OutputWrite, fmt.Errorf("write query output: %w", err))
-			}
-			emitted = true
-			lastValue = value
+	iterator := compiled.IterateInputs(context.Background(), inputs)
+	for {
+		value, hasValue, _, evalErr := iterator.Next()
+		if evalErr != nil {
+			_ = writer.Flush()
+			return reportFailure(stderr, resolvedFormat, failure.QueryEval, evalErr)
 		}
-		if halted {
+		if !hasValue {
 			break
 		}
+		if err := writeCfgValue(writer, resolvedFormat, compactOutput, value); err != nil {
+			_ = writer.Flush()
+			return reportFailure(stderr, resolvedFormat, failure.OutputWrite, fmt.Errorf("write query output: %w", err))
+		}
+		emitted = true
+		lastValue = value
 	}
 
 	if err := writer.Flush(); err != nil {
