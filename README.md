@@ -87,6 +87,7 @@ SHA-256 manifest.
 - [UID identities](#uid-identities) — `gdkit uid`
 - [Code generation](#code-generation) — `gdkit gen`
 - [Unused assets](#unused-assets) — `gdkit assets`
+- [Config file queries](#config-file-queries) — `gdkit cfg`
 
 **Across every tool**
 
@@ -1574,6 +1575,84 @@ mean "not looking" — so every report states how much of the project was eligib
 assets check passed (2503 of 4138 files eligible)
 ```
 
+## Config file queries
+
+`gdkit cfg query` parses Godot ConfigFile documents (`project.godot`,
+`export_presets.cfg`, `override.cfg`, `plugin.cfg`, `.import`, and other
+ConfigFile syntax files) with `gdparser`'s config parser and evaluates full
+[`jq`](https://jqlang.org/) filters against them via `gojq`:
+
+```sh
+gdkit cfg query '.["animation"].compatibility.default_parent_skeleton_in_mesh_instance_3d' project.godot
+gdkit cfg query -r '.application.config.name' project.godot
+gdkit cfg query '.application.config.features[]' project.godot
+gdkit cfg query -r '.["preset.0.options"].application.bundle_identifier' export_presets.cfg
+gdkit cfg query --format godot '.application.boot_splash.bg_color' project.godot
+```
+
+When no file path is given (or when a path is `-`), `gdkit cfg query` reads from
+stdin. Multiple file paths are queried in sequence (with full support for jq's
+`input` and `inputs`, e.g. `[., inputs]`), or combined into a single array with
+`-s`/`--slurp`.
+
+### Data model
+
+- **Preamble keys** (such as `config_version=5`) sit directly on the root object.
+  If a preamble assignment's top-level key collides with a `[section]` name,
+  that preamble entry is preserved under `.[""]` (Godot's unnamed preamble
+  section) so neither value is lost.
+- **Sections** (`[animation]`, `[preset.0]`, `[preset.0.options]`) are top-level
+  keys using their literal section names, so dotted section names never collide.
+  Repeated headers for the same section are merged in source order.
+- **Slash-separated keys** inside a section (such as
+  `compatibility/default_parent_skeleton_in_mesh_instance_3d=true`) are split
+  into nested objects by default. Pass `--flat` to keep literal Godot keys
+  unsplit. If a section assigns both a prefix and a nested path under it (for
+  example `a=1` and `a/b=2`), the nested entry stays under its unsplit suffix so
+  neither value is lost.
+- **Godot Variant values** map naturally to JSON:
+  - `null`, booleans, integers (including arbitrary-precision integers), floats,
+    strings, `StringName` (`&"..."`), `NodePath` (`^"..."`), and bare
+    identifiers map to JSON scalars.
+  - Arrays, typed arrays (`Array[T]([...])`), and `Packed*Array(...)` map to
+    JSON arrays.
+  - Dictionaries and typed dictionaries (`Dictionary[K, V]({...})`) map to JSON
+    objects. If a dictionary contains distinct Variant keys that stringify
+    identically (such as `{1: "numeric", "1": "text"}`,
+    `{^"same": "node", "same": "string"}`, or separately constructed `Object(...)`
+    keys), it falls back to
+    `{"$type": "Dictionary", "entries": [{"key": ..., "value": ...}]}` (tagging
+    `NodePath`, `StringName`, and `Identifier` keys as
+    `{"$type": "...", "value": "..."}`) so no entry is lost and `--format godot`
+    round-trips cleanly.
+  - `Object(ClassName, "prop": value, ...)` maps to
+    `{"$type": "Object", "class": "ClassName", "properties": {...}}`.
+  - Other built-in constructors (such as `Color(...)` or `Vector2(...)`) map to
+    `{"$type": "Color", "args": [...]}`.
+- **Godot output (`--format godot`)**: formats query results as canonical Godot
+  ConfigFile Variant syntax. Objects matching the reserved tagged shapes above
+  (`$type` with `args`, `class`, `entries`, or `value` for `NodePath`,
+  `StringName`, and `Identifier`) are emitted as those Godot Variants rather
+  than plain dictionaries, which also lets `jq` filters construct Godot Variants
+  for `--format godot` output.
+
+### Flags and exit codes
+
+| Flag | Meaning |
+| --- | --- |
+| `--format json\|raw\|godot` | output format (default `json`: pretty-printed JSON) |
+| `-r`, `--raw-output` | shorthand for `--format raw` (write string results unquoted; non-strings as JSON) |
+| `-c`, `--compact-output` | write single-line compact JSON instead of pretty-printed JSON |
+| `-e`, `--exit-status` | exit `1` if no output was produced or the last output value is `false` or `null` |
+| `-s`, `--slurp` | read all inputs into an array and evaluate the filter once |
+| `--flat` | keep slash-separated keys flat instead of nesting them |
+| `--minimum-version <x.y.z>` | fail unless the running `gdkit` is this release or newer |
+
+Exit codes follow `gdkit`'s convention: `0` on success, `1` when `-e` sees no
+output or a `false`/`null` final value, and `2` on usage, file read, config
+parse, query compile, or query evaluation failures (written as the JSON failure
+envelope on stderr when `--format json` is active).
+
 ## Ignoring files with .gdkitignore
 
 A file named `.gdkitignore` at the project root lists paths that `gdkit lint`,
@@ -1765,7 +1844,7 @@ literal configured value remains in `message`.
 | Kind | Meaning |
 | --- | --- |
 | `config.read` | the configuration file could not be read |
-| `config.parse` | the file is not well-formed JSON, or holds more than one JSON value |
+| `config.parse` | the file is not well-formed JSON (or Godot ConfigFile), or holds more than one JSON value |
 | `config.unknown_key` | a key the schema does not define; `key` names it |
 | `config.invalid` | the values do not validate |
 | `config.version_floor` | `minimum_gdkit_version` is newer than this binary |
@@ -1774,6 +1853,8 @@ literal configured value remains in `message`.
 | `usage.version_floor` | `--minimum-version` is not satisfied |
 | `project.load` | the project could not be walked or read |
 | `analysis.failed` | analysis itself failed |
+| `query.parse` | a `cfg query` filter could not be parsed or compiled |
+| `query.eval` | a `cfg query` filter failed at runtime |
 | `output.write` | the report could not be written |
 | `file.write` | a file the command was asked to create could not be written |
 

@@ -39,6 +39,7 @@ Usage:
   gdkit gen check    [flags] [project-root]
   gdkit gen write    [flags] [project-root]
   gdkit gen init     [flags] [project-root]
+  gdkit cfg query    [flags] <filter> [file...]
   gdkit version      [flags]
 
 Commands:
@@ -62,14 +63,19 @@ Commands:
   gen check      report classes whose generated methods are missing or stale
   gen write      write the generated methods into the classes that opted in
   gen init       write the default .gdkit/generate.json configuration
+  cfg query      query Godot config files (project.godot, *.cfg) with jq syntax
   version        print version and source revision information
 `
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(runWithStdin(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithStdin(args, strings.NewReader(""), stdout, stderr)
+}
+
+func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "--version" || args[0] == "-v") {
 		fmt.Fprintln(stdout, buildinfo.Current().String())
 		return 0
@@ -93,6 +99,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runUID(args[1:], stdout, stderr)
 	case "gen":
 		return runGen(args[1:], stdout, stderr)
+	case "cfg":
+		return runCfg(args[1:], stdin, stdout, stderr)
 	case "version":
 		return runVersion(args[1:], stdout, stderr)
 	default:

@@ -40,6 +40,10 @@ const (
 	ProjectLoad = "project.load"
 	// AnalysisFailed is a failure during analysis itself.
 	AnalysisFailed = "analysis.failed"
+	// QueryParse is a query expression that failed to parse or compile.
+	QueryParse = "query.parse"
+	// QueryEval is a runtime failure evaluating a query expression.
+	QueryEval = "query.eval"
 	// OutputWrite is a failure writing the report.
 	OutputWrite = "output.write"
 	// FileWrite is a failure writing a file a command was asked to create.
