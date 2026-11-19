@@ -303,6 +303,8 @@ bool_and_string={true: "bool", "true": "string"}
 null_and_string={null: "nil", "null": "string"}
 nodepath_and_string={^"same": "node", "same": "string"}
 stringname_and_string={&"same": "name", "same": "string"}
+identifier_and_string={SAME: "ident", "SAME": "string"}
+distinct_objects={Object(InputEventKey, "physical_keycode": 65): "first", Object(InputEventKey, "physical_keycode": 65): "second"}
 duplicate_same_key={"a": 1, "a": 2}
 non_colliding_ints={0: "zero", 1: "one"}
 `
@@ -341,25 +343,57 @@ non_colliding_ints={0: "zero", 1: "one"}
 	assert.Equal(t, map[string]any{
 		"$type": "Dictionary",
 		"entries": []any{
-			map[string]any{"key": "same", "value": "node"},
+			map[string]any{"key": map[string]any{"$type": "NodePath", "value": "same"}, "value": "node"},
 			map[string]any{"key": "same", "value": "string"},
 		},
 	}, dicts["nodepath_and_string"])
 	assert.Equal(t, map[string]any{
 		"$type": "Dictionary",
 		"entries": []any{
-			map[string]any{"key": "same", "value": "name"},
+			map[string]any{"key": map[string]any{"$type": "StringName", "value": "same"}, "value": "name"},
 			map[string]any{"key": "same", "value": "string"},
 		},
 	}, dicts["stringname_and_string"])
+	assert.Equal(t, map[string]any{
+		"$type": "Dictionary",
+		"entries": []any{
+			map[string]any{"key": map[string]any{"$type": "Identifier", "value": "SAME"}, "value": "ident"},
+			map[string]any{"key": "SAME", "value": "string"},
+		},
+	}, dicts["identifier_and_string"])
+	eventKey := map[string]any{
+		"$type":      "Object",
+		"class":      "InputEventKey",
+		"properties": map[string]any{"physical_keycode": 65},
+	}
+	assert.Equal(t, map[string]any{
+		"$type": "Dictionary",
+		"entries": []any{
+			map[string]any{"key": eventKey, "value": "first"},
+			map[string]any{"key": eventKey, "value": "second"},
+		},
+	}, dicts["distinct_objects"])
 	assert.Equal(t, map[string]any{"a": 2}, dicts["duplicate_same_key"])
 	assert.Equal(t, map[string]any{"0": "zero", "1": "one"}, dicts["non_colliding_ints"])
 
-	formatted, err := cfg.FormatGodot(dicts["mixed"])
-	require.NoError(t, err)
-	assert.Equal(t, `{1: "numeric", "1": "text"}`, formatted)
-	_, parseErr := configfile.ParseString("value=" + formatted + "\n")
-	require.NoError(t, parseErr)
+	roundTrips := []struct {
+		key  string
+		want string
+	}{
+		{"mixed", `{1: "numeric", "1": "text"}`},
+		{"nodepath_and_string", `{^"same": "node", "same": "string"}`},
+		{"stringname_and_string", `{&"same": "name", "same": "string"}`},
+		{"identifier_and_string", `{SAME: "ident", "SAME": "string"}`},
+		{"distinct_objects", `{Object(InputEventKey, "physical_keycode": 65): "first", Object(InputEventKey, "physical_keycode": 65): "second"}`},
+	}
+	for _, testCase := range roundTrips {
+		formatted, err := cfg.FormatGodot(dicts[testCase.key])
+		require.NoError(t, err)
+		assert.Equal(t, testCase.want, formatted)
+		reparsed, err := cfg.Parse("roundtrip.cfg", []byte("value="+formatted+"\n"), cfg.Options{})
+		require.NoError(t, err)
+		assert.Equal(t, dicts[testCase.key], reparsed["value"], testCase.key)
+	}
 }
 
 func TestPreambleKeyCollidingWithSectionNameIsPreserved(t *testing.T) {

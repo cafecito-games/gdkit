@@ -1618,19 +1618,23 @@ stdin. Multiple file paths are queried in sequence (with full support for jq's
     JSON arrays.
   - Dictionaries and typed dictionaries (`Dictionary[K, V]({...})`) map to JSON
     objects. If a dictionary contains distinct Variant keys that stringify
-    identically (such as `{1: "numeric", "1": "text"}` or
-    `{^"same": "node", "same": "string"}`), it falls back to
-    `{"$type": "Dictionary", "entries": [{"key": ..., "value": ...}]}` so no
-    entry is lost.
+    identically (such as `{1: "numeric", "1": "text"}`,
+    `{^"same": "node", "same": "string"}`, or separately constructed `Object(...)`
+    keys), it falls back to
+    `{"$type": "Dictionary", "entries": [{"key": ..., "value": ...}]}` (tagging
+    `NodePath`, `StringName`, and `Identifier` keys as
+    `{"$type": "...", "value": "..."}`) so no entry is lost and `--format godot`
+    round-trips cleanly.
   - `Object(ClassName, "prop": value, ...)` maps to
     `{"$type": "Object", "class": "ClassName", "properties": {...}}`.
   - Other built-in constructors (such as `Color(...)` or `Vector2(...)`) map to
     `{"$type": "Color", "args": [...]}`.
 - **Godot output (`--format godot`)**: formats query results as canonical Godot
   ConfigFile Variant syntax. Objects matching the reserved tagged shapes above
-  (`$type` with `args`, `class`, or `entries`) are emitted as those Godot
-  Variants rather than plain dictionaries, which also lets `jq` filters
-  construct Godot Variants for `--format godot` output.
+  (`$type` with `args`, `class`, `entries`, or `value` for `NodePath`,
+  `StringName`, and `Identifier`) are emitted as those Godot Variants rather
+  than plain dictionaries, which also lets `jq` filters construct Godot Variants
+  for `--format godot` output.
 
 ### Flags and exit codes
 

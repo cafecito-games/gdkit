@@ -433,6 +433,7 @@ func convertArray(array *configast.ArrayLiteral) ([]any, error) {
 
 type dictionaryEntry struct {
 	keyKind   string
+	hasObject bool
 	rawKey    any
 	stringKey string
 	value     any
@@ -461,17 +462,21 @@ func convertDictionary(dictionary *configast.DictionaryLiteral) (map[string]any,
 			return nil, err
 		}
 		keyKind := variantKeyKind(entry.Key)
+		hasObject := containsObjectConstructor(entry.Key)
 		replaced := false
-		for index := range entries {
-			if entries[index].keyKind == keyKind && sameVariantKey(entries[index].rawKey, rawKey) {
-				entries[index].value = value
-				replaced = true
-				break
+		if !hasObject {
+			for index := range entries {
+				if !entries[index].hasObject && entries[index].keyKind == keyKind && sameVariantKey(entries[index].rawKey, rawKey) {
+					entries[index].value = value
+					replaced = true
+					break
+				}
 			}
 		}
 		if !replaced {
 			entries = append(entries, dictionaryEntry{
 				keyKind:   keyKind,
+				hasObject: hasObject,
 				rawKey:    rawKey,
 				stringKey: stringKey,
 				value:     value,
@@ -493,7 +498,7 @@ func convertDictionary(dictionary *configast.DictionaryLiteral) (map[string]any,
 		serializedEntries := make([]any, 0, len(entries))
 		for _, entry := range entries {
 			serializedEntries = append(serializedEntries, map[string]any{
-				"key":   entry.rawKey,
+				"key":   collidingEntryKey(entry),
 				"value": entry.value,
 			})
 		}
@@ -508,6 +513,41 @@ func convertDictionary(dictionary *configast.DictionaryLiteral) (map[string]any,
 		result[entry.stringKey] = entry.value
 	}
 	return result, nil
+}
+
+// collidingEntryKey preserves non-plain-string scalar key types (NodePath,
+// StringName, Identifier) when a dictionary falls back to its lossless entries
+// representation, so both jq queries and --format godot can distinguish them
+// from plain String keys and round-trip without collapsing.
+func collidingEntryKey(entry dictionaryEntry) any {
+	switch entry.keyKind {
+	case "NodePath", "StringName", "Identifier":
+		return map[string]any{
+			"$type": entry.keyKind,
+			"value": entry.rawKey,
+		}
+	default:
+		return entry.rawKey
+	}
+}
+
+// containsObjectConstructor reports whether expression constructs an Object
+// anywhere inside it. Godot compares Object dictionary keys by reference
+// identity, so two separately serialized Object constructors are never equal
+// keys even when their class and properties match.
+func containsObjectConstructor(expression configast.Expression) bool {
+	found := false
+	configast.Inspect(expression, func(node configast.Node) bool {
+		if found {
+			return false
+		}
+		if call, ok := node.(*configast.ConstructorCall); ok && call.Name == "Object" {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // variantKeyKind distinguishes ConfigFile key spellings that erase to the same
@@ -763,9 +803,10 @@ func FormatRaw(value any, compact bool) ([]byte, error) {
 //
 // Because the query model represents Godot Variants using plain JSON-compatible
 // maps, objects matching the reserved tagged shapes ({"$type": "Object",
-// "class": ..., ...}, {"$type": "<Constructor>", "args": [...]}, or
-// {"$type": "Dictionary", "entries": [...]}) are formatted as those Godot
-// Variants rather than plain dictionaries.
+// "class": ..., ...}, {"$type": "<Constructor>", "args": [...]},
+// {"$type": "Dictionary", "entries": [...]}, or
+// {"$type": "NodePath"|"StringName"|"Identifier", "value": ...}) are formatted
+// as those Godot Variants rather than plain dictionaries.
 func FormatGodot(value any) (string, error) {
 	expression, err := toConfigExpression(value)
 	if err != nil {
@@ -844,6 +885,9 @@ func toConfigExpression(value any) (configast.Expression, error) {
 		}
 		return &configast.ArrayLiteral{Items: items}, nil
 	case map[string]any:
+		if taggedScalar, ok := toTaggedScalar(typed); ok {
+			return taggedScalar, nil
+		}
 		if taggedDictionary, ok, err := toTaggedDictionary(typed); ok || err != nil {
 			return taggedDictionary, err
 		}
@@ -869,6 +913,33 @@ func toConfigExpression(value any) (configast.Expression, error) {
 		return &configast.DictionaryLiteral{Items: items}, nil
 	default:
 		return nil, fmt.Errorf("unsupported value type %T", value)
+	}
+}
+
+func toTaggedScalar(object map[string]any) (configast.Expression, bool) {
+	if len(object) != 2 {
+		return nil, false
+	}
+	typeName, ok := object["$type"].(string)
+	if !ok {
+		return nil, false
+	}
+	value, ok := object["value"].(string)
+	if !ok {
+		return nil, false
+	}
+	switch typeName {
+	case "NodePath":
+		return &configast.StringLiteral{Prefix: "^", Value: value}, true
+	case "StringName":
+		return &configast.StringLiteral{Prefix: "&", Value: value}, true
+	case "Identifier":
+		if !isIdentifier(value) {
+			return nil, false
+		}
+		return &configast.Identifier{Name: value}, true
+	default:
+		return nil, false
 	}
 }
 
