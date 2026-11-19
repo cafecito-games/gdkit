@@ -36,6 +36,7 @@ go run ./cmd/gdkit uid check /path/to/godot-project
 go run ./cmd/gdkit uid write --repair /path/to/godot-project
 go run ./cmd/gdkit assets check /path/to/godot-project
 go run ./cmd/gdkit assets check --format json .
+go run ./cmd/gdkit cfg query '.application.config.name' /path/to/project.godot
 
 # Release packaging (same commands CI runs)
 goreleaser check
@@ -342,6 +343,13 @@ the default branch.
   writes to it. The refusal is a capability check against `helpersSignature`
   rather than a version check, because the generated call depends on one
   signature and not on a release number.
+- `cfg/` — the Godot ConfigFile query engine behind `gdkit cfg query`. It parses
+  Godot ConfigFile documents (`project.godot`, `export_presets.cfg`, etc.) with
+  `gdparser/configfile`, maps them into a `gojq`-compatible value tree (nesting
+  slash-separated keys by default while preserving colliding prefixes and keeping
+  section names literal), evaluates full `jq` filters via `github.com/itchyny/gojq`,
+  and formats results as JSON, raw text, or canonical Godot Variant syntax via
+  `gdparser/configfile/format`.
 - `internal/atomicwrite/` — the write-beside-and-rename replacement shared by
   `format`, `generate`, `licenseheader`, and `uid`, including the re-read before
   the rename that keeps a concurrent edit from being lost.
