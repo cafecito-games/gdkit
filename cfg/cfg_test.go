@@ -128,11 +128,15 @@ neg_float=-2.25
 pos_float=+1.5
 inf_val=inf
 neg_inf=-inf
+inf_neg_val=inf_neg
+neg_inf_neg=-inf_neg
 nan_val=nan
 plain="hello"
 string_name=&"MySignal"
 node_path=^"Root/Player"
 symbol=KEY_SPACE
+neg_symbol=-SOME_FLAG
+pos_symbol=+SOME_FLAG
 empty_array=[]
 empty_packed=PackedStringArray()
 packed_ints=PackedInt32Array(1, 2, 3)
@@ -172,12 +176,16 @@ bare_object=Object(Node)
 	assert.Equal(t, 1.5, variants["pos_float"])
 	assert.True(t, math.IsInf(variants["inf_val"].(float64), 1))
 	assert.True(t, math.IsInf(variants["neg_inf"].(float64), -1))
+	assert.True(t, math.IsInf(variants["inf_neg_val"].(float64), -1))
+	assert.True(t, math.IsInf(variants["neg_inf_neg"].(float64), 1))
 	assert.True(t, math.IsNaN(variants["nan_val"].(float64)))
 
 	assert.Equal(t, "hello", variants["plain"])
 	assert.Equal(t, "MySignal", variants["string_name"])
 	assert.Equal(t, "Root/Player", variants["node_path"])
 	assert.Equal(t, "KEY_SPACE", variants["symbol"])
+	assert.Equal(t, "-SOME_FLAG", variants["neg_symbol"])
+	assert.Equal(t, "+SOME_FLAG", variants["pos_symbol"])
 
 	assert.Equal(t, []any{}, variants["empty_array"])
 	assert.Equal(t, []any{}, variants["empty_packed"])
@@ -285,6 +293,57 @@ a/d=3
 	}
 	assert.Equal(t, want, first)
 	assert.Equal(t, want, second)
+}
+
+func TestDistinctVariantDictionaryKeyCollisionsArePreserved(t *testing.T) {
+	source := `[dicts]
+mixed={1: "numeric", "1": "text"}
+deduped_and_mixed={1: "old", 1: "new", "1": "text"}
+bool_and_string={true: "bool", "true": "string"}
+null_and_string={null: "nil", "null": "string"}
+duplicate_same_key={"a": 1, "a": 2}
+non_colliding_ints={0: "zero", 1: "one"}
+`
+	document, err := cfg.Parse("dicts.cfg", []byte(source), cfg.Options{})
+	require.NoError(t, err)
+
+	dicts := document["dicts"].(map[string]any)
+	assert.Equal(t, map[string]any{
+		"$type": "Dictionary",
+		"entries": []any{
+			map[string]any{"key": 1, "value": "numeric"},
+			map[string]any{"key": "1", "value": "text"},
+		},
+	}, dicts["mixed"])
+	assert.Equal(t, map[string]any{
+		"$type": "Dictionary",
+		"entries": []any{
+			map[string]any{"key": 1, "value": "new"},
+			map[string]any{"key": "1", "value": "text"},
+		},
+	}, dicts["deduped_and_mixed"])
+	assert.Equal(t, map[string]any{
+		"$type": "Dictionary",
+		"entries": []any{
+			map[string]any{"key": true, "value": "bool"},
+			map[string]any{"key": "true", "value": "string"},
+		},
+	}, dicts["bool_and_string"])
+	assert.Equal(t, map[string]any{
+		"$type": "Dictionary",
+		"entries": []any{
+			map[string]any{"key": nil, "value": "nil"},
+			map[string]any{"key": "null", "value": "string"},
+		},
+	}, dicts["null_and_string"])
+	assert.Equal(t, map[string]any{"a": 2}, dicts["duplicate_same_key"])
+	assert.Equal(t, map[string]any{"0": "zero", "1": "one"}, dicts["non_colliding_ints"])
+
+	formatted, err := cfg.FormatGodot(dicts["mixed"])
+	require.NoError(t, err)
+	assert.Equal(t, `{1: "numeric", "1": "text"}`, formatted)
+	_, parseErr := configfile.ParseString("value=" + formatted + "\n")
+	require.NoError(t, parseErr)
 }
 
 func TestEmptySlashSegmentsStayLiteral(t *testing.T) {

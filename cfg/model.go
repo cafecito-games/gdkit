@@ -277,10 +277,18 @@ func normalizeBigInt(value *big.Int) any {
 }
 
 func parseFloat(raw string) (float64, error) {
-	cleaned := strings.ReplaceAll(raw, "_", "")
-	if cleaned == "" {
+	if raw == "" {
 		return 0, nil
 	}
+	switch strings.ToLower(raw) {
+	case "inf":
+		return math.Inf(1), nil
+	case "inf_neg":
+		return math.Inf(-1), nil
+	case "nan":
+		return math.NaN(), nil
+	}
+	cleaned := strings.ReplaceAll(raw, "_", "")
 	parsed, err := strconv.ParseFloat(cleaned, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid float literal %q: %w", raw, err)
@@ -292,6 +300,8 @@ func convertIdentifier(name string) any {
 	switch strings.ToLower(name) {
 	case "inf":
 		return math.Inf(1)
+	case "inf_neg":
+		return math.Inf(-1)
 	case "nan":
 		return math.NaN()
 	default:
@@ -306,6 +316,9 @@ func convertUnary(unary *configast.UnaryExpression) (any, error) {
 	}
 	switch unary.Operator {
 	case "+":
+		if text, isString := operand.(string); isString {
+			return "+" + text, nil
+		}
 		return operand, nil
 	case "-":
 		switch number := operand.(type) {
@@ -320,6 +333,8 @@ func convertUnary(unary *configast.UnaryExpression) (any, error) {
 			return normalizeBigInt(negated), nil
 		case float64:
 			return -number, nil
+		case string:
+			return "-" + number, nil
 		default:
 			return nil, fmt.Errorf("cannot apply unary %q to %T", unary.Operator, operand)
 		}
@@ -347,17 +362,27 @@ func convertArray(array *configast.ArrayLiteral) ([]any, error) {
 	return result, nil
 }
 
+type dictionaryEntry struct {
+	rawKey    any
+	stringKey string
+	value     any
+}
+
 func convertDictionary(dictionary *configast.DictionaryLiteral) (map[string]any, error) {
-	result := make(map[string]any)
 	if dictionary == nil {
-		return result, nil
+		return make(map[string]any), nil
 	}
+	entries := make([]dictionaryEntry, 0, len(dictionary.Items))
 	for _, item := range dictionary.Items {
 		entry, ok := item.(*configast.DictionaryEntry)
 		if !ok {
 			continue
 		}
-		key, err := convertKeyExpression(entry.Key)
+		rawKey, err := convertExpression(entry.Key)
+		if err != nil {
+			return nil, err
+		}
+		stringKey, err := stringifyKey(entry.Key, rawKey)
 		if err != nil {
 			return nil, err
 		}
@@ -365,26 +390,139 @@ func convertDictionary(dictionary *configast.DictionaryLiteral) (map[string]any,
 		if err != nil {
 			return nil, err
 		}
-		result[key] = value
+		replaced := false
+		for index := range entries {
+			if sameVariantKey(entries[index].rawKey, rawKey) {
+				entries[index].value = value
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			entries = append(entries, dictionaryEntry{
+				rawKey:    rawKey,
+				stringKey: stringKey,
+				value:     value,
+			})
+		}
+	}
+
+	seenStringKeys := make(map[string]struct{}, len(entries))
+	hasKeyCollision := false
+	for _, entry := range entries {
+		if _, exists := seenStringKeys[entry.stringKey]; exists {
+			hasKeyCollision = true
+			break
+		}
+		seenStringKeys[entry.stringKey] = struct{}{}
+	}
+
+	if hasKeyCollision {
+		serializedEntries := make([]any, 0, len(entries))
+		for _, entry := range entries {
+			serializedEntries = append(serializedEntries, map[string]any{
+				"key":   entry.rawKey,
+				"value": entry.value,
+			})
+		}
+		return map[string]any{
+			"$type":   "Dictionary",
+			"entries": serializedEntries,
+		}, nil
+	}
+
+	result := make(map[string]any, len(entries))
+	for _, entry := range entries {
+		result[entry.stringKey] = entry.value
 	}
 	return result, nil
 }
 
-func convertKeyExpression(key configast.Expression) (string, error) {
-	switch node := key.(type) {
+func stringifyKey(keyExpression configast.Expression, converted any) (string, error) {
+	switch node := keyExpression.(type) {
 	case *configast.StringLiteral:
 		return node.Value, nil
 	case *configast.Identifier:
 		return node.Name, nil
 	default:
-		converted, err := convertExpression(key)
-		if err != nil {
-			return "", err
-		}
 		if text, ok := converted.(string); ok {
 			return text, nil
 		}
 		return FormatGodot(converted)
+	}
+}
+
+func convertKeyExpression(key configast.Expression) (string, error) {
+	converted, err := convertExpression(key)
+	if err != nil {
+		return "", err
+	}
+	return stringifyKey(key, converted)
+}
+
+func sameVariantKey(left, right any) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	switch leftValue := left.(type) {
+	case bool:
+		rightValue, ok := right.(bool)
+		return ok && leftValue == rightValue
+	case int:
+		switch rightValue := right.(type) {
+		case int:
+			return leftValue == rightValue
+		case *big.Int:
+			return rightValue.IsInt64() && rightValue.Int64() == int64(leftValue)
+		default:
+			return false
+		}
+	case *big.Int:
+		switch rightValue := right.(type) {
+		case int:
+			return leftValue.IsInt64() && leftValue.Int64() == int64(rightValue)
+		case *big.Int:
+			return leftValue.Cmp(rightValue) == 0
+		default:
+			return false
+		}
+	case float64:
+		rightValue, ok := right.(float64)
+		if !ok {
+			return false
+		}
+		if math.IsNaN(leftValue) && math.IsNaN(rightValue) {
+			return true
+		}
+		return leftValue == rightValue
+	case string:
+		rightValue, ok := right.(string)
+		return ok && leftValue == rightValue
+	case []any:
+		rightValue, ok := right.([]any)
+		if !ok || len(leftValue) != len(rightValue) {
+			return false
+		}
+		for index := range leftValue {
+			if !sameVariantKey(leftValue[index], rightValue[index]) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		rightValue, ok := right.(map[string]any)
+		if !ok || len(leftValue) != len(rightValue) {
+			return false
+		}
+		for key, value := range leftValue {
+			other, exists := rightValue[key]
+			if !exists || !sameVariantKey(value, other) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
 	}
 }
 
@@ -607,6 +745,9 @@ func toConfigExpression(value any) (configast.Expression, error) {
 		}
 		return &configast.ArrayLiteral{Items: items}, nil
 	case map[string]any:
+		if taggedDictionary, ok, err := toTaggedDictionary(typed); ok || err != nil {
+			return taggedDictionary, err
+		}
 		if constructor, ok, err := toConstructorCall(typed); ok || err != nil {
 			return constructor, err
 		}
@@ -630,6 +771,45 @@ func toConfigExpression(value any) (configast.Expression, error) {
 	default:
 		return nil, fmt.Errorf("unsupported value type %T", value)
 	}
+}
+
+func toTaggedDictionary(object map[string]any) (*configast.DictionaryLiteral, bool, error) {
+	if len(object) != 2 {
+		return nil, false, nil
+	}
+	typeName, ok := object["$type"].(string)
+	if !ok || typeName != "Dictionary" {
+		return nil, false, nil
+	}
+	rawEntries, ok := object["entries"].([]any)
+	if !ok {
+		return nil, false, nil
+	}
+	items := make([]configast.DictionaryItem, 0, len(rawEntries))
+	for _, rawEntry := range rawEntries {
+		entryMap, ok := rawEntry.(map[string]any)
+		if !ok || len(entryMap) != 2 {
+			return nil, false, nil
+		}
+		rawKey, hasKey := entryMap["key"]
+		rawValue, hasValue := entryMap["value"]
+		if !hasKey || !hasValue {
+			return nil, false, nil
+		}
+		keyExpression, err := toConfigExpression(rawKey)
+		if err != nil {
+			return nil, false, err
+		}
+		valueExpression, err := toConfigExpression(rawValue)
+		if err != nil {
+			return nil, false, err
+		}
+		items = append(items, &configast.DictionaryEntry{
+			Key:   keyExpression,
+			Value: valueExpression,
+		})
+	}
+	return &configast.DictionaryLiteral{Items: items}, true, nil
 }
 
 func toConstructorCall(object map[string]any) (*configast.ConstructorCall, bool, error) {

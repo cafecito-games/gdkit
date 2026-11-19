@@ -1613,7 +1613,10 @@ array with `-s`/`--slurp`.
   - Arrays, typed arrays (`Array[T]([...])`), and `Packed*Array(...)` map to
     JSON arrays.
   - Dictionaries and typed dictionaries (`Dictionary[K, V]({...})`) map to JSON
-    objects.
+    objects. If a dictionary contains distinct Variant keys that stringify
+    identically (such as `{1: "numeric", "1": "text"}`), it falls back to
+    `{"$type": "Dictionary", "entries": [{"key": ..., "value": ...}]}` so no
+    entry is lost.
   - `Object(ClassName, "prop": value, ...)` maps to
     `{"$type": "Object", "class": "ClassName", "properties": {...}}`.
   - Other built-in constructors (such as `Color(...)` or `Vector2(...)`) map to
